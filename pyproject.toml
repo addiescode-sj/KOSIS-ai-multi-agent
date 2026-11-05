@@ -23,6 +23,7 @@ dependencies = [
     # Data: conversation history and eval results (PostgreSQL), cache / session / job queue (Redis)
     "sqlalchemy>=2.0",
     "psycopg[binary]>=3.2",
+    "alembic>=1.13",
     "redis>=5.0",
     # Observability
     "opentelemetry-sdk>=1.45",

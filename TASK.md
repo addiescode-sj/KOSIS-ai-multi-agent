@@ -27,4 +27,5 @@ Phase 0·1 태스크는 실전 1 레포(`vendor/phase1/TASK.md`), Phase 2는 실
 - [ ] **T3-13** 시스템 구성도 + ADR (산출물⑦) — `docs/architecture.md`, `docs/adr/`
 - [ ] **T3-14** ⭐ 전체 기능 테스트 결과 (산출물⑥) — `docs/final_eval.md`
 - [ ] **T3-15** 최종 시연 자료 (산출물⑧) — 문제·접근, 아키텍처, 시연, 실데이터 검증, 개선 방향
+- [x] **T3-18** PostgreSQL + SQLAlchemy ORM (Linear KOS-86, M2 11/14, 임도유) — 대화 기록·평가 결과 ORM 모델, compose `postgres`에 테이블 생성, 실제 PostgreSQL에서 쓰기·읽기 확인, pytest. API·대화 상태 연결(T3-04)은 범위 밖 → 결과: PostgreSQL 사용 코드 0 → ORM 3개 테이블 + Alembic `0001`, 실제 PostgreSQL에서 생성·쓰기·읽기·연쇄 삭제 통과, 모델-마이그레이션 차이 0, ops_history 53줄 → 47행 적재, 5432 공개 → 127.0.0.1만 (`src/kosis_store`, `migrations/`, `docs/store.md`, `plans/T3-18.md`)
 - [ ] **T3-16** (선택) PDF 보고서·차트 옵션 지정·분석 결과 저장 — 필수 산출물을 모두 끝낸 뒤에만
