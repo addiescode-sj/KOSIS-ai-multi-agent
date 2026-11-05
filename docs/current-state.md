@@ -11,7 +11,7 @@
 - `evals/` copied from phase 2 (`vendor/phase2@484bd06`, with `tests/test_evals_*.py` and `ops_history.jsonl`) and continued here; paths now resolve to this repo. Local golden sets copied into `evals/datasets/` (gitignored).
 - Open issues:
   - `kosis_rag` reads `vendor/phase2/data` and `vendor/phase2/.env` (fixed `parents[2]`): needs a phase 2 PR before T3-01.
-  - Postgres·Redis run in compose but no code uses them yet (KOS-86, M3).
+  - Postgres has ORM models and an Alembic migration (`src/kosis_store`, `migrations/`, T3-18 / KOS-86; `docs/store.md`) but the API does not write to it yet (T3-04). Redis is still unused (M3).
   - Live phase 2 search not yet checked end to end: local Docker disk I/O error broke the embed image build. After Docker recovers: start the phase 2 Chroma (:8001), `uv sync --group embed`, run the backend locally with `data` linked to `../KOSIS-ai-RAG/data`.
 
 ### Context Index
