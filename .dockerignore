@@ -1,0 +1,16 @@
+.git
+**/.git
+.venv
+.env
+**/.env
+# Provided data only (not kosis_chat/data, which is code)
+data
+vendor/*/data
+frontend
+vendor/phase2/frontend
+vendor/phase2/vendor
+node_modules
+**/node_modules
+**/__pycache__
+eval/results
+logs

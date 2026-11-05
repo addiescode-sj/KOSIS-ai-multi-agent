@@ -1,0 +1,6 @@
+[submodule "vendor/phase1"]
+	path = vendor/phase1
+	url = https://github.com/addiescode-sj/KOSIS-ai-nlp-summary.git
+[submodule "vendor/phase2"]
+	path = vendor/phase2
+	url = https://github.com/addiescode-sj/KOSIS-ai-RAG.git

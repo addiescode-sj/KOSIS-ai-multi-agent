@@ -1,0 +1,7 @@
+{
+  "_note": "Price per 1,000 tokens by model name (the name the run records, e.g. Settings.model_name). Fill from the provider's current price list; null means unknown and the report shows cost as not set.",
+  "models": {
+    "HCX-DASH-002": {"input_per_1k": null, "output_per_1k": null, "currency": "KRW"},
+    "HCX-007": {"input_per_1k": null, "output_per_1k": null, "currency": "KRW"}
+  }
+}

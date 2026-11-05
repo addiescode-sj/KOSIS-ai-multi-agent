@@ -1,0 +1,103 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    env_file:
+      # Optional: /health and the stack come up without keys; /chat/stream needs HCX_API_KEY (503 otherwise)
+      - path: .env
+        required: false
+    environment:
+      # Inside compose services are reached by name; .env holds the host-side addresses.
+      CHROMA_HOST: ${COMPOSE_CHROMA_HOST:-chroma}
+      CHROMA_PORT: ${COMPOSE_CHROMA_PORT:-8000}
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-kosis}:${POSTGRES_PASSWORD:-kosis}@postgres:5432/${POSTGRES_DB:-kosis}
+      REDIS_URL: redis://redis:6379/0
+      # Phase 1 reads data/ and .env under this root
+      KOSIS_WORKSPACE: /app
+    volumes:
+      # Provided data stays outside the image (security pledge). Phase 2 reads vendor/phase2/data (fixed path).
+      - ./data:/app/data:ro
+      - ./data:/app/vendor/phase2/data:ro
+    ports:
+      - "8000:8000"
+    depends_on:
+      chroma:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      # slim image has no curl
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  chroma:
+    # Same release as phase 2 (chromadb-client of the same version)
+    image: chromadb/chroma:1.5.9
+    environment:
+      ANONYMIZED_TELEMETRY: "False"
+    volumes:
+      - chroma-data:/data
+    ports:
+      - "${CHROMA_PORT:-8001}:8000"
+    healthcheck:
+      # The image has bash but no curl/python, so ask the heartbeat endpoint over /dev/tcp
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8000 && printf 'GET /api/v2/heartbeat HTTP/1.0\\r\\n\\r\\n' >&3 && grep -q ' 200 ' <&3"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  postgres:
+    # Conversation history and eval results (KOS-86)
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-kosis}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-kosis}
+      POSTGRES_DB: ${POSTGRES_DB:-kosis}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-kosis} -d ${POSTGRES_DB:-kosis}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    # Cache, session, async eval job queue (M3)
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  jaeger:
+    # Node and internal API spans: UI http://localhost:16686, OTLP gRPC :4317.
+    # Optional: docker compose --profile obs up -d jaeger
+    image: jaegertracing/all-in-one:1.62.0
+    profiles: ["obs"]
+    ports:
+      - "16686:16686"
+      - "4317:4317"
+
+  frontend:
+    build: ./frontend
+    environment:
+      BACKEND_URL: http://backend:8000
+    ports:
+      - "3000:3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  chroma-data:
+  postgres-data:

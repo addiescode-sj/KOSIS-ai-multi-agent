@@ -1,0 +1,42 @@
+node_modules/
+.claude/settings.local.json
+.DS_Store
+docs/reports/raw/
+
+# Secrets (KOSIS / HCX / Linear API keys must never reach GitHub)
+.env
+.env.*
+!.env.example
+secrets/
+*.pem
+*.key
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# Provided data (security pledge: keep out of the repo)
+/data/
+logs/
+
+# Eval datasets and run outputs (question text, table keys, answers)
+eval/golden/
+eval/results/
+evals/datasets/
+evals/reports/*/
+
+# Frontend (Next.js)
+frontend/node_modules/
+frontend/.next/
+frontend/next-env.d.ts
+
+# Vector store (ChromaDB, rebuilt from data/)
+chroma/
+
+# Per-machine compose overrides (e.g. a shared Chroma folder)
+docker-compose.override.yml

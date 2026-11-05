@@ -1,0 +1,19 @@
+{
+  "name": "dev-harness",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=23.6"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "verify": "bash scripts/verify.sh"
+  },
+  "dependencies": {
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.7.0"
+  }
+}
