@@ -38,6 +38,8 @@ dev = [
 # Query embedder / reranker of the phase 2 search (CPU torch, large): uv sync --group embed
 embed = [
     "sentence-transformers",
+    # Listed only to pin its index below (no CUDA wheels in the Linux image)
+    "torch",
 ]
 # Async answer-quality eval (KOS-82, KOS-116): uv sync --group ragas
 ragas = [
@@ -46,3 +48,12 @@ ragas = [
 
 [tool.uv]
 package = false
+
+# Linux (the Docker image) takes the CPU build; macOS wheels from PyPI are CPU/MPS already
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true

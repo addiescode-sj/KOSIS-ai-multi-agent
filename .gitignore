@@ -21,7 +21,7 @@ __pycache__/
 .ipynb_checkpoints/
 
 # Provided data (security pledge: keep out of the repo)
-/data/
+/data
 logs/
 
 # Eval datasets and run outputs (question text, table keys, answers)

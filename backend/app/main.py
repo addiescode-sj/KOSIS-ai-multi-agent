@@ -1,9 +1,8 @@
-"""KOSIS agent API (T3-00 skeleton): the agent graph streamed as SSE. Logic lives in src/kosis_agent; this only exposes it."""
+"""KOSIS agent API (T3-00 skeleton): the multi-agent graph streamed as SSE. Logic lives in src/kosis_agent; this only exposes it."""
 
 from __future__ import annotations
 
 import threading
-import time
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -23,16 +22,22 @@ _lock = threading.Lock()
 
 
 def get_graph():
-    """Compile the agent graph with HCX on first use (not at startup, so /health works without keys); failure is a 503."""
+    """Load the phase 2 search resources and HCX on first use (not at startup, so /health works without Chroma,
+    data/ or keys) and compile the agent graph over the phase 2 search graph. A failure is a 503; the next request
+    tries again."""
     global _graph
     with _lock:
         if _graph is None:
             from kosis_chat.config import load_env
             from kosis_rag.chain import clova_chat
+            from kosis_rag.graph import build_graph as build_search_graph
+            from kosis_rag.pipeline import load_resources
 
-            load_env(ROOT / ".env")  # this repo's HCX_API_KEY first; existing variables are kept
+            load_env(ROOT / ".env")  # this repo's keys first; existing variables are kept
             try:
-                _graph = build_graph(clova_chat())
+                resources = load_resources()
+                search_graph = build_search_graph(resources, clova_chat(), k=resources.settings.answer_k)
+                _graph = build_graph(search_graph)
             except Exception as e:  # noqa: BLE001 - any load failure means the agent is unavailable
                 raise HTTPException(503, f"agent not available: {e}") from e
         return _graph
@@ -49,22 +54,17 @@ def health() -> dict[str, str]:
 
 @app.post("/chat/stream", tags=["chat"], summary="에이전트 답변 (SSE)", response_class=EventSourceResponse)
 def chat_stream(req: ChatRequest, graph=Depends(get_graph)) -> Iterator[ServerSentEvent]:
-    """`event: token` (data = `{"delta": "..."}`) while the LLM writes, `event: <node>` (data = `{"seconds": ...}`)
-    when a node finishes, then `event: result` (data = `{"answer": "..."}`)."""
-    answer, start = "", time.perf_counter()
+    """Phase 2 search events as they are: `event: <node>` (data = that node's trace, e.g. seconds) per finished
+    search node, `event: token` (data = `{"delta": "..."}`) while guide writes its checked reply, then
+    `event: result` (data = `SearchResult`, the answer with its citations)."""
+    final: dict = {}
     try:
-        for mode, chunk in graph.stream({"messages": [("user", req.question)]}, stream_mode=["messages", "updates"]):
-            if mode == "messages":
-                delta = chunk[0].content
-                if delta:
-                    answer += delta
-                    yield ServerSentEvent(event="token", data={"delta": delta})
-                continue
-            for name, update in chunk.items():
-                now = time.perf_counter()
-                yield ServerSentEvent(event=name, data={"seconds": now - start})
-                start = now
-                answer = update["messages"][-1].content or answer  # the node's final message wins over the deltas
-        yield ServerSentEvent(event="result", data={"answer": answer})
+        for mode, chunk in graph.stream({"messages": [("user", req.question)]}, stream_mode=["custom", "values"]):
+            if mode == "custom":
+                name, payload = chunk
+                yield ServerSentEvent(event=name, data=payload)
+            else:
+                final = chunk
+        yield ServerSentEvent(event="result", data=final["search"])
     except Exception as e:  # noqa: BLE001 - the status line is already sent; say it in the stream instead
         yield ServerSentEvent(event="error", data={"type": type(e).__name__, "detail": str(e)})

@@ -7,12 +7,12 @@
 
 - Submodules: `vendor/phase1` = KOSIS-ai-nlp-summary @ `e248a45` (same commit phase 2 pins), `vendor/phase2` = KOSIS-ai-RAG @ `484bd06`.
 - Harness copied from phase 2 unchanged and committed for the team: `.claude/` (agents, hooks `plan_gate.py`·`linear_sync.py`, skills, `settings.json`), `AGENTS.md`, `scripts/*.ts`, `.mcp.json` (Linear), PR template, `docs/templates/`. `CLAUDE.md` rewritten for phase 3.
-- Stack skeleton: `src/kosis_agent/graph.py` (LangGraph, one LLM node), `backend/app/main.py` (`/health`, `/chat/stream` SSE), phase 2 frontend wired to `/chat/stream`, compose (backend · frontend · chroma · postgres · redis · jaeger[obs]), GitHub Actions CI (`verify.sh` + image builds). K8s·AWS deferred to M6.
+- Stack skeleton: `src/kosis_agent/graph.py` (multi-agent skeleton: supervisor -> search_agent wrapping the phase 2 search graph unchanged; stat/chart agents join in T3-01/T3-02), `backend/app/main.py` (`/health`, `/chat/stream` SSE with phase 2 node events + `SearchResult`), phase 2 frontend wired to `/chat/stream`, compose (backend · frontend · chroma · postgres · redis · jaeger[obs]), GitHub Actions CI (`verify.sh` + image builds). K8s·AWS deferred to M6.
 - `evals/` copied from phase 2 (`vendor/phase2@484bd06`, with `tests/test_evals_*.py` and `ops_history.jsonl`) and continued here; paths now resolve to this repo. Local golden sets copied into `evals/datasets/` (gitignored).
 - Open issues:
   - `kosis_rag` reads `vendor/phase2/data` and `vendor/phase2/.env` (fixed `parents[2]`): needs a phase 2 PR before T3-01.
   - Postgres·Redis run in compose but no code uses them yet (KOS-86, M3).
-  - `.env.example` must be added by hand (agent write to `.env*` is denied by permission settings).
+  - Live phase 2 search not yet checked end to end: local Docker disk I/O error broke the embed image build. After Docker recovers: start the phase 2 Chroma (:8001), `uv sync --group embed`, run the backend locally with `data` linked to `../KOSIS-ai-RAG/data`.
 
 ### Context Index
 

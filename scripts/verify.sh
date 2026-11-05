@@ -45,7 +45,7 @@ fi
 
 # Real data, golden sets and eval results must never be tracked by git.
 if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-  for path in data/x evals/datasets/x eval/golden/x eval/results/x .env; do
+  for path in data evals/datasets/x eval/golden/x eval/results/x .env; do
     if ! git check-ignore -q "$path"; then
       echo "verify: $path is not gitignored" >&2
       exit 1

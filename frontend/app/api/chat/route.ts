@@ -3,9 +3,9 @@ import { createUIMessageStream, createUIMessageStreamResponse } from "ai";
 import type { ChatMessage, SearchResult } from "@/lib/chat-types";
 import { parseSSE } from "@/lib/sse";
 
-// Proxy to the FastAPI agent graph (POST /chat/stream, T3-00), re-sent as the AI SDK UI message stream:
-// each finished node -> data-node part, reply pieces -> data-draft part,
-// the result -> data-result part (search results only) + the final answer as a text part (it replaces the draft).
+// Proxy to the FastAPI agent graph (POST /chat/stream, T3-00; phase 2 search events as they are), re-sent as the
+// AI SDK UI message stream: each finished node -> data-node part, guide reply pieces -> data-draft part (T2-38),
+// the result -> data-result part + the final answer as a text part (it replaces the draft on screen).
 // The answer and its citations come from the backend as they are; nothing here makes numbers or tables.
 export async function POST(request: Request) {
   const { messages } = (await request.json()) as { messages: ChatMessage[] };
@@ -35,10 +35,10 @@ export async function POST(request: Request) {
         }
         if (event === "error") throw new Error(`파이프라인 오류: ${payload.type} ${payload.detail}`);
         if (event === "result") {
-          // The skeleton agent sends only { answer }; table cards appear once a result carries candidates (T3-01)
-          if ("candidates" in payload) writer.write({ type: "data-result", id: "result", data: payload as SearchResult });
+          const result = payload as SearchResult;
+          writer.write({ type: "data-result", id: "result", data: result });
           writer.write({ type: "text-start", id: "answer" });
-          writer.write({ type: "text-delta", id: "answer", delta: payload.answer });
+          writer.write({ type: "text-delta", id: "answer", delta: result.answer });
           writer.write({ type: "text-end", id: "answer" });
         } else {
           writer.write({ type: "data-node", id: `node-${event}`, data: { name: event, seconds: payload.seconds } });

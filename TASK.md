@@ -11,7 +11,7 @@ Phase 0·1 태스크는 실전 1 레포(`vendor/phase1/TASK.md`), Phase 2는 실
 
 목표 질문: "찾아서, 계산해서, 그려줘" · 핵심 지표: 툴·파라미터 정확도, 최종 수치 정확도, 멀티턴 성공률, 요청당 비용·지연
 
-- [x] **T3-00** 레포 초기 세팅 — 실전 1·2 submodule(`vendor/phase1`, `vendor/phase2`), 하네스(skill·hook·agents·AGENTS.md·CLAUDE.md) 팀 공유 이식, 기술 스택 골격(FastAPI·LangGraph·Next.js·Docker Compose·CI), `scripts/verify.sh` OK → 결과: 인프라 태스크라 지표 없음, 질문→그래프→SSE 경로 0 → 1, `scripts/verify.sh` OK (pytest 65 pass: 골격 4 + 실전 2에서 복사한 평가 모듈 `evals/` 61, 하네스·프론트 타입체크 통과). Docker 이미지 빌드(backend 884MB)·compose 5서비스 healthy·frontend→backend→HCX SSE 확인
+- [x] **T3-00** 레포 초기 세팅 — 실전 1·2 submodule(`vendor/phase1`, `vendor/phase2`), 하네스(skill·hook·agents·AGENTS.md·CLAUDE.md) 팀 공유 이식, 기술 스택 골격(FastAPI·LangGraph·Next.js·Docker Compose·CI), `scripts/verify.sh` OK → 결과: 인프라 태스크라 지표 없음, 질문 → supervisor → 실전 2 검색 그래프 → SSE 경로 0 → 1, `scripts/verify.sh` OK (pytest 66 pass: 골격 5 + 실전 2에서 복사한 평가 모듈 `evals/` 61, 하네스·프론트 타입체크 통과). Docker compose 5서비스 healthy·frontend→backend SSE 확인(1노드 골격 기준). 실전 2 검색 실연결은 Docker 복구 후 확인
 - [ ] **T3-01** 툴 래핑 — `search_tables`, `summarize_stat`, `make_chart`를 툴 스키마로 등록 (실전 1·2 모듈 재사용, 검증기 유지)
 - [ ] **T3-02** 차트 모듈 — 시간 변화=꺾은선, 항목 비교=막대, 구성비=원형·누적막대 자동 선택, Vega-Lite spec (산출물④)
 - [ ] **T3-03** 단일 에이전트 루프 — LLM이 툴 선택·순서 결정, 1턴 시나리오 동작

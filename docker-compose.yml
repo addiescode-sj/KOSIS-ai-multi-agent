@@ -19,6 +19,8 @@ services:
       # Provided data stays outside the image (security pledge). Phase 2 reads vendor/phase2/data (fixed path).
       - ./data:/app/data:ro
       - ./data:/app/vendor/phase2/data:ro
+      # Embedding model weights, downloaded on the first search and kept across restarts
+      - hf-cache:/root/.cache/huggingface
     ports:
       - "8000:8000"
     depends_on:
@@ -101,3 +103,4 @@ services:
 volumes:
   chroma-data:
   postgres-data:
+  hf-cache:
