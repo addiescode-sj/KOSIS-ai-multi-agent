@@ -38,6 +38,7 @@ from evals.schemas import (AGENT_SCENARIOS, DATASETS, GOLDEN, QUERY_GOLDEN, ROOT
                            load_items, load_jsonl)
 
 REPORTS = ROOT / "evals" / "reports"
+MOCK_NOTE = " · **llm mock: 경로 확인용, 점수 아님** (모델 대신 코드 템플릿이 답함)"
 CALC_GOLDEN = DATASETS / "calculation_golden.jsonl"
 POOL = DATASETS / "retrieval_pool.csv"
 METADATA_SAMPLE = DATASETS / "metadata_sample.jsonl"  # L0 accuracy sample, labelled by the evaluation side (§3.3)
@@ -401,13 +402,14 @@ def run_l3(args) -> tuple[list[dict], dict, str]:
     from evals.runners import stat as runner
 
     items: list[CalcItem] = calc_items(args.calc_golden)
-    answers = runner.read_run(args.from_run, items) if args.from_run else runner.run(items, args.interval)
+    answers = runner.read_run(args.from_run, items) if args.from_run else runner.run(items, args.interval, args.llm)
     rows = grade(items, answers)
     verdicts, errors, lines = verdict_table(rows)
     summary = {"verdicts": verdicts, "errors": dict(errors)}
     report = "\n".join([
         f"# L3 calculation — {args.stage}", "",
-        f"- 답: {'과거 실행 재채점 ' + str(args.from_run) if args.from_run else 'summarize_stat 호출'} · 정답 표 고정(oracle)", "",
+        f"- 답: {'과거 실행 재채점 ' + str(args.from_run) if args.from_run else 'summarize_stat 호출'} · 정답 표 고정(oracle)"
+        + (MOCK_NOTE if args.llm == "mock" and not args.from_run else ""), "",
         *lines, "",
         "- 오류 유형: " + (", ".join(f"{k} {v}" for k, v in errors.most_common()) or "없음"),
     ]) + "\n"
@@ -425,7 +427,7 @@ def run_e2e(args) -> tuple[list[dict], dict, str]:
     # §6.3: the L1 slots judge the table and the L2 labels the 연도·지역, linked by qid (golden v2 shares qids)
     l1 = {i.qid: i for i in load_items(args.golden)} if args.golden.exists() else {}
     l2 = {q.qid: q for q in load_jsonl(args.query_golden, QueryItem)} if args.query_golden.exists() else {}
-    raw = e2e.run(runner.build(args.retriever, [], args.k), items, args.k, args.interval)
+    raw = e2e.run(runner.build(args.retriever, [], args.k), items, args.k, args.interval, args.llm)
     rows = [{**g, **e2e.locate(item, a, g["verdict"], l1.get(item.qid)), **e2e.template_slots(a["answer"], l2.get(item.qid)),
              "error": a["error"], "no_period_item": "no_period" in item.allowed_reasons}
             for item, a, g in zip(items, raw, grade(items, raw))]
@@ -445,7 +447,8 @@ def run_e2e(args) -> tuple[list[dict], dict, str]:
     n = len(rows) or 1
     report = "\n".join([
         f"# L4 end to end — {args.stage}", "",
-        f"- retriever `{args.retriever}`, k={args.k} · 검색 1위 표로 summarize_stat 호출 · L3와 같은 채점기(정답 표 기준)", "",
+        f"- retriever `{args.retriever}`, k={args.k} · 검색 1위 표로 summarize_stat 호출 · L3와 같은 채점기(정답 표 기준)"
+        + (MOCK_NOTE if args.llm == "mock" else ""), "",
         *lines, "",
         f"- 검색 1위가 정답 표: {len(right)}/{len(rows)} ({len(right) / n:.1%})",
         f"  - 맞힌 표에서 PASS {split['right'].get('PASS', 0)}/{len(right)} · 틀린 표에서 PASS {split['wrong'].get('PASS', 0)}/{len(rows) - len(right)}",
@@ -535,7 +538,8 @@ def run_agent(args) -> tuple[list[dict], dict, str]:
     return rows, s, report
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None) -> Path:
+    """Run one layer; returns the run folder (evals.suite reads it)."""
     parser = argparse.ArgumentParser(description="Run one evaluation layer (L1 retrieval, L3 calculation, e2e).")
     parser.add_argument("--layer", choices=("l0", "l1", "l2", "ablation", "l012", "l3", "e2e", "agent"), required=True)  # e2e: first part of L4
     parser.add_argument("--stage", required=True, help="what this run measures, e.g. T2-04-bm25")
@@ -552,6 +556,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--calc-golden", type=Path, nargs="+", default=[CALC_GOLDEN],
                         help="l3, e2e: golden files, e.g. calculation_golden.jsonl calculation_golden_diverse.jsonl")
     parser.add_argument("--interval", type=float, default=0.0, help="l3, e2e: seconds between model calls")
+    parser.add_argument("--llm", choices=("hcx", "mock"), default="hcx",
+                        help="l3, e2e: hcx (HCX_API_KEY, costs) | mock (no call: checks the path, scores are not scores; not in ops_history)")
     parser.add_argument("--scenarios", type=Path, default=AGENT_SCENARIOS, help="agent: multi-turn scenarios (T3-05)")
     parser.add_argument("--agent", help="agent: module:function returning a compiled graph, run live")
     parser.add_argument("--oracle", action="store_true", help="agent: grade the perfect run (self-check, all 1.000)")
@@ -582,6 +588,7 @@ def main(argv: list[str] | None = None) -> int:
     else:
         op = ops.summarize(rows)
         report += ops_section(op)
+    live_llm = args.layer in ("l3", "e2e") and not args.from_run  # runs that call summarize_stat now
     run_id = f"{dt.datetime.now():%Y%m%d-%H%M%S}-{args.stage}"
     out = REPORTS / run_id
     out.mkdir(parents=True)
@@ -605,12 +612,15 @@ def main(argv: list[str] | None = None) -> int:
         "summary": summary,
         "ops": op,
         "agent": (args.agent or ("oracle" if args.oracle else "from-run")) if args.layer == "agent" else None,
+        "llm": args.llm if live_llm else None,
         "jaeger": {"ui": trace.JAEGER_UI, "service": "kosis-agent-evals" if args.layer == "agent" else "kosis-evals"} if exported else None,
     }
     (out / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
     (out / "ops.json").write_text(json.dumps(op, ensure_ascii=False, indent=2), encoding="utf-8")
     (out / "report.md").write_text(report, encoding="utf-8")
-    if args.layer == "l012":
+    if args.llm == "mock" and live_llm:
+        pass  # a mock run checks the path; its numbers stay out of the committed history
+    elif args.layer == "l012":
         for name, o in op.items():
             ops.append_history(run_id, name, args.stage, {"l0": "registry", "l2": "parse_query"}.get(name, args.retriever), o)
     else:
@@ -625,8 +635,8 @@ def main(argv: list[str] | None = None) -> int:
     report_html.write(out)  # every layer (T3-20); l0 / l2 / ablation show report.md as HTML, dedicated charts when they are presented
     print(report)
     print(f"-> {out}")
-    return 0
+    return out
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    main()

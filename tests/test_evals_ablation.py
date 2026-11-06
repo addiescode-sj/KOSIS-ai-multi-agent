@@ -167,11 +167,12 @@ def test_l012_runs_every_layer_once_and_keeps_ops_per_layer(monkeypatch, tmp_pat
     monkeypatch.setattr(run_eval, "run_l2", fake("l2", 5.0))
     monkeypatch.setattr(run_eval, "REPORTS", tmp_path)
     monkeypatch.setattr(ops, "append_history", lambda run_id, layer, *a: seen.append(("history", layer)))
-    assert run_eval.main(["--layer", "l012", "--stage", "t"]) == 0
+    run = run_eval.main(["--layer", "l012", "--stage", "t"])
     assert [s for s in seen if s[0] != "history"] == [("l0", "pred", "dev"), ("l1-gold", "gold", "dev"),
                                                       ("l1-pred", "pred", "dev"), ("l2", "pred", "dev")]
     assert [s[1] for s in seen if s[0] == "history"] == ["l0", "l1-gold", "l1-pred", "l2"]
     [out] = tmp_path.iterdir()
+    assert out == run  # main returns the run folder (T3-21)
     m = json.loads((out / "manifest.json").read_text(encoding="utf-8"))
     assert set(m["summary"]) == set(m["ops"]) == {"l0", "l1-gold", "l1-pred", "l2"} and set(m["golden"]) == {"l0·l1", "l2"}
     assert m["ops"]["l2"]["latency_ms"]["p50"] == 5.0  # not pulled down by the 0.0 rows of the other layers
