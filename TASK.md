@@ -28,4 +28,5 @@ Phase 0·1 태스크는 실전 1 레포(`vendor/phase1/TASK.md`), Phase 2는 실
 - [ ] **T3-14** ⭐ 전체 기능 테스트 결과 (산출물⑥) — `docs/final_eval.md`
 - [ ] **T3-15** 최종 시연 자료 (산출물⑧) — 문제·접근, 아키텍처, 시연, 실데이터 검증, 개선 방향
 - [x] **T3-17** Fetch & Normalize 입출력 계약 고정 (Linear KOS-143, M1 11/9, 임도유) — 표 ID → tidy DataFrame 계약 문서·Pydantic 스키마, 규칙 4개(셀 키 중복·단위 미상·5년 주기 보존·큰 표 읽기)와 결측 기호·계/소계 규칙, 같은 표본 200표 전→후(로드 성공률·단위 미상 표 비율·주기 손실 표 수·대용량 표 처리), 규칙별 pytest → 결과: 표본 200표 로드 195 → 200 (clean 196·모호 셀 표시 3·조건 필요 1), 메모리 부족 1 → 0, 5년 주기 손실 33 → 0, 단위 미상 표 38 → 38(지어내지 않음, 출처 추적), 실전 1과 값 대조 20/20 (`src/kosis_data/fetch.py`, `docs/data-contract.md`, `plans/T3-17.md`)
+- [x] **T3-20** ⭐ 평가 리포트 HTML 전 계층 — 모든 `run_eval` 실행(l0·l1·l2·ablation·l012·l3·e2e·agent)이 report.html을 남긴다: 평가 결과, 운영 지표(지연·토큰·비용·실패율), trace별 측정(턴·문항마다 span 경로·지연·Jaeger 링크)을 읽는 법과 함께 → 결과: report.html 계층 3/8 → 8/8, trace 화면 계층 3 → 4(agent: 대화별 화면 + 턴별 span 워터폴·Jaeger 링크), 기존 l012 run 렌더 실패 → 성공, pytest 78 → 82 (`evals/report_html.py`, `plans/T3-20.md`)
 - [ ] **T3-16** (선택) PDF 보고서·차트 옵션 지정·분석 결과 저장 — 필수 산출물을 모두 끝낸 뒤에만

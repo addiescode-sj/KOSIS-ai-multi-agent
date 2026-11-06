@@ -571,6 +571,8 @@ def main(argv: list[str] | None = None) -> int:
     elif "search_failures" in summary:  # L1 over the LangGraph search
         exported = trace.export(rows, args.layer, args.retriever)
         report += search_failure_section(rows, exported)
+    elif args.layer == "agent":  # live spans already went to OTLP (runners.agent) when the endpoint is set
+        exported = bool(args.agent and os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT"))
     if owners := owner_section(args.layer, rows, summary):  # right under the title: the first thing a teammate reads
         head, _, rest = report.partition("\n\n")
         report = f"{head}\n\n{owners}{rest}"
@@ -602,7 +604,8 @@ def main(argv: list[str] | None = None) -> int:
         "from_run": str(args.from_run) if args.from_run else None,
         "summary": summary,
         "ops": op,
-        "jaeger": {"ui": trace.JAEGER_UI, "service": "kosis-evals"} if exported else None,
+        "agent": (args.agent or ("oracle" if args.oracle else "from-run")) if args.layer == "agent" else None,
+        "jaeger": {"ui": trace.JAEGER_UI, "service": "kosis-agent-evals" if args.layer == "agent" else "kosis-evals"} if exported else None,
     }
     (out / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
     (out / "ops.json").write_text(json.dumps(op, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -619,8 +622,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.layer == "agent":
             target = args.agent or ("oracle" if args.oracle else "from-run")
         ops.append_history(run_id, args.layer, args.stage, target, op)
-    if args.layer in ("l1", "l3", "e2e"):  # ponytail: l0/l2/ablation write report.md only; add charts when they are presented
-        report_html.write(out)
+    report_html.write(out)  # every layer (T3-20); l0 / l2 / ablation show report.md as HTML, dedicated charts when they are presented
     print(report)
     print(f"-> {out}")
     return 0

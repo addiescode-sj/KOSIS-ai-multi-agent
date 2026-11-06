@@ -152,6 +152,8 @@ def test_live_run_reads_turns_from_spans_and_links_verdicts():
     assert first["calls"][1]["result"]["outcome"] == "answered"
     assert (first["llm_calls"], first["input_tokens"], first["output_tokens"]) == (1, 7, 3) and first["answer"] == "2024년 100명"
     assert first["latency_ms"] > 0 and len(first["trace_id"]) == 32
+    kinds = {s["kind"]: s for s in first["spans"]}  # T3-20 waterfall: root, graph node, tools, chat model
+    assert set(kinds) == {"turn", "node", "tool", "llm"} and kinds["turn"]["depth"] == 0 and kinds["tool"]["depth"] == 2
     rows = [{**row, "run": run_no} for (_, run_no), recs in records.items() for row in agent.grade_conversation(s, recs, CALC, cells_of)]
     assert all(r["passed"] for r in rows), [r["errors"] for r in rows]
     assert agent.aggregate(rows)["pass^k"] == 1.0

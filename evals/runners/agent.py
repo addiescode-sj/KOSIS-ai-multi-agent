@@ -75,7 +75,26 @@ def turn_record(spans: list[ReadableSpan], answer: str, error: str | None) -> di
         "model": ",".join(models) or None,
         "failed": error is not None,
         "trace_id": format(root.context.trace_id, "032x"), "span_id": format(root.context.span_id, "016x"),
+        "spans": span_rows(root, mine),
     }
+
+
+def span_rows(root: ReadableSpan, spans: list[ReadableSpan]) -> list[dict]:
+    """The turn's spans for the report waterfall: name, kind, start and length (ms from the root's start), status, depth."""
+    parent = {s.context.span_id: s.parent.span_id if s.parent else None for s in spans}
+
+    def depth(span_id: int) -> int:
+        n = 0
+        while (span_id := parent.get(span_id)) in parent:
+            n += 1
+        return n
+
+    kind = lambda name: ("turn" if name == ROOT_SPAN else "tool" if name.startswith(TOOL_PREFIX)  # noqa: E731
+                         else "llm" if name.startswith(CHAT_PREFIX) else "node")
+    return [{"name": s.name, "kind": kind(s.name), "start_ms": (s.start_time - root.start_time) / 1e6,
+             "duration_ms": (s.end_time - s.start_time) / 1e6, "depth": depth(s.context.span_id),
+             "status": "error" if s.status.status_code == StatusCode.ERROR else "ok"}
+            for s in sorted(spans, key=lambda s: s.start_time)]
 
 
 def _answer(state: Any) -> str:

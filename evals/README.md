@@ -57,7 +57,7 @@ uv run python -m evals.run_eval --layer l3 --stage <이름> --interval 5 --calc-
 | 파일 | 내용 |
 |---|---|
 | `report.md` | 판정표, 오류 유형, **실패 단계 (trace)** 표, 운영 지표 |
-| `report.html` | 같은 내용을 차트로 보여준다. 오류 유형 설명, 실패 문항별 span 경로, Jaeger 링크 포함 |
+| `report.html` | **모든 계층**(T3-20). 맨 위 "읽는 법", 결과, 운영 지표(지연·토큰·비용·실패율·실행 간 추이), 행별 결과(주의 행 먼저, 200행까지). l1·l3·e2e는 차트·오류 유형·실패 span 경로·Jaeger 링크, agent는 대화별 화면(턴마다 툴 칩·답·판정)과 턴별 span 워터폴, l0·l2·ablation·l012는 report.md를 HTML로. 다시 그리기: `python -m evals.report_html --run <run 폴더>` |
 | `results.jsonl` | 문항별 행. `errors`, `spans`, `failure`, `trace_id`가 들어 있다 |
 | `manifest.json` | 골든·데이터 해시, git, 요약(`summary.failures` = 단계별 건수) |
 
