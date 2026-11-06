@@ -4,10 +4,142 @@
 여기서는 **실패한 문항이 어느 단계에서 왜 실패했는지**(T2-15, `trace.py`)를 읽고 고치는 방법을 정리한다.
 설계 배경과 옵션 비교는 [plans/T2-15.md](../plans/T2-15.md)에 있다.
 
+## 0. 테스트 방법 — 준비부터 종단 간까지 (T3-21)
+
+처음 평가를 돌리는 사람은 이 절만 따라 하면 된다. 아래 절(1~7)은 계층별 세부 규칙이다.
+
+### 0.1 계층 한눈에
+
+| run (스위트 이름) | 계층 | 무엇을 재나 | 필요한 것 | 비용 |
+|---|---|---|---|---|
+| `l0` | L0 | 메타데이터 채움률·미매핑 | 데이터 | 0 |
+| `l0-load` | L0 | + Chroma 컬렉션 적재 일치 | 데이터·Chroma | 0 |
+| `l1-bm25-record` · `l1-v2-bm25-record` | L1 | BM25 검색 (골든 v1 · v2) | 데이터 | 0 |
+| `l1-hybrid` | L1 | 임베딩 + BM25 + 조건 필터 | 데이터·Chroma | 0 |
+| `l1-staged` | L1 | + 1차 리랭커 | 데이터·Chroma·`RERANK_CKPT` | 0 (CPU 시간) |
+| `l1-graph` | L1 | 실제 LangGraph 검색 그래프 | 데이터·Chroma·`RERANK_CKPT` | 0 |
+| `ablation` | L1 | 슬롯 필터 on/off별 검색 (dev) | 데이터·Chroma | 0 |
+| `l2-v1` · `l2-v2` | L2 | 질의 파서(규칙) | 데이터 | 0 |
+| `l3` | L3 | 정답 표를 준 채로 `summarize_stat` 실호출 → Parquet 대조 | 데이터·HCX 키 | **HCX 90문항** (재시도 포함 약 135회로 추정) |
+| `e2e` | L4 | 검색 그래프 1위 표 → `summarize_stat` | 데이터·Chroma·`RERANK_CKPT`·HCX 키 | **HCX 90문항 + 2차 리랭커** |
+| `agent` | 종합 | 멀티턴 시나리오 → 에이전트 → 툴 (§6) | `--agent`·시나리오 파일 | 에이전트가 부르는 LLM |
+
+- L3·e2e는 `--llm mock`으로 **비용 없이 경로만** 확인할 수 있다. mock은 모델 대신 코드 템플릿이 답해서 점수가 그럴듯하게 나온다(예: L3 PASS 85/90).
+  **점수로 쓰지 않는다**: 리포트에 "llm mock: 경로 확인용, 점수 아님"이 붙고, `ops_history.jsonl`에는 기록되지 않는다.
+- "e2e"는 단일턴 파이프라인(질문 → 검색 1위 표 → 계산)이다. 종합 프로젝트의 대화형 종단 간 평가는 `agent`다(에이전트 T3-03·04와 시나리오 T3-05가 생기면 돈다).
+
+### 0.2 준비 (처음 한 번)
+
+```bash
+cd ~/work/KOSIS-ai-multi-agent                      # 반드시 레포 루트에서 (PYTHONPATH의 . 과 src 는 상대 경로)
+git submodule update --init                         # vendor/phase1·phase2 를 고정 커밋으로
+uv sync --group embed --group ragas                 # 임베딩·리랭커(torch) + Ragas. 한 그룹만 sync하면 다른 그룹이 지워진다
+export PYTHONPATH=.:src:vendor/phase2/src:vendor/phase1:vendor/phase1/src
+```
+
+- 데이터: `data/`(gitignored)에 `tables.jsonl`·`values/`가 있어야 한다. 이 PC에서는 `data -> ../KOSIS-ai-RAG/data` 링크, `vendor/phase2/data -> ../../data` 링크.
+  골든 파일은 `evals/datasets/`(gitignored).
+- `data/sigungu.json`이 없으면 시군구가 든 질문의 regions를 못 읽는다(점검에서 ⚠). 만들기: `python -m kosis_rag_build.cli sigungu --data-dir <제공 데이터>`.
+  만들면 결과가 바뀌므로, 없이 만든 기준 run과는 비교하지 말고 새 기준을 다시 잡는다.
+- Chroma(검색 계층): Docker Desktop을 켜고 **실전 2 레포의** chroma를 띄운다(임베딩이 들어 있는 볼륨은 실전 2 쪽).
+  ```bash
+  (cd ~/work/KOSIS-ai-RAG && docker compose up -d chroma)    # localhost:8001
+  ```
+  이 레포 compose의 chroma는 포트가 같고 볼륨이 비어 있어 동시에 띄우지 않는다.
+- 셸 값: 평가 코드는 `.env`를 읽지 않는다(실전 2 T2-41 이후 모듈도 안 읽음). 셸에 올린다.
+  ```bash
+  set -a; source .env; set +a        # CHROMA_COLLECTION, EMBED_CKPT, RERANK_CKPT, TEXT_FORMAT, HCX_API_KEY ...
+  ```
+  이름과 기본값은 위 "검색 설정은 셸 환경변수로" 절. 값이 없으면 기본값으로 **조용히** 돈다 → 스위트 사전 점검으로 먼저 확인한다.
+- Windows: `set PYTHONUTF8=1`, `export` 대신 `set`, `source` 대신 값을 직접 `set`.
+
+### 0.3 권장 순서
+
+1. **오프라인 테스트**: `bash scripts/verify.sh` (pytest·타입체크, 서버·키 없음).
+2. **경로 확인 (비용 0)**: `uv run python -m evals.suite --stage <접두어>-mock --llm mock --baseline <기준 접두어>`
+   — 준비 안 된 run은 이유와 함께 건너뛴다. 점검 표에서 ✕를 없앤 뒤 다음으로.
+3. **실측 (HCX)**: `uv run python -m evals.suite --stage <접두어> --baseline <기준 접두어>` — 기준 run과 지표 비교 표가 나온다.
+4. **에이전트**: `... --only agent --agent <module:function> --scenarios <시나리오.jsonl> --repeat 3` (pass^3).
+
+`<접두어>`는 `<TASK-ID>-<무엇>` (예: `T3-07-react`). 각 run의 stage는 `<접두어>-<run 이름>`이 되어 `evals/reports/<시각>-<stage>/`에 저장된다.
+
+### 0.4 한 번에 돌리기 — `python -m evals.suite`
+
+```bash
+uv run python -m evals.suite --stage T3-07-react --llm mock --baseline T3-06-parity          # 경로 확인
+uv run python -m evals.suite --stage T3-07-react --baseline T3-06-parity                     # 실측
+uv run python -m evals.suite --stage T3-07-react --only l1-graph e2e                          # 일부만
+uv run python -m evals.suite --stage T3-07-react --baseline evals/reports/20261105-170435-KOS-117-e2e-graph-staged-hcx   # 기준 run 폴더 직접
+```
+
+| 옵션 | 뜻 |
+|---|---|
+| `--stage` | 모든 run stage의 접두어 (필수) |
+| `--llm hcx\|mock` | L3·e2e 모델. mock이면 e2e 검색은 2차 LLM 없는 `graph:staged`, 실측은 `graph:staged-hcx` |
+| `--baseline` | 비교할 기준: stage 접두어(여럿 가능) 또는 run 폴더 |
+| `--only` | 돌릴 run 이름만 (0.1 표의 이름) |
+| `--interval` | L3·e2e 문항 사이 대기(초). 기본 hcx 5, mock 0 |
+| `--agent`·`--scenarios`·`--repeat` | agent run (§6) |
+
+- 순서: 0.1 표 위에서 아래로. 한 run이 실패해도(예외·`SystemExit`) 기록하고 다음 run으로 간다. 실패가 있으면 종료 코드 1(건너뜀은 실패가 아님).
+- 결과: `evals/reports/<시각>-<접두어>-suite/`의 `suite.html`(읽는 법, run별 report.html 링크, 점검·실행·비교 표), `suite.md`, `suite.json`.
+- **기준 run은 조건이 같은 것만** 고른다: 계층·검색기·골든 해시·split·k·재채점 여부·llm(옛 실측 run은 hcx)·L0 적재 확인 여부.
+  같은 접두어 안에서 조건이 같은 가장 최근 run이 기준이고, 없으면 "조건 같은 기준 run 없음". mock run은 hcx run과 절대 비교하지 않는다.
+- 서버·키 없이 이 PC에서 확인한 실행: `T3-21-suite-mock` — 6 run 실행(l0·l1 BM25 2개·l2 2개·l3 mock), 7 run은 Chroma·체크포인트·에이전트가 없어 건너뜀. 기준(`T3-06-parity`)이 있는 5 run은 지표가 모두 같았고, l3 mock은 조건 같은 기준이 없다(mock은 hcx와 비교하지 않음).
+
+### 0.5 계층 하나만 돌리기 — `python -m evals.run_eval`
+
+스위트가 부르는 것과 같은 명령이다. 결과 폴더·report.html·ops_history 기록은 똑같이 생긴다.
+
+```bash
+S=T3-07-react
+uv run python -m evals.run_eval --layer l0 --retriever chroma --stage $S-l0-load
+uv run python -m evals.run_eval --layer l1 --retriever bm25-record --stage $S-l1-bm25-record          # oracle | bm25-catalog | bm25-record | chroma | 프리셋 | graph:<프리셋>
+uv run python -m evals.run_eval --layer l1 --retriever graph:staged --stage $S-l1-graph
+uv run python -m evals.run_eval --layer ablation --retriever chroma --split dev --stage $S-ablation
+uv run python -m evals.run_eval --layer l2 --split all --stage $S-l2-v1
+uv run python -m evals.run_eval --layer l3 --llm mock --stage $S-l3-mock                              # 경로 확인
+uv run python -m evals.run_eval --layer l3 --interval 5 --stage $S-l3                                 # HCX
+uv run python -m evals.run_eval --layer l3 --from-run <과거 L3 run 폴더> --stage $S-l3-regrade        # 저장된 답 재채점, 호출 0
+uv run python -m evals.run_eval --layer e2e --retriever graph:staged-hcx --interval 5 --stage $S-e2e
+uv run python -m evals.run_eval --layer agent --oracle --scenarios <시나리오.jsonl> --split all --stage $S-agent-oracle   # 채점기 자기검증
+```
+
+L1 프리셋(`retrieval.STAGED`): `hybrid` · `hybrid+cond` · `staged` · `clova-only` · `staged-clova` · `hybrid+cond-hcx` · `staged-hcx` · `hybrid+cond-gpt`. `graph:`를 앞에 붙이면 같은 설정을 LangGraph 검색 그래프로 돌린다.
+골든 v2는 `--golden evals/datasets/retrieval_golden_v2.jsonl --pool evals/datasets/retrieval_pool_v2.csv` / `--query-golden evals/datasets/query_golden_v2.jsonl`.
+
+### 0.6 결과 읽기
+
+- run 폴더: `report.html`(맨 위 읽는 법 → 결과 → 실패 단계·trace → 운영 지표·추이 → 행별 결과), `report.md`, `results.jsonl`(질문 원문 포함, git에 안 올림), `manifest.json`(조건·해시), `ops.json`.
+- 운영 지표: 지연 p50·p95, 입력·출력 토큰, 비용(`evals/pricing.json` 단가), 실패율. 실행 간 추이는 `ops_history.jsonl`(집계만, 커밋함).
+- trace: l1(그래프)·l3·e2e는 문항별 span 경로, agent는 턴별 span 워터폴. `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317`과 `docker compose --profile obs up -d jaeger`면 Jaeger 링크가 생긴다(아래 "Jaeger로 보기").
+- 스위트: `suite.html`의 비교 표에서 차이(이번 − 기준)를 본다. "무엇을 바꿔서 몇 → 몇"은 이 표에서 뽑는다.
+
+### 0.7 코드를 고친 뒤 결과가 같은지 확인하기 (패리티)
+
+1. 고치기 전에 같은 접두어로 스위트를 돌려 기준을 만든다(예: `--stage T3-xx-before`).
+2. 고친 뒤 `--stage T3-xx-after --baseline T3-xx-before`. 차이가 0이 아니면 고친 코드가 결과를 바꾼 것이다.
+3. 이미 고친 뒤라면, 고치기 전 커밋을 `git worktree add`로 따로 꺼내 같은 평가를 돌려 비교한다(T3-06에서 이렇게 확인: 이 레포 `4804bdc` + phase2 `484bd06` + phase1 `e248a45`).
+- 기준과 조건(골든 해시·`tables.jsonl` 해시·셸 값·sigungu.json 유무)이 다르면 숫자 차이가 수정 탓인지 알 수 없다. manifest의 `golden`·`source_snapshot`을 먼저 맞춘다.
+
+### 0.8 자주 나는 오류
+
+| 증상 | 원인 → 해결 |
+|---|---|
+| `ModuleNotFoundError: No module named 'kosis_agent'` (`evals/__init__.py`) | `PYTHONPATH` 미설정이거나 레포 루트가 아닌 곳에서 실행 → 0.2의 export, 루트에서 실행 |
+| `No module named 'kosis_rag.query'` 같은 옛 이름 | 서브모듈이 옛 커밋 → `git submodule update` |
+| 점검 `Chroma localhost:8001 응답 없음` | Docker 꺼짐 / 실전 2 chroma 안 띄움 → 0.2 |
+| `ValueError: no collection` · 점검 `CHROMA_COLLECTION 미설정` | 셸에 값 없음 → `set -a; source .env; set +a` |
+| `LLMKeyMissing` · 점검 `HCX_API_KEY 미설정` | 셸에 키 없음, 또는 `--llm mock`으로 경로만 확인 |
+| 프로세스가 `exit 137`로 죽음 | 큰 Parquet 표(10MB 넘는 7개) 셀을 읽다 메모리 부족 → 다른 프로그램을 닫거나 그 문항 제외(별도 이슈) |
+| `uv sync` 뒤 torch가 없어짐 | 그룹 하나만 sync함 → `uv sync --group embed --group ragas` |
+| L3 mock 점수가 높음 | 정상: 코드 템플릿 답. 점수로 쓰지 않는다 |
+| 포트 8001 충돌 | 이 레포 compose의 chroma와 실전 2 chroma를 같이 띄움 → 하나만 |
+
 ## 1. 실행
 
 ```bash
-export PYTHONPATH=.:src:vendor/phase1:vendor/phase1/src   # 없으면 ModuleNotFoundError: kosis_ai
+export PYTHONPATH=.:src:vendor/phase2/src:vendor/phase1:vendor/phase1/src   # 없으면 ModuleNotFoundError: kosis_ai
 
 uv run python -m evals.run_eval --layer l3 --stage <이름> --from-run evals/reports/T1-27-run   # 과거 run 재채점, 모델 호출 0
 uv run python -m evals.run_eval --layer l3 --stage <이름> --interval 5                         # summarize_stat 실시간 호출
@@ -57,9 +189,17 @@ uv run python -m evals.run_eval --layer l3 --stage <이름> --interval 5 --calc-
 | 파일 | 내용 |
 |---|---|
 | `report.md` | 판정표, 오류 유형, **실패 단계 (trace)** 표, 운영 지표 |
-| `report.html` | 같은 내용을 차트로 보여준다. 오류 유형 설명, 실패 문항별 span 경로, Jaeger 링크 포함 |
+| `report.html` | **모든 계층**(T3-20). 맨 위 "읽는 법", 결과, 운영 지표(지연·토큰·비용·실패율·실행 간 추이), 행별 결과(주의 행 먼저, 200행까지). l1·l3·e2e는 차트·오류 유형·실패 span 경로·Jaeger 링크, agent는 대화별 화면(턴마다 툴 칩·답·판정)과 턴별 span 워터폴, l0·l2·ablation·l012는 report.md를 HTML로. 다시 그리기: `python -m evals.report_html --run <run 폴더>` |
 | `results.jsonl` | 문항별 행. `errors`, `spans`, `failure`, `trace_id`가 들어 있다 |
 | `manifest.json` | 골든·데이터 해시, git, 요약(`summary.failures` = 단계별 건수) |
+
+### 검색 설정은 셸 환경변수로 (실전 2 T2-41 이후)
+
+실전 2 모듈은 `.env`도 환경도 읽지 않는다. `evals/config.py`가 셸 변수로 `IndexSpec`·`SearchOptions`를 만든다(이름·기본값은 실전 2 `search_config_from_shell`과 같음, 데이터 경로는 이 레포 `data/`).
+**`.env`는 읽지 않는다.** 값이 없으면 기본값(`localhost:8001`, 컬렉션 없음, stage 2 끔)으로 조용히 돈다. 옛 결과와 비교하려면 같은 값을 셸에 둔다.
+
+`CHROMA_HOST` `CHROMA_PORT` `CHROMA_COLLECTION` `EMBED_CKPT` `RERANK_CKPT`(staged*) `TEXT_FORMAT` `HQ_BUILD`(비우면 끔) · HCX 프리셋·L3 HCX는 `HCX_API_KEY`, gpt 프리셋은 `OPENAI_API_KEY`.
+L2·ablation(`--slot-source pred`)은 `data/sigungu.json`을 `parse_query(sigungu=…)`에 넘긴다(넘기지 않으면 시군구 질문의 `regions`만 조용히 떨어진다).
 
 ### Jaeger로 보기 (선택)
 
@@ -171,7 +311,44 @@ e2e에서는 1위 표가 틀리면 위 오류와 상관없이 1번 규칙(검색
 예시 (T1-27 재채점, `reports/20261031-200757-T2-15-regrade`): non-PASS 4건이 모두 `질문 이해 실패 @ analyze.rules`로 판정됐다.
 그중 S-EDG-09의 경로는 `verify✕ → compose → verify✕ → template✕`로, 계획 오류가 문장 단계까지 번졌다.
 
-## 6. 규칙을 바꿀 때
+## 6. 에이전트 지표 (`--layer agent`, T3-06 · KOS-120)
+
+멀티턴·멀티쿼리 대화를 **툴 호출 기록**으로 채점한다. LLM 판정은 쓰지 않는다. 아키텍처(ReAct·Plan-and-Execute·멀티에이전트, T3-07~10)를 바꿔도 같은 채점기를 쓴다.
+
+```bash
+uv run python -m evals.run_eval --layer agent --stage T3-06-oracle --oracle --split all              # 자기검증: 모든 비율 1.000
+uv run python -m evals.run_eval --layer agent --stage <이름> --agent <module:function> --repeat 3    # 실행, pass^3
+uv run python -m evals.run_eval --layer agent --stage <이름> --from-run evals/reports/<run>          # 과거 실행 재채점
+```
+
+- 시나리오: `evals/datasets/agent_scenarios.jsonl` (T3-05, `--scenarios`로 바꿈). 계약은 `evals/schemas.py`의 `AgentScenario`.
+  턴마다 `expect`에 부를 툴(순서대로, 채점할 인자 필드만), 턴이 끝날 표(`table_key`), 거절 여부(`refuse`), L3 문항(`calc_qid`)을 적는다.
+  한 턴에 여러 요청("찾아서, 계산해서, 그려줘")은 `tools`에 여러 개를 적고, "이거"·"그 표"는 다음 턴의 `table_key`로 채점된다.
+- 실행 기록: 턴마다 그래프를 `thread_id = <sid>#<run>`으로 `invoke`하고, 실행 중 열린 OTel span(`kosis_agent.tracing.LiveSpans`)에서 툴 이름·인자·결과·지연·LLM 호출·토큰을 읽는다.
+  span 이름·속성은 OTel GenAI 규약 그대로다: `invoke_agent`(`gen_ai.conversation.id`, `kosis.turn.index`) · `execute_tool <name>`(`gen_ai.tool.name`, `gen_ai.tool.call.arguments`·`.result`) · `chat <model>`(`gen_ai.request.model`, `gen_ai.usage.input_tokens`·`output_tokens`).
+  `OTEL_EXPORTER_OTLP_ENDPOINT`가 있으면 같은 span이 Jaeger로 가고, 채점 뒤 `eval.scenario` span이 턴 root span들에 링크로 판정(`kosis.verdict`, `kosis.failure.turn`)을 붙인다.
+
+| 지표 | 정의 | 채점 |
+|---|---|---|
+| 툴 선택 정확도 | 부른 툴 이름 순서 == 정답 순서인 턴의 비율 | 결정적 |
+| 툴 순서 일치 | 정답 툴이 그 순서대로 나타난 턴의 비율 (불필요 호출 허용) | 결정적 |
+| 빠진 호출 · 불필요 호출 | 툴별 개수 (정답과 실제 호출의 다중집합 차) | 결정적 |
+| 파라미터 정확도 | 정답 인자 필드(`table_key`·`period_start`·`period_end`·`regions`·`dimensions`·`chart_type`)별 일치 비율. 같은 툴의 k번째 호출과 비교, L2 규칙(`query.field_correct`: 목록은 집합, 나머지는 문자열 일치) | 결정적 |
+| 상태(표 키) 정확도 | 턴이 끝난 표 == 정답 `table_key`. 끝난 표 = 마지막 `summarize_stat`/`make_chart`의 `table_key`, 없으면 마지막 검색 1위 | 결정적 |
+| 최종 수치 정확도 | `calc_qid` 턴의 `summarize_stat` 답을 L3 채점기(`calculation.grade`, Parquet 셀 대조) 그대로 채점해 PASS인 비율 | 결정적 |
+| 근거 없는 숫자 | 최종 답 문장의 숫자 중 이 대화의 툴 결과·질문에 없고 사실 값의 반올림도 아닌 것이 있는 턴 수 (0이 목표) | 결정적 |
+| 턴 통과율 | 오류가 하나도 없는 턴의 비율 | 결정적 |
+| 대화 성공률 | 모든 턴이 통과한 대화(실행)의 비율. 리포트에 처음 실패한 턴 분포 | 결정적 |
+| pass^k | `--repeat k`번 모두 성공한 시나리오의 비율 | 결정적 |
+| 요청당 비용·지연 | 턴 = 요청 1건. `ops.json`의 p50·p95 지연, LLM 호출 수, 토큰, 비용 (`ops_history.jsonl`에 누적) | 결정적 |
+
+턴 오류: `run_failure` 실행 실패 · `missing_call` · `extra_call` · `wrong_order` · `wrong_args` · `lost_state`(지시어·조건 이월 실패 포함) · `missed_refusal` · `false_refusal`
+(거절 = 검색 `route` `refuse` 또는 `summarize_stat` `outcome` `refused`, 또는 툴을 하나도 안 부름) · `wrong_numbers` · `unsupported_final_number`. 예외가 난 실행은 거기서 멈추고 남은 턴은 `run_failure`다.
+
+- 지금 한계: 실전 1 `summarize_stat` 안의 LLM 호출은 LangChain 콜백 밖이라 토큰에 잡히지 않는다(툴 span 지연에는 포함). `summarize_stat` 툴(T3-01)이 실전 1 span·토큰을 결과에 담으면 그때 툴 span 아래 재생을 붙인다(KOS-115).
+- 테스트: `tests/test_evals_agent.py` (oracle 1.000, 빠진·불필요 호출, 인자 불일치, 멀티턴 중간 실패와 pass^k, 거절, L3 연결·근거 없는 숫자, 실제 LangGraph 그래프 → span → 기록 왕복).
+
+## 7. 규칙을 바꿀 때
 
 - 판정 규칙: `trace.py`의 `blame()`. 단계를 추가하면 `STAGES`에도 넣는다. 리포트 표기와 판정 순서 표시가 여기서 나온다.
 - 오류 유형: `evaluators/calculation.py`의 `grade()`·`fact_errors()`. 새 오류를 만들면 `ERROR_INFO`와 이 문서 4절에 설명을 추가한다.

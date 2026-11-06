@@ -1,5 +1,7 @@
 """e2e (first part of L4): the retriever's top 1 table goes to summarize_stat, graded like L3; offline with stubs."""
 
+import json
+
 from langchain_core.documents import Document
 from langchain_core.retrievers import BaseRetriever
 
@@ -34,7 +36,7 @@ def stub_pipeline(monkeypatch, used: list[str]) -> None:
         return refused("no_period"), [{"name": "judge", "start_ms": 0, "duration_ms": 1, "status": "ok", "attributes": {}}], None
 
     monkeypatch.setattr("evals.trace.summarize", summarize)
-    monkeypatch.setattr("evals.ops.usage_client", lambda: Client())
+    monkeypatch.setattr("evals.ops.usage_client", lambda **kw: Client())
 
 
 def item() -> CalcItem:
@@ -81,17 +83,23 @@ def test_run_eval_e2e_writes_report(monkeypatch, tmp_path):
     monkeypatch.setattr(run_eval, "CALC_GOLDEN", golden)
     monkeypatch.setattr(run_eval, "REPORTS", tmp_path / "reports")
     monkeypatch.setattr(run_eval, "ROOT", tmp_path)  # golden path in the manifest is relative to ROOT
-    monkeypatch.setattr(ops, "append_history", lambda *a, **kw: None)
+    history: list[str] = []
+    monkeypatch.setattr(ops, "append_history", lambda run_id, *a, **kw: history.append(run_id))
     monkeypatch.setattr(report_html, "read_history", lambda: [])
     monkeypatch.setattr(calculation, "read_cells", lambda path: {})
     monkeypatch.setattr(retrieval, "build", lambda name, items, k: Fixed(keys=["101_DT_OTHER", "101_DT_GOLD"]))
-    assert run_eval.main(["--layer", "e2e", "--retriever", "bm25-record", "--stage", "t"]) == 0
-    [out] = (tmp_path / "reports").iterdir()
+    out = run_eval.main(["--layer", "e2e", "--retriever", "bm25-record", "--stage", "t"])
+    assert [out] == list((tmp_path / "reports").iterdir()) and len(history) == 1  # main returns the run folder
     report = (out / "report.md").read_text(encoding="utf-8")
     assert "검색 1위가 정답 표: 0/1" in report and "retrieval 0" in report  # refusal with an allowed reason passes
     assert "## 실패 단계 (trace)" in report and "실패 없음" in report
     html = (out / "report.html").read_text(encoding="utf-8")
     assert "L4 종단 간" in html and "실패 단계 (trace)" in html
+
+    # T3-21 --llm mock: the path runs, the run says it is mock, and its numbers stay out of ops_history
+    mock = run_eval.main(["--layer", "e2e", "--retriever", "bm25-record", "--stage", "t-mock", "--llm", "mock"])
+    assert json.loads((mock / "manifest.json").read_text(encoding="utf-8"))["llm"] == "mock"
+    assert "llm mock: 경로 확인용, 점수 아님" in (mock / "report.md").read_text(encoding="utf-8") and len(history) == 1
 
 
 def test_golden_sources_prefer_split_files(tmp_path):

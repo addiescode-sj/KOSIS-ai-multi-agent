@@ -1,4 +1,4 @@
-"""L2 query understanding: grade what the parser read (kosis_rag.query.ParsedQuery) against a QueryItem. No LLM.
+"""L2 query understanding: grade what the parser read (kosis_rag.parse.schemas.ParsedQuery) against a QueryItem. No LLM.
 
 Per field (docs/research/langchain_eval_design_kosis.md §5): scalars match exactly, lists match as sets, and an empty
 gold field is graded too, so a slot the question never named counts as wrong (an invented filter drops right tables).

@@ -6,7 +6,7 @@ One question = one trace:
     eval.question            qid, kind, layer, verdict, failure.stage / failure.span / failure.reason
     ├─ retrieve              L1·e2e, a plain retriever: retriever, top_keys, gold_rank, right_table
     ├─ search_tables         L1·e2e, the LangGraph search (T2-10), same attributes
-    │  └─ parse, retrieve, rerank1, rerank2, gate, refuse | guide           (graph nodes, NodeSpans)
+    │  └─ parse, retrieve, rerank1, rerank2, gate (route found | refuse)     (graph nodes, NodeSpans)
     └─ tool.summarize_stat   L3·e2e: table_key, outcome, numbers_origin
        └─ judge, analyze.*, compute, compose, verify, template, fallback_chatbot   (Phase 1 spans, T1-22)
 
@@ -64,7 +64,7 @@ class NodeSpans(BaseCallbackHandler):
     """The LangGraph node runs of one search as span dicts shaped like the Phase 1 ones; one handler per question.
 
     LangGraph passes the node name (metadata langgraph_node) down to the runs inside a node (channel writes, the gate
-    branch, the guide chain), so a run is a node only when its name is its langgraph_node and its parent is not a
+    branch), so a run is a node only when its name is its langgraph_node and its parent is not a
     node. A search that is not a graph records nothing. Each node span also keeps "keys", the whole ranked pool its
     output docs had (search nodes only), for lost_at.
     """
@@ -143,7 +143,7 @@ def blame_search(row: dict, gold: set[str], k: int) -> dict | None:
     if row["answerable"] and not any(key in gold for key in row["keys"][:k]):
         node, reason = lost_at(nodes, gold, k) or ("retrieve", f"정답 표가 top {k} 밖")
         return {"stage": "retrieval", "label": STAGES["retrieval"], "span": node, "reason": reason}
-    if row["no_answer_pred"] == row["answerable"]:  # refused an answerable one, or guided an unanswerable one
+    if row["no_answer_pred"] == row["answerable"]:  # refused an answerable one, or found tables for an unanswerable one
         gate = next((s for s in nodes if s["name"] == "gate"), None)
         route = gate["attributes"].get("route") if gate else None
         what = "답 있는 질문을 거절" if row["answerable"] else "답 없는 질문에 표 안내"

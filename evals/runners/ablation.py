@@ -17,9 +17,10 @@ import statistics
 import time
 from collections.abc import Iterable
 
-from kosis_rag.filters import TableFilter, filter_tables
-from kosis_rag.query import MAX_RESULTS, ParsedQuery
-from kosis_rag.schemas import TableRecord
+from kosis_rag.parse.constants import MAX_RESULTS
+from kosis_rag.parse.schemas import ParsedQuery
+from kosis_rag.schemas.catalog import TableRecord
+from kosis_rag.shared.filters import TableFilter, filter_tables
 
 from evals.evaluators import retrieval
 from evals.schemas import QueryItem, RetrievalItem

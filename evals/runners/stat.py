@@ -17,12 +17,13 @@ from evals.ops import tokens_of
 from evals.schemas import CalcItem
 
 
-def run(items: list[CalcItem], interval: float = 0.0) -> list[dict]:
-    """Calls the model through summarize_stat (HCX key from .env); a failed call is recorded, not raised."""
+def run(items: list[CalcItem], interval: float = 0.0, llm: str = "hcx") -> list[dict]:
+    """Calls the model through summarize_stat (llm hcx: HCX_API_KEY from the shell; mock: no call); a failed call is
+    recorded, not raised."""
     from evals.ops import usage_client
     from evals.trace import summarize  # loads the pipeline: offline commands never import it
 
-    client = usage_client()
+    client = usage_client(llm=llm)
     rows = []
     for n, item in enumerate(items):
         if n and interval:
