@@ -13,7 +13,7 @@ labels. Rules (docs/research/langchain_eval_design_kosis.md §5), by the questio
 - measures: what is counted, one stem each, as table measures name it. A rate or density goes to what it counts
   (합계출산율 -> 출생, 순이동률 -> 이동); 출생 covers 출산 (the parser expands it the same way). A condition on who is
   counted is a breakdown, not the measure (고령인구, 성인 자녀 -> 인구); an average age is its event (평균 초혼연령 -> 초혼).
-- dimensions: breakdowns the answer table must have, as kosis_rag.vocab keys (KOS-97). An explicit "X별" and a
+- dimensions: breakdowns the answer table must have, as kosis_rag.shared.vocab keys (KOS-97). An explicit "X별" and a
   condition on who is counted both count (20대 -> 연령, 미혼 -> 혼인상태, 30대 엄마 -> 모연령, 1인 가구 -> 가구원수,
   중위 추계 -> 시나리오, a named 시군구 -> 시군구). A named 시도 is the region slot and 월별·연도별 the cycle slot, not
   breakdowns. A breakdown with no vocab key keeps its table spelling and is listed in OUT_OF_VOCAB.
@@ -28,7 +28,7 @@ import random
 import sys
 from collections import Counter
 
-from kosis_rag.vocab import DIMENSION_KEYS
+from kosis_rag.shared.vocab import DIMENSION_KEYS
 
 from evals.schemas import DATASETS, QUERY_GOLDEN, QueryItem
 

@@ -7,7 +7,7 @@
 ## 1. 실행
 
 ```bash
-export PYTHONPATH=.:src:vendor/phase1:vendor/phase1/src   # 없으면 ModuleNotFoundError: kosis_ai
+export PYTHONPATH=.:src:vendor/phase2/src:vendor/phase1:vendor/phase1/src   # 없으면 ModuleNotFoundError: kosis_ai
 
 uv run python -m evals.run_eval --layer l3 --stage <이름> --from-run evals/reports/T1-27-run   # 과거 run 재채점, 모델 호출 0
 uv run python -m evals.run_eval --layer l3 --stage <이름> --interval 5                         # summarize_stat 실시간 호출
@@ -60,6 +60,14 @@ uv run python -m evals.run_eval --layer l3 --stage <이름> --interval 5 --calc-
 | `report.html` | 같은 내용을 차트로 보여준다. 오류 유형 설명, 실패 문항별 span 경로, Jaeger 링크 포함 |
 | `results.jsonl` | 문항별 행. `errors`, `spans`, `failure`, `trace_id`가 들어 있다 |
 | `manifest.json` | 골든·데이터 해시, git, 요약(`summary.failures` = 단계별 건수) |
+
+### 검색 설정은 셸 환경변수로 (실전 2 T2-41 이후)
+
+실전 2 모듈은 `.env`도 환경도 읽지 않는다. `evals/config.py`가 셸 변수로 `IndexSpec`·`SearchOptions`를 만든다(이름·기본값은 실전 2 `search_config_from_shell`과 같음, 데이터 경로는 이 레포 `data/`).
+**`.env`는 읽지 않는다.** 값이 없으면 기본값(`localhost:8001`, 컬렉션 없음, stage 2 끔)으로 조용히 돈다. 옛 결과와 비교하려면 같은 값을 셸에 둔다.
+
+`CHROMA_HOST` `CHROMA_PORT` `CHROMA_COLLECTION` `EMBED_CKPT` `RERANK_CKPT`(staged*) `TEXT_FORMAT` `HQ_BUILD`(비우면 끔) · HCX 프리셋·L3 HCX는 `HCX_API_KEY`, gpt 프리셋은 `OPENAI_API_KEY`.
+L2·ablation(`--slot-source pred`)은 `data/sigungu.json`을 `parse_query(sigungu=…)`에 넘긴다(넘기지 않으면 시군구 질문의 `regions`만 조용히 떨어진다).
 
 ### Jaeger로 보기 (선택)
 
@@ -171,7 +179,44 @@ e2e에서는 1위 표가 틀리면 위 오류와 상관없이 1번 규칙(검색
 예시 (T1-27 재채점, `reports/20261031-200757-T2-15-regrade`): non-PASS 4건이 모두 `질문 이해 실패 @ analyze.rules`로 판정됐다.
 그중 S-EDG-09의 경로는 `verify✕ → compose → verify✕ → template✕`로, 계획 오류가 문장 단계까지 번졌다.
 
-## 6. 규칙을 바꿀 때
+## 6. 에이전트 지표 (`--layer agent`, T3-06 · KOS-120)
+
+멀티턴·멀티쿼리 대화를 **툴 호출 기록**으로 채점한다. LLM 판정은 쓰지 않는다. 아키텍처(ReAct·Plan-and-Execute·멀티에이전트, T3-07~10)를 바꿔도 같은 채점기를 쓴다.
+
+```bash
+uv run python -m evals.run_eval --layer agent --stage T3-06-oracle --oracle --split all              # 자기검증: 모든 비율 1.000
+uv run python -m evals.run_eval --layer agent --stage <이름> --agent <module:function> --repeat 3    # 실행, pass^3
+uv run python -m evals.run_eval --layer agent --stage <이름> --from-run evals/reports/<run>          # 과거 실행 재채점
+```
+
+- 시나리오: `evals/datasets/agent_scenarios.jsonl` (T3-05, `--scenarios`로 바꿈). 계약은 `evals/schemas.py`의 `AgentScenario`.
+  턴마다 `expect`에 부를 툴(순서대로, 채점할 인자 필드만), 턴이 끝날 표(`table_key`), 거절 여부(`refuse`), L3 문항(`calc_qid`)을 적는다.
+  한 턴에 여러 요청("찾아서, 계산해서, 그려줘")은 `tools`에 여러 개를 적고, "이거"·"그 표"는 다음 턴의 `table_key`로 채점된다.
+- 실행 기록: 턴마다 그래프를 `thread_id = <sid>#<run>`으로 `invoke`하고, 실행 중 열린 OTel span(`kosis_agent.tracing.LiveSpans`)에서 툴 이름·인자·결과·지연·LLM 호출·토큰을 읽는다.
+  span 이름·속성은 OTel GenAI 규약 그대로다: `invoke_agent`(`gen_ai.conversation.id`, `kosis.turn.index`) · `execute_tool <name>`(`gen_ai.tool.name`, `gen_ai.tool.call.arguments`·`.result`) · `chat <model>`(`gen_ai.request.model`, `gen_ai.usage.input_tokens`·`output_tokens`).
+  `OTEL_EXPORTER_OTLP_ENDPOINT`가 있으면 같은 span이 Jaeger로 가고, 채점 뒤 `eval.scenario` span이 턴 root span들에 링크로 판정(`kosis.verdict`, `kosis.failure.turn`)을 붙인다.
+
+| 지표 | 정의 | 채점 |
+|---|---|---|
+| 툴 선택 정확도 | 부른 툴 이름 순서 == 정답 순서인 턴의 비율 | 결정적 |
+| 툴 순서 일치 | 정답 툴이 그 순서대로 나타난 턴의 비율 (불필요 호출 허용) | 결정적 |
+| 빠진 호출 · 불필요 호출 | 툴별 개수 (정답과 실제 호출의 다중집합 차) | 결정적 |
+| 파라미터 정확도 | 정답 인자 필드(`table_key`·`period_start`·`period_end`·`regions`·`dimensions`·`chart_type`)별 일치 비율. 같은 툴의 k번째 호출과 비교, L2 규칙(`query.field_correct`: 목록은 집합, 나머지는 문자열 일치) | 결정적 |
+| 상태(표 키) 정확도 | 턴이 끝난 표 == 정답 `table_key`. 끝난 표 = 마지막 `summarize_stat`/`make_chart`의 `table_key`, 없으면 마지막 검색 1위 | 결정적 |
+| 최종 수치 정확도 | `calc_qid` 턴의 `summarize_stat` 답을 L3 채점기(`calculation.grade`, Parquet 셀 대조) 그대로 채점해 PASS인 비율 | 결정적 |
+| 근거 없는 숫자 | 최종 답 문장의 숫자 중 이 대화의 툴 결과·질문에 없고 사실 값의 반올림도 아닌 것이 있는 턴 수 (0이 목표) | 결정적 |
+| 턴 통과율 | 오류가 하나도 없는 턴의 비율 | 결정적 |
+| 대화 성공률 | 모든 턴이 통과한 대화(실행)의 비율. 리포트에 처음 실패한 턴 분포 | 결정적 |
+| pass^k | `--repeat k`번 모두 성공한 시나리오의 비율 | 결정적 |
+| 요청당 비용·지연 | 턴 = 요청 1건. `ops.json`의 p50·p95 지연, LLM 호출 수, 토큰, 비용 (`ops_history.jsonl`에 누적) | 결정적 |
+
+턴 오류: `run_failure` 실행 실패 · `missing_call` · `extra_call` · `wrong_order` · `wrong_args` · `lost_state`(지시어·조건 이월 실패 포함) · `missed_refusal` · `false_refusal`
+(거절 = 검색 `route` `refuse` 또는 `summarize_stat` `outcome` `refused`, 또는 툴을 하나도 안 부름) · `wrong_numbers` · `unsupported_final_number`. 예외가 난 실행은 거기서 멈추고 남은 턴은 `run_failure`다.
+
+- 지금 한계: 실전 1 `summarize_stat` 안의 LLM 호출은 LangChain 콜백 밖이라 토큰에 잡히지 않는다(툴 span 지연에는 포함). `summarize_stat` 툴(T3-01)이 실전 1 span·토큰을 결과에 담으면 그때 툴 span 아래 재생을 붙인다(KOS-115).
+- 테스트: `tests/test_evals_agent.py` (oracle 1.000, 빠진·불필요 호출, 인자 불일치, 멀티턴 중간 실패와 pass^k, 거절, L3 연결·근거 없는 숫자, 실제 LangGraph 그래프 → span → 기록 왕복).
+
+## 7. 규칙을 바꿀 때
 
 - 판정 규칙: `trace.py`의 `blame()`. 단계를 추가하면 `STAGES`에도 넣는다. 리포트 표기와 판정 순서 표시가 여기서 나온다.
 - 오류 유형: `evaluators/calculation.py`의 `grade()`·`fact_errors()`. 새 오류를 만들면 `ERROR_INFO`와 이 문서 4절에 설명을 추가한다.

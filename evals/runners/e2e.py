@@ -14,7 +14,7 @@ import time
 from langchain_core.retrievers import BaseRetriever
 
 from kosis_ai.schemas import StatAnswer
-from kosis_rag.query import SIDO, SIDO_ORDER
+from kosis_rag.shared.vocab import SIDO, SIDO_ORDER
 
 from evals.schemas import CalcItem, QueryItem, RetrievalItem
 

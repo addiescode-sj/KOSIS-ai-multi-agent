@@ -92,7 +92,7 @@ class QueryItem(BaseModel):
     cycle: Literal["Y", "Q", "M", "F"] | None = None
     regions: list[str] = Field(default_factory=list)  # normalised labels, e.g. ["서울특별시"]
     answerable: bool = True
-    # Added for the T2-28 slot ablation; names follow kosis_rag.query.ParsedQuery. None = not labelled yet (the
+    # Added for the T2-28 slot ablation; names follow kosis_rag.parse.schemas.ParsedQuery. None = not labelled yet (the
     # T2-14 draft has none of these), [] = labelled and the question names none. Labels follow the question's meaning,
     # not the parser's word lists, so words the parser does not know still get a label.
     years: list[int] | None = None  # single years written in the question; a range is in period_start/end only
@@ -131,6 +131,66 @@ class E2EItem(BaseModel):
     expected_outcome: Literal["answered", "refused", "clarify"]
     table_keys: list[str] = Field(default_factory=list)  # any of these counts as the right table (L1 slot)
     calc_qid: str | None = None  # L3 item whose facts grade the numbers
+
+
+AGENT_SCENARIOS = DATASETS / "agent_scenarios.jsonl"  # T3-05 (KOS-41) fills it; T3-06 grades it
+ToolName = Literal["search_tables", "summarize_stat", "make_chart"]
+# Graded argument fields (KOS-120): list fields match as sets and the rest exactly (evaluators.query.field_correct)
+ARG_FIELDS = ("table_key", "period_start", "period_end", "regions", "dimensions", "chart_type")
+
+
+class ExpectedCall(BaseModel):
+    """One tool call a turn should make; `args` holds only the graded fields (free text such as a query is left out)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: ToolName
+    args: dict[str, str | list[str] | None] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _known_fields(self) -> ExpectedCall:
+        if unknown := set(self.args) - set(ARG_FIELDS):
+            raise ValueError(f"ungraded arg fields {sorted(unknown)}; graded: {ARG_FIELDS}")
+        return self
+
+
+class TurnExpect(BaseModel):
+    """What one turn must do. A multi-query turn ("찾아서, 계산해서, 그려줘") lists several calls in order."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    tools: list[ExpectedCall] = Field(default_factory=list)  # in call order; [] = answer without a tool
+    table_key: str | None = None  # the table the turn ends on (conversation state); None = not graded
+    refuse: bool = False  # out of scope / no data: search_tables or summarize_stat must refuse (or no tool runs)
+    calc_qid: str | None = None  # L3 item graded on this turn's summarize_stat answer (evaluators.calculation)
+
+    @model_validator(mode="after")
+    def _consistent(self) -> TurnExpect:
+        if self.refuse and any(c.name == "make_chart" for c in self.tools):
+            raise ValueError("a refusing turn draws no chart")
+        if self.calc_qid and not any(c.name == "summarize_stat" for c in self.tools):
+            raise ValueError("calc_qid needs a summarize_stat call")
+        return self
+
+
+class ScenarioTurn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    question: str = Field(min_length=1)
+    expect: TurnExpect
+
+
+class AgentScenario(BaseModel):
+    """T3-05/T3-06: a conversation; it succeeds only when every turn passes. References such as "이거", "그 표"
+    are graded through each turn's expected table_key and the expected call args."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    sid: str = Field(min_length=1)
+    split: Literal["dev", "test"] = "test"
+    source: str = "scenario"  # scenario (과제 문서) | mentor | synthetic ...
+    turns: list[ScenarioTurn] = Field(min_length=1)
+    notes: str = ""
 
 
 def load_jsonl(path: Path, model: type[BaseModel]) -> list:

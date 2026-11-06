@@ -4,10 +4,11 @@ import pytest
 from langchain_core.documents import Document
 from langchain_core.retrievers import BaseRetriever
 
-from kosis_ai.schemas import TableInfo
-from kosis_rag.filters import TableFilter
-from kosis_rag.query import ConditionRetriever, parse_query
-from kosis_rag.schemas import TableClass, TableRecord
+from kosis_rag.legacy.retrievers import ConditionRetriever
+from kosis_rag.parse.node import parse_query
+from kosis_rag.schemas.catalog import TableClass, TableRecord
+from kosis_rag.schemas.common import TableInfo  # TableRecord.info takes phase 2's copy, not a kosis_ai instance
+from kosis_rag.shared.filters import TableFilter
 
 from evals.evaluators import metadata, query, retrieval
 from evals.runners import ablation

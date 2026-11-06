@@ -14,7 +14,7 @@ if [ -d frontend/node_modules ]; then
 fi
 
 # Phase 1 / phase 2 modules are imported from the submodules
-for f in vendor/phase1/src/kosis_ai/schemas.py vendor/phase2/src/kosis_rag/schemas.py; do
+for f in vendor/phase1/src/kosis_ai/schemas.py vendor/phase2/src/kosis_rag/schemas/io.py; do
   if [ ! -f "$f" ]; then
     echo "verify: $f missing; run: git submodule update --init" >&2
     exit 1
