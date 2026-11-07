@@ -68,10 +68,19 @@ def run_l1(args) -> tuple[list[dict], dict, str]:
     from evals.runners import retrieval as runner  # LangChain loads only for L1
 
     items = load_items(args.golden)
-    rows = runner.run(runner.build(args.retriever, items, args.k), items, args.k)
     by_qid = {i.qid: i for i in items}
-    tau = args.tau if args.tau is not None else retrieval.best_tau(
-        [(r["top_score"], not r["answerable"]) for r in rows if r["split"] == "dev"])
+    if args.from_run:  # T3-22: regrade the saved rankings under the current labels; search is not run again
+        past = json.loads((args.from_run / "manifest.json").read_text(encoding="utf-8"))
+        args.retriever, args.k = past["retriever"], past["top_k"]
+        rows = [json.loads(line) for line in (args.from_run / "results.jsonl").read_text(encoding="utf-8").splitlines() if line.strip()]
+        for r in rows:  # answerable / reason follow the current golden (labels may have changed)
+            r["answerable"] = by_qid[r["qid"]].answerable
+        # the saved run keeps only its split, so tau cannot be picked on dev again: reuse the run's tau
+        tau = args.tau if args.tau is not None else past["summary"]["tau"]
+    else:
+        rows = runner.run(runner.build(args.retriever, items, args.k), items, args.k)
+        tau = args.tau if args.tau is not None else retrieval.best_tau(
+            [(r["top_score"], not r["answerable"]) for r in rows if r["split"] == "dev"])
     judged = judged_keys(args.pool)
     shown = [r for r in rows if args.split == "all" or r["split"] == args.split]
     for r in shown:
@@ -251,11 +260,17 @@ def l1_report(args, s: dict) -> str:
                   for name, m in nr.items() if name in ("tau", "llm", "either")]
         rules += ["", f"- llm: 2차 LLM이 고른 표 0개(호출 오류 제외) · either: llm 또는 tau · LLM 사유 일치 "
                       f"{nr['llm_reason_match'][0]}/{nr['llm_reason_match'][1]} · LLM 호출 오류 {nr['llm_errors']}건"]
+    a = s["metrics"]["all"]
+    bounds = ([f"- 판정 구간 (하한 = 판정 없는 표를 오답, 상한 = 정답으로 볼 때. 실제 값은 이 사이): "
+               + " · ".join(f"{name} {a[c]:.3f} ~ {a[c + '_upper']:.3f}"
+                            for name, c in (("Hit@1", "hit@1"), ("Hit@5", "hit@5"), ("Hit@10", "hit@10"), ("MRR", "rr"))), ""]
+              if "rr_upper" in a else [])
     return "\n".join([
         f"# L1 retrieval — {args.stage}", "",
-        f"- retriever `{args.retriever}`, k={args.k}, split `{args.split}`, 답 있는 문항 기준", "",
-        *lines, "",
-        f"- 답 없음 (tau={s['tau']:.4g}, dev에서 선택): P {na['precision']:.3f} · R {na['recall']:.3f} · F1 {na['f1']:.3f} "
+        f"- retriever `{args.retriever}`, k={args.k}, split `{args.split}`, 답 있는 문항 기준"
+        + (f" · 과거 실행 재채점 `{args.from_run}` (검색 다시 안 함, tau는 그 run 값)" if args.from_run else ""), "",
+        *lines, "", *bounds,
+        f"- 답 없음 (tau={s['tau']:.4g}, {'재채점한 run의 값' if args.from_run else 'dev에서 선택'}): P {na['precision']:.3f} · R {na['recall']:.3f} · F1 {na['f1']:.3f} "
         f"(tp {na['tp']}, fp {na['fp']}, fn {na['fn']})",
         "- 사유별 답 없음 판정 (§4.3, no_period는 필터 완화 회귀 감시): " + (", ".join(
             f"{k} {v['refused']}/{v['n']} ({v['rate']:.0%})" for k, v in s.get("refusal_by_reason", {}).items()) or "답 없음 문항 없음"),
@@ -547,7 +562,7 @@ def main(argv: list[str] | None = None) -> Path:
     parser.add_argument("--retriever", default="bm25-catalog", help="l1, e2e: oracle (l1 only) | bm25-catalog | bm25-record | chroma")
     parser.add_argument("--k", type=int, default=10)
     parser.add_argument("--tau", type=float, help="l1: fixed no-answer threshold (default: best F1 on dev)")
-    parser.add_argument("--from-run", type=Path, help="l3, agent: grade a past run folder instead of calling the model")
+    parser.add_argument("--from-run", type=Path, help="l1, l3, agent: grade a past run folder instead of searching / calling the model (l1 reuses its retriever, k and tau)")
     parser.add_argument("--slot-source", choices=("gold", "pred"), default="pred", help="ablation: query_golden labels or parse_query")
     parser.add_argument("--slots", default="year,cycle,region,dimension,measure", help="ablation: slots to switch")
     parser.add_argument("--golden", type=Path, default=GOLDEN, help="l0, l1, ablation, l012, e2e (§6.3 table slots by qid): retrieval golden (v2: retrieval_golden_v2.jsonl)")
@@ -620,6 +635,8 @@ def main(argv: list[str] | None = None) -> Path:
     (out / "report.md").write_text(report, encoding="utf-8")
     if args.llm == "mock" and live_llm:
         pass  # a mock run checks the path; its numbers stay out of the committed history
+    elif args.layer == "l1" and args.from_run:
+        pass  # a regrade copies the past run's latencies: they are already in the history once
     elif args.layer == "l012":
         for name, o in op.items():
             ops.append_history(run_id, name, args.stage, {"l0": "registry", "l2": "parse_query"}.get(name, args.retriever), o)

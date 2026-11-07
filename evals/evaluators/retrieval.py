@@ -41,6 +41,11 @@ def score_item(item: RetrievalItem, keys: list[str], judged: set[str] | None = N
     if judged is not None:
         top = keys[:10]
         row["unjudged@10"] = sum(1 for key in top if key not in judged and key not in item.gold_keys) / max(len(top), 1)
+        # Upper bound (T3-22): every unjudged key in the top 10 counted as gold. The real value lies between the two.
+        upper = next((i for i, k in enumerate(top, 1) if k in item.gold_keys or k not in judged), None)
+        for k in (1, 5, 10):
+            row[f"hit@{k}_upper"] = int(upper is not None and upper <= k)
+        row["rr_upper"] = 1 / upper if upper else 0.0
     return row
 
 

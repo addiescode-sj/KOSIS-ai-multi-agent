@@ -164,6 +164,24 @@ diverse 문항의 숫자는 빌더가 Parquet 셀에서 직접 뽑는다. 질문
 `check_question`이 연도·라벨·항목명이 남아 있고 다른 숫자가 없는지 확인한 뒤에만 반영한다. 통과하지 못하면 템플릿 문장을 그대로 쓴다.
 `calculation_diverse_review_sample.csv`(5문항마다 1개)의 `ok`·`note` 열은 사람이 검수할 때 채운다.
 
+### 검색기를 바꿀 때 판정 풀 넓히기 (T3-22)
+
+검색 골든의 판정 풀은 BM25 두 종류의 상위 10개로 만들었다. 그래서 임베딩·리랭커가 새로 올린 표는 판정 없이 오답으로 채점된다(`unjudged@10`). L1 리포트의 "판정 구간"은 판정 없는 표를 오답으로 본 하한과 정답으로 본 상한이고, 실제 값은 그 사이에 있다. 구간을 좁히려면 사람이 판정한다. T2-02 동결 규칙에 따라 사람이 확인한 표만 대체 key로 **추가**하고, split·질문·답 없음 여부는 바꾸지 않는다.
+
+```bash
+# 1. 판정 시트: 저장된 L1 run의 상위 k개 중 아무도 판정하지 않은 (문항, 표)
+uv run python -m evals.builders.pool sheet --runs evals/reports/<l1 run> [<l1 run> ...] --top 1 \
+  --out evals/datasets/retrieval_pool_sheet_<ID>.csv
+# 2. 사람이 slot 열을 채운다: 대체할 슬롯 번호(1~3) 또는 x(답이 안 됨). 빈칸은 아직 판정 안 함 → 건너뜀
+# 3. 반영: 판정 행을 풀에 붙이고, 정답 행은 골든 슬롯에 대체 key로 추가, 바뀐 문항의 label_version +1
+uv run python -m evals.builders.pool adjudicate --sheet evals/datasets/retrieval_pool_sheet_<ID>.csv
+# 4. 재채점: 저장된 순위를 새 라벨로 다시 채점 (검색 다시 안 함, retriever·k·tau는 그 run 값)
+uv run python -m evals.run_eval --layer l1 --from-run evals/reports/<l1 run> --stage <ID>-regrade
+```
+
+- 답 없음 문항에서 "답이 되는 표"로 판정한 행은 라벨을 바꾸지 않고 경고만 낸다.
+- 재채점 run은 지연 시간을 원래 run에서 복사하므로 `ops_history.jsonl`에 다시 쓰지 않는다.
+
 ### 골든셋 v2 (T2-32, 전 계층)
 
 표 하나에 질문 하나를 만들고, 같은 qid(`V2-<표 키>`)를 L1·L2·L3에 함께 쓴다. 14개 조사 전체에서 표를 뽑았다. 기본 경로는 v1 그대로이므로 v2를 쓰려면 플래그로 넘긴다.
