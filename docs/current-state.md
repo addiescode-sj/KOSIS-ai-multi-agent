@@ -3,6 +3,14 @@
 > A new session starts here. Keep this short and current — it is the handoff
 > packet between sessions.
 
+## 실전 1·2 리팩터 모듈 연결 (2026-11-06, 브랜치 T3-01-connect-modules)
+
+- 핀: `vendor/phase1` = `907b703`(T1-28 머지), `vendor/phase2` = `56b4252`(T2-41 머지). 두 모듈 모두 `.env`·환경변수를 읽지 않는다.
+- 설정: `backend/app/config.py` `agent_config()` — 셸 환경 → 실전 2 `IndexSpec`(데이터 `<KOSIS_WORKSPACE>/data`)·`SearchOptions`·2차 리랭커 `LLMConfig`, 실전 1 `LLMConfig`(HCX-DASH-002). 이름과 기본값은 실전 2 `search_config_from_shell`과 같다.
+- 그래프: `src/kosis_agent/graph.py` supervisor → search_agent(`SearchModule.stream`) → refuse면 `refusal_text`로 끝, found면 stat_agent(`summarize_stat_run(질문, picked[0].key, llm=)`) → `ChatResult`(답·표·StatAnswer·Vega-Lite). SSE: 검색 노드들 → `stat` → `result`. `result`는 옛 SearchResult 필드 이름을 유지해 프런트는 그대로 동작.
+- 재현 도구: `scripts/stat_oracle.py`(골든 표 키로 그래프를 지나 실전 1 run 폴더 생성 → `eval.grade_run`/`eval.parity`), `scripts/search_l1.py`(실전 2 `parity_l1` dump/compare를 이 레포 설정으로). 기준·판정은 프로젝트 문서 `01-reproduce-baselines.md`.
+- 열린 문제: `evals/`와 `tests/test_evals_*`는 실전 2 옛 import(`kosis_rag.query` 등)를 써서 핀을 올린 뒤 깨짐 — 평가 담당이 수정 가이드대로 고침. `uv.lock` 재생성(google-genai 제거) 필요. Docker 빌드 미확인.
+
 ## T3-00 repo initial setup (2026-11-04)
 
 - Submodules: `vendor/phase1` = KOSIS-ai-nlp-summary @ `e248a45` (same commit phase 2 pins), `vendor/phase2` = KOSIS-ai-RAG @ `484bd06`.

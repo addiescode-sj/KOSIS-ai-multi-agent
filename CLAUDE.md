@@ -38,15 +38,15 @@ TASK.md를 고치면 `.claude/hooks/linear_sync.py`가 `T3-xx` 제목으로 Line
 - 자료가 없으면 지어내지 말고 없다고 말한다 (범위 밖·기간/주기 불일치 포함).
 - 노드·툴 입출력은 Pydantic 계약을 유지한다: 공용 `kosis_ai.schemas`(실전 1), 검색 `kosis_rag.schemas`(실전 2). 깨는 변경은 plan에 명시하고 승인받는다.
 - 툴 (T3-01): `search_tables`(실전 2) · `summarize_stat`(실전 1) · `make_chart`(T3-02, Vega-Lite spec).
-- 오케스트레이션: LangGraph StateGraph(대화 상태 유지). 실전 2 노드 워크플로우(parse → retrieve → rerank1 → rerank2 → gate → refuse | guide)는
-  고치지 않고 상위 그래프의 search_agent로 감싼다. 성능이 낮은 단계만 에이전트로 바꾸고, 바꿀 때마다 같은 골든셋으로 "몇 → 몇"을 남긴다. ReAct 단일 / Plan-and-Execute / 멀티 에이전트를 같은 평가셋으로 비교하고 ADR로 결정한다 (T3-10).
+- 오케스트레이션: LangGraph StateGraph(대화 상태 유지). 실전 2 검색 모듈(parse → retrieve → rerank1 → rerank2 → gate, gate에서 끝남)은
+  고치지 않고 상위 그래프의 search_agent로 감싼다. 거절이면 `refusal_text`로 끝나고, 찾으면 stat_agent가 실전 1을 부른다. 성능이 낮은 단계만 에이전트로 바꾸고, 바꿀 때마다 같은 골든셋으로 "몇 → 몇"을 남긴다. ReAct 단일 / Plan-and-Execute / 멀티 에이전트를 같은 평가셋으로 비교하고 ADR로 결정한다 (T3-10).
 - 필요한 것만 만든다. 구현 하나·인터페이스 하나면 추상화하지 않는다.
 
 ## 3. 디렉터리
 
 ```
 backend/app/       FastAPI (main.py). 에이전트 API(SSE)를 노출만 한다 — 로직은 src/
-src/kosis_agent/   멀티에이전트 그래프(graph.py): supervisor → search_agent(실전 2 검색 그래프 그대로) · stat_agent(T3-01) · chart_agent(T3-02)
+src/kosis_agent/   에이전트 그래프(graph.py): supervisor → search_agent(실전 2 SearchModule) → stat_agent(실전 1 summarize_stat_run) · chart_agent(T3-02)
 evals/             계층별 평가 모듈 (실전 2에서 복사해 이어감, T3-00): datasets/(gitignored) · evaluators/ · runners/ · reports/. 에이전트 지표는 T3-06에서 여기에 추가
 frontend/          Next.js 16 (App Router) + TypeScript + Tailwind + shadcn/ui + Vercel AI SDK. 실전 2 UI에서 시작 (T3-11)
 vendor/phase1/     실전 1 submodule — kosis_ai(src/), kosis_chat/, eval/, configs/model.yaml. 직접 수정 금지
@@ -58,8 +58,9 @@ docs/              제출 문서, current-state.md
 - 실전 1·2 코드 수정이 필요하면 해당 레포에 PR → 여기서 `git submodule update --remote vendor/phase1`(또는 phase2) 후 커밋.
   `vendor/phase1`은 실전 2가 고정한 커밋과 같게 맞춘다 (`kosis_ai.schemas` 계약 일치).
 - 실전 2 `backend.app`(API 모듈)은 이 레포 `backend.app`에 가려져 import되지 않는다. 실전 2는 `kosis_rag.*` 로직만 import한다.
-- 실전 2 `kosis_rag`는 `data/`·`.env`를 `vendor/phase2/` 아래에서 읽는다(경로 고정). 실전 2 PR로 `KOSIS_WORKSPACE`를 따르게 하기 전까지
-  로컬에서는 `vendor/phase2/data` → `../../data` 심볼릭 링크, compose는 같은 폴더를 두 곳에 마운트한다.
+- 두 모듈(실전 1 @`907b703`, 실전 2 @`56b4252`)은 `.env`도 환경변수도 읽지 않는다. 설정은 `backend/app/config.py`가 셸 환경에서 읽어
+  실전 2 `IndexSpec`·`SearchOptions`·`LLMConfig`와 실전 1 `LLMConfig`(다른 클래스)로 넘긴다. 데이터는 `<KOSIS_WORKSPACE>/data` 하나.
+  실전 2 결과의 `picked[0].key`(tables.csv 키)를 실전 1에 넘긴다(`tbl_id` 아님).
 
 ## 4. 코딩 규칙
 
