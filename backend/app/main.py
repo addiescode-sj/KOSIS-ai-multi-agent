@@ -12,6 +12,7 @@ from fastapi.sse import EventSourceResponse, ServerSentEvent
 from pydantic import BaseModel, Field
 
 import kosis_agent  # noqa: F401  (sets KOSIS_WORKSPACE before phase 1 / phase 2 modules load)
+from kosis_agent.envfile import load_env_file
 from kosis_agent.graph.main_graph import build_graph
 from kosis_agent.graph.state import chat_result, new_checkpointer
 
