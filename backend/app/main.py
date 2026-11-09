@@ -35,7 +35,8 @@ def build_agent():
     search = SearchModule(cfg.spec, cfg.options, cfg.stage2_llm)
     # ponytail: in-memory checkpointer, lost on restart and kept per thread for the process lifetime;
     # a Postgres saver once the compose Postgres is wired (KOS-86)
-    return build_graph(search, cfg.stat_llm, retry_interval=cfg.stat_retry_interval, checkpointer=new_checkpointer())
+    return build_graph(search, cfg.stat_llm, retry_interval=cfg.stat_retry_interval, checkpointer=new_checkpointer(),
+                       alt_table_budget=cfg.alt_table_budget)
 
 
 def get_graph():
