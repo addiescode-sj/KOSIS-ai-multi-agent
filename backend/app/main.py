@@ -4,6 +4,7 @@ this only exposes it. Settings: <repo>/.env loaded at import (shell values win),
 from __future__ import annotations
 
 import threading
+import uuid
 from typing import Any, Iterator
 
 from fastapi import Depends, FastAPI, HTTPException
@@ -11,8 +12,8 @@ from fastapi.sse import EventSourceResponse, ServerSentEvent
 from pydantic import BaseModel, Field
 
 import kosis_agent  # noqa: F401  (sets KOSIS_WORKSPACE before phase 1 / phase 2 modules load)
-from kosis_agent.envfile import load_env_file
-from kosis_agent.graph import build_graph, chat_result
+from kosis_agent.graph.main_graph import build_graph
+from kosis_agent.graph.state import chat_result, new_checkpointer
 
 load_env_file()  # phase 3 reads its .env; phase 1 / 2 get objects from agent_config()
 
@@ -22,20 +23,29 @@ _graph: Any = None
 _lock = threading.Lock()
 
 
+def build_agent():
+    """The agent graph over the phase 2 search module and phase 1, with a checkpointer that carries each thread_id's
+    conversation. The service's graph, and the agent eval layer's entry point (T3-23):
+    run_eval --layer agent --agent backend.app.main:build_agent. Settings come from the shell (backend/app/config.py).
+    Opens the phase 2 resources (records, Chroma, models); a missing key fails only when an LLM step runs."""
+    from backend.app.config import agent_config
+    from kosis_rag.api import SearchModule
+
+    cfg = agent_config()
+    search = SearchModule(cfg.spec, cfg.options, cfg.stage2_llm)
+    # ponytail: in-memory checkpointer, lost on restart and kept per thread for the process lifetime;
+    # a Postgres saver once the compose Postgres is wired (KOS-86)
+    return build_graph(search, cfg.stat_llm, retry_interval=cfg.stat_retry_interval, checkpointer=new_checkpointer())
+
+
 def get_graph():
-    """Open the phase 2 search module (records, Chroma, models) on first use (not at startup, so /health works without
-    Chroma, data/ or keys) and compile the agent graph over it and phase 1. A failure is a 503; the next request
-    tries again. A missing key is not a failure here: phase 1 raises LLMKeyMissing when its LLM step runs."""
+    """build_agent() on first use (not at startup, so /health works without Chroma, data/ or keys). A failure is a
+    503; the next request tries again."""
     global _graph
     with _lock:
         if _graph is None:
-            from backend.app.config import agent_config
-            from kosis_rag.api import SearchModule
-
             try:
-                cfg = agent_config()
-                search = SearchModule(cfg.spec, cfg.options, cfg.stage2_llm)
-                _graph = build_graph(search, cfg.stat_llm, retry_interval=cfg.stat_retry_interval)
+                _graph = build_agent()
             except Exception as e:  # noqa: BLE001 - any load failure means the agent is unavailable
                 raise HTTPException(503, f"agent not available: {e}") from e
         return _graph
@@ -43,6 +53,8 @@ def get_graph():
 
 class ChatRequest(BaseModel):
     question: str = Field(min_length=1, description="사용자 질문 (한국어)", examples=["2023년 시도별 출생아 수"])
+    thread_id: str | None = Field(default=None, description="대화 ID. 같은 값을 보내면 이전 턴을 이어서 답한다. "
+                                  "없으면 새 대화로 처리한다.", examples=["c0ffee"])
 
 
 @app.get("/health", tags=["ops"], summary="서버 상태")
@@ -56,8 +68,10 @@ def chat_stream(req: ChatRequest, graph=Depends(get_graph)) -> Iterator[ServerSe
     `event: stat` (data = {seconds, key, spans}) when phase 1 ran, then `event: result` (data = ChatResult: the
     answer, the tables, phase 1's StatAnswer and the Vega-Lite chart). An exception becomes `event: error`."""
     final: dict = {}
+    config = {"configurable": {"thread_id": req.thread_id or uuid.uuid4().hex}}  # no thread_id: a new conversation
     try:
-        for mode, chunk in graph.stream({"messages": [("user", req.question)]}, stream_mode=["custom", "values"]):
+        for mode, chunk in graph.stream({"messages": [("user", req.question)]}, config,
+                                        stream_mode=["custom", "values"]):
             if mode == "custom":
                 name, payload = chunk
                 yield ServerSentEvent(event=name, data=payload)

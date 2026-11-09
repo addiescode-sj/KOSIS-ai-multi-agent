@@ -5,7 +5,7 @@
     python scripts\\stat_oracle.py --stage t3-oracle-hcx --interval 5          (HCX_API_KEY in the shell)
     cd vendor\\phase1 && set KOSIS_WORKSPACE=<this repo> && python -m eval.grade_run --run <run folder>
 
-Each golden question goes through kosis_agent.graph.build_graph with an oracle search in place of phase 2: the
+Each golden question goes through kosis_agent.graph.main_graph.build_graph with an oracle search in place of phase 2: the
 search returns `found` with the golden table's tables.csv key (Path(item.table).stem), so stat_agent calls
 phase 1 summarize_stat_run exactly as it does after a real search (01-reproduce-baselines.md W4). Here a difference
 from the phase 1 baseline run is the tool wiring (key, LLMConfig, result), not the search.
@@ -75,7 +75,7 @@ def run(golden: Path, stage: str, llm, interval: float = 0.0, limit: int | None 
     from kosis_chat.config import resolve_path, settings_from_llm
     from kosis_chat.pipeline import VERSION
 
-    from kosis_agent.graph import build_graph
+    from kosis_agent.graph.main_graph import build_graph
 
     if interval < 0:
         raise ValueError("interval cannot be negative")
@@ -100,7 +100,7 @@ def run(golden: Path, stage: str, llm, interval: float = 0.0, limit: int | None 
         "stage": stage,
         "started_at": started.isoformat(timespec="seconds"),
         "git_commit": "unknown",
-        "entry": "kosis_agent.graph.build_graph (oracle search) -> kosis_chat.api.summarize_stat_run",
+        "entry": "kosis_agent.graph.main_graph.build_graph (oracle search) -> kosis_chat.api.summarize_stat_run",
         "pipeline": "stat",
         "golden_version": version,
         "golden_sha256": golden_sha,

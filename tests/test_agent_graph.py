@@ -1,12 +1,20 @@
-"""Phase 3 connection: question -> phase 2 SearchModule -> (refuse: its refusal_text | found: phase 1 summarize_stat_run
-with picked[0].key) -> SSE. Offline: a fake search module and a fake phase 1 call."""
+"""Phase 3 main graph: question -> search_tables (phase 2 SearchModule) -> (refuse: its refusal_text | found:
+summarize_stat (phase 1 summarize_stat_run with picked[0].key)) -> SSE. Offline: a fake search module and a fake
+phase 1 call. T3-23: the nodes call phase 1 / 2 through LangChain tools, so the agent eval layer can grade the graph."""
 
 import json
+from typing import TypedDict
 
 from fastapi.testclient import TestClient
+from langgraph.graph import END, START, StateGraph
 
 from backend.app.main import app, get_graph
-from kosis_agent.graph import ChatResult, build_graph, chat_result
+from evals.evaluators import agent as grader
+from evals.runners import agent as runner
+from evals.schemas import AgentScenario
+from kosis_agent.graph.main_graph import build_graph
+from kosis_agent.graph.state import ChatResult, chat_result, new_checkpointer
+from kosis_agent.services.statistics import NOT_IN_CATALOG_TEXT
 from kosis_ai.schemas import Refusal, StatAnswer
 from kosis_chat.schemas.io import StatOutput
 from kosis_chat.schemas.resources import LLMConfig as StatLLMConfig
@@ -17,15 +25,31 @@ TABLE = TableCandidate(key="101_DT_1B8000H", org_id="101", tbl_id="DT_1B8000H", 
                        survey_name="인구동향조사", organization="국가데이터처", period="년 (2015 ~ 2025)", url="https://kosis.kr")
 
 
+class Counter(TypedDict):
+    n: int
+
+
+def _inner_graph():
+    """A tiny compiled graph, standing in for the phase 1 / phase 2 graphs the tools run inside them."""
+    g = StateGraph(Counter)
+    g.add_node("inc", lambda s: {"n": s["n"] + 1})
+    g.add_edge(START, "inc")
+    g.add_edge("inc", END)
+    return g.compile()
+
+
 class FakeSearch:
-    """Stand-in for kosis_rag.api.SearchModule: node events, then ("output", SearchOutput)."""
+    """Stand-in for kosis_rag.api.SearchModule: node events, then ("output", SearchOutput). Runs a compiled graph
+    inside, as the real module does, so the checkpointer isolation (kosis_agent/runtime.py) is exercised."""
 
     def __init__(self, route: str):
         self.route = route
         self.questions: list[str] = []
+        self.inner = _inner_graph()
 
     def stream(self, inp):
         self.questions.append(inp.question)
+        self.inner.invoke({"n": 0})
         yield "parse", {"seconds": 0.01}
         yield "gate", {"seconds": 0.02, "route": self.route}
         if self.route == "refuse":
@@ -46,6 +70,17 @@ class FakeSummarize:
         answer = StatAnswer(outcome="refused", text="이 표에는 2030년 자료가 없어요.",
                             refusal=Refusal(reason="out_of_scope", message="이 표에는 2030년 자료가 없어요."))
         return StatOutput(answer=answer, chart=None, spans=[{"name": "judge", "status": "ok"}])
+
+
+def _sse(graph, question: str):
+    app.dependency_overrides[get_graph] = lambda: graph
+    try:
+        res = TestClient(app).post("/chat/stream", json={"question": question})
+    finally:
+        app.dependency_overrides.clear()
+    events = [line.removeprefix("event: ") for line in res.text.splitlines() if line.startswith("event: ")]
+    data = [json.loads(line.removeprefix("data: ")) for line in res.text.splitlines() if line.startswith("data: ")]
+    return res, events, data
 
 
 def test_refused_search_ends_with_its_refusal_text_and_skips_phase1():
@@ -80,31 +115,69 @@ def test_graph_streams_search_nodes_then_stat():
 
 
 def test_chat_stream_sends_node_events_then_the_result():
-    app.dependency_overrides[get_graph] = lambda: build_graph(FakeSearch("found"), STAT_LLM, summarize=FakeSummarize())
-    try:
-        res = TestClient(app).post("/chat/stream", json={"question": "2030년 출생아 수"})
-    finally:
-        app.dependency_overrides.clear()
-    lines = res.text.splitlines()
-    events = [line.removeprefix("event: ") for line in lines if line.startswith("event: ")]
-    data = [json.loads(line.removeprefix("data: ")) for line in lines if line.startswith("data: ")]
+    res, events, data = _sse(build_graph(FakeSearch("found"), STAT_LLM, summarize=FakeSummarize()), "2030년 출생아 수")
     assert res.status_code == 200
     assert events == ["parse", "gate", "stat", "result"]
     result = ChatResult.model_validate(data[-1])
     assert result.answer == "이 표에는 2030년 자료가 없어요." and result.picked[0].key == "101_DT_1B8000H"
 
 
-def test_chat_stream_reports_a_phase1_failure_as_an_error_event():
-    def failing(question, table_id, **kw):
+def test_a_key_missing_from_tables_csv_is_a_refusal_not_an_error():
+    """T3-23 behaviour change: phase 1's LookupError used to end the stream with `error`; now it is a refused answer."""
+    def missing(question, table_id, **kw):
         raise LookupError(f"{table_id} is not in tables.csv")
 
-    app.dependency_overrides[get_graph] = lambda: build_graph(FakeSearch("found"), STAT_LLM, summarize=failing)
-    try:
-        res = TestClient(app).post("/chat/stream", json={"question": "q"})
-    finally:
-        app.dependency_overrides.clear()
-    events = [line.removeprefix("event: ") for line in res.text.splitlines() if line.startswith("event: ")]
-    assert events[-1] == "error" and "LookupError" in res.text
+    _, events, data = _sse(build_graph(FakeSearch("found"), STAT_LLM, summarize=missing), "q")
+    assert events == ["parse", "gate", "stat", "result"]
+    result = ChatResult.model_validate(data[-1])
+    assert result.no_answer and result.no_answer_reason == "out_of_scope" and result.answer == NOT_IN_CATALOG_TEXT
+
+
+def test_chat_stream_reports_a_phase1_model_failure_as_an_error_event():
+    def failing(question, table_id, **kw):
+        raise RuntimeError("HCX-DASH-002 call failed (429)")
+
+    res, events, _ = _sse(build_graph(FakeSearch("found"), STAT_LLM, summarize=failing), "q")
+    assert events[-1] == "error" and "RuntimeError" in res.text
+
+
+def test_tool_spans_carry_what_the_agent_harness_grades():
+    """The agent eval layer reads each turn from its tool spans: names, args (table_key) and results (route,
+    StatAnswer). Graded with the harness's own functions, so a contract drift fails here."""
+    graph = build_graph(FakeSearch("found"), STAT_LLM, summarize=FakeSummarize(), checkpointer=new_checkpointer())
+    s = AgentScenario.model_validate({"sid": "s1", "turns": [{"question": "2030년 출생아 수", "expect": {}}]})
+    (record,) = runner.run(graph, [s])[("s1", 0)]
+    calls = record["calls"]
+    assert [c["name"] for c in calls] == ["search_tables", "summarize_stat"]
+    assert calls[0]["args"] == {"question": "2030년 출생아 수"} and calls[0]["result"]["route"] == "found"
+    assert calls[1]["args"] == {"question": "2030년 출생아 수", "table_key": "101_DT_1B8000H"}
+    assert grader.state_key(calls) == "101_DT_1B8000H"
+    assert grader.stat_answer(calls).refusal.reason == "out_of_scope"  # the result validates as a StatAnswer
+    assert grader.refused(calls) and record["error"] is None
+
+
+def test_a_search_refusal_is_graded_as_a_refusal():
+    graph = build_graph(FakeSearch("refuse"), STAT_LLM, summarize=FakeSummarize(), checkpointer=new_checkpointer())
+    s = AgentScenario.model_validate({"sid": "s1", "turns": [{"question": "비트코인 가격", "expect": {}}]})
+    (record,) = runner.run(graph, [s])[("s1", 0)]
+    assert [c["name"] for c in record["calls"]] == ["search_tables"] and grader.refused(record["calls"])
+
+
+def test_the_checkpointer_keeps_the_conversation_but_not_the_inner_graphs(caplog):
+    """P7 (plans/agent-graph-refactor.md): a graph run inside a node inherits the parent's checkpointer, so phase 1 /
+    phase 2 state would pile up in the conversation's checkpoints. kosis_agent.runtime.without_checkpointer stops it.
+    The state's models are read back without the serializer's "unregistered type" warning (CHECKPOINT_TYPES)."""
+    saver = new_checkpointer()
+    graph = build_graph(FakeSearch("found"), STAT_LLM, summarize=FakeSummarize(), checkpointer=saver)
+    config = {"configurable": {"thread_id": "t1"}}
+    graph.invoke({"messages": [("user", "2030년 출생아 수")]}, config)
+    second = graph.invoke({"messages": [("user", "2031년은?")]}, config)
+    assert [m.content for m in second["messages"]] == ["2030년 출생아 수", "이 표에는 2030년 자료가 없어요.",
+                                                       "2031년은?", "이 표에는 2030년 자료가 없어요."]
+    namespaces = {c.config["configurable"].get("checkpoint_ns", "") for c in saver.list(None)}
+    assert namespaces == {""}  # only the main graph's own checkpoints
+    assert type(graph.get_state(config).values["stat"]) is StatOutput
+    assert not [r for r in caplog.records if "unregistered type" in r.getMessage()]
 
 
 def test_health():
