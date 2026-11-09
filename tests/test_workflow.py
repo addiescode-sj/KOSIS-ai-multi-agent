@@ -272,3 +272,187 @@ def test_summarize_stat_args_carry_the_conditions_of_each_turn():
     assert [r["passed"] for r in rows] == [True, True], [r["errors"] for r in rows]
     assert [c["name"] for c in records[1]["calls"]] == ["summarize_stat"]  # 지시어 턴은 검색하지 않음
     assert records[1]["calls"][0]["args"]["question"] == "그 표에서 부산은?"
+
+
+# ---------------------------------------------------------------- T3-27: 이월 해석 (graph/context.py)
+
+from kosis_agent.graph.context import LLMReading, carry_over, leftover, read_turn, verify_reading  # noqa: E402
+from kosis_agent.services.chart import NO_CHART_TEXT, draw, phase1_kind  # noqa: E402
+from kosis_ai.schemas import ChartPoint, ChartSeries, ChartSpec  # noqa: E402
+from kosis_rag.parse.node import parse_query  # noqa: E402
+
+PREV = "2025년 경기도에서 태어난 아이는 몇 명이에요?"
+
+
+def rules(question, previous=PREV, table="101_A", **kw):
+    return read_turn(question, active_table=table, active_question=previous, parse=parse_query, mode="rules", **kw)
+
+
+@pytest.mark.parametrize("question, expected", [
+    ("부산은?", "2025년 부산광역시에서 태어난 아이는 몇 명이에요?"),
+    ("세종은요?", "2025년 세종특별자치시에서 태어난 아이는 몇 명이에요?"),
+    ("그럼 부산 쪽은?", "2025년 부산광역시에서 태어난 아이는 몇 명이에요?"),
+    ("아니 2023년으로", "2023년 경기도에서 태어난 아이는 몇 명이에요?"),
+    ("2024년은?", "2024년 경기도에서 태어난 아이는 몇 명이에요?"),
+])
+def test_an_elliptical_follow_up_carries_the_previous_conditions(question, expected):
+    r = rules(question)
+    assert r.use_previous_table and r.by == "rule" and r.resolved_question == expected
+
+
+@pytest.mark.parametrize("question", ["2024년 부산의 자연증가건수는 몇 명이야?", "2020년 부산광역시 인구밀도는?",
+                                      "2023년 부산 출생 통계 알려줘"])
+def test_a_full_question_is_a_new_question_even_without_a_measure_word(question):
+    """실전 2가 지표 낱말을 못 읽는 질문("자연증가건수")도 남는 내용이 길면 새 질문이다."""
+    r = rules(question)
+    assert not r.use_previous_table and r.resolved_question == question
+
+
+@pytest.mark.parametrize("question, kind", [("그 표로 막대그래프 그려줘", "bar"), ("꺾은선 그래프로 보여줘", "line"),
+                                            ("이걸 막대 차트로 그려줘", "bar")])
+def test_a_chart_only_request(question, kind):
+    r = rules(question)
+    assert r.chart_only and r.use_previous_table and r.chart_type == kind
+
+
+@pytest.mark.parametrize("question", ["남자는?", "작년은?"])
+def test_rules_do_not_guess(question):
+    """규칙이 판단하지 못하면 원문으로 새 검색(rules) — hybrid에서는 이 턴만 LLM에 묻는다."""
+    r = rules(question)
+    assert not r.use_previous_table and r.by == "none" and r.resolved_question == question
+
+
+def test_no_carry_over_without_a_surface_to_replace():
+    assert carry_over("2015년부터 2020년까지 합계출산율은?", parse_query("2015년부터 2020년까지 합계출산율은?"),
+                      parse_query("2023년은?")) is None  # 직전 질문이 기간 범위: 바꿔 끼우지 않는다
+    assert carry_over("합계출산율 최근 값 알려줘", parse_query("합계출산율 최근 값 알려줘"), parse_query("부산은?")) is None
+    assert leftover("그럼 부산 쪽은?") == ""
+
+
+def test_no_previous_table_means_a_new_question():
+    r = read_turn("부산은?", active_table=None, active_question=None, parse=parse_query)
+    assert not r.use_previous_table and r.by == "none"
+
+
+def test_the_llm_reading_is_checked_against_both_questions():
+    ok = LLMReading(standalone_question="2025년 경기도에서 태어난 남자 아이는 몇 명이에요?", use_previous_table=True)
+    reworded = LLMReading(standalone_question="2025년 경기도 남자 출생아 수는?", use_previous_table=True)
+    assert verify_reading(LLMReading(standalone_question="2025년 부산광역시에서 태어난 아이는 몇 명이에요?",
+                                     use_previous_table=True), PREV, "부산은?", parse_query)
+    assert not verify_reading(LLMReading(standalone_question="2019년 경기도에서 태어난 아이는 몇 명이에요?",
+                                         use_previous_table=True), PREV, "작년은?", parse_query)  # 2019: 어디에도 없는 숫자
+    assert not verify_reading(LLMReading(standalone_question="2025년 대구광역시에서 태어난 아이는 몇 명이에요?",
+                                         use_previous_table=True), PREV, "부산은?", parse_query)  # 대구: 지어낸 지역
+    assert verify_reading(ok, PREV, "남자는?", parse_query)
+    assert not verify_reading(reworded, PREV, "남자는?", parse_query)  # "출생아": 두 질문 어디에도 없는 낱말
+
+
+class FakeLLM:
+    def __init__(self, reading=None, error=None):
+        self.reading, self.error, self.calls = reading, error, []
+
+    def __call__(self, previous, question):
+        self.calls.append((previous, question))
+        if self.error:
+            raise self.error
+        return self.reading
+
+
+def test_hybrid_asks_the_llm_only_when_the_rules_do_not_decide():
+    llm = FakeLLM(LLMReading(standalone_question="2025년 경기도에서 태어난 남자 아이는 몇 명이에요?", use_previous_table=True))
+    decided = read_turn("부산은?", active_table="T", active_question=PREV, parse=parse_query, mode="hybrid", llm=llm)
+    assert decided.by == "rule" and llm.calls == []
+    asked = read_turn("남자는?", active_table="T", active_question=PREV, parse=parse_query, mode="hybrid", llm=llm)
+    assert asked.by == "llm" and asked.use_previous_table and llm.calls == [(PREV, "남자는?")]
+
+
+def test_a_rejected_or_failed_llm_reading_falls_back_to_a_new_search():
+    made_up = FakeLLM(LLMReading(standalone_question="2019년 경기도에서 태어난 남자 아이는 몇 명이에요?", use_previous_table=True))
+    r = read_turn("남자는?", active_table="T", active_question=PREV, parse=parse_query, mode="hybrid", llm=made_up)
+    assert not r.use_previous_table and r.resolved_question == "남자는?"
+    broken = FakeLLM(error=TimeoutError("HCX"))
+    r = read_turn("남자는?", active_table="T", active_question=PREV, parse=parse_query, mode="hybrid", llm=broken)
+    assert not r.use_previous_table and r.by == "none"
+
+
+def test_a_new_question_from_the_llm_searches_with_the_user_wording():
+    llm = FakeLLM(LLMReading(standalone_question="2025년 전국 혼인 건수", use_previous_table=False))
+    r = read_turn("결혼은?", active_table="T", active_question=PREV, parse=parse_query, mode="llm", llm=llm)
+    assert not r.use_previous_table and r.resolved_question == "결혼은?"  # LLM 문장이 아니라 원문
+
+
+def test_llm_mode_asks_the_llm_on_every_follow_up():
+    llm = FakeLLM(LLMReading(standalone_question="2025년 부산광역시에서 태어난 아이는 몇 명이에요?", use_previous_table=True))
+    r = read_turn("부산은?", active_table="T", active_question=PREV, parse=parse_query, mode="llm", llm=llm)
+    assert r.by == "llm" and len(llm.calls) == 1
+
+
+# ---------------------------------------------------------------- T3-27: 그래프에서 이월·차트
+
+def bar_chart(key: str) -> ChartSpec:
+    return ChartSpec(kind="bar", title="출생아 수", series=[ChartSeries(name=key, points=[
+        ChartPoint(label="경기도", value=100, display="100명", fact_id="f1")])], fact_ids=["f1"])
+
+
+def charted(key: str) -> StatOutput:
+    out = answered(key)
+    return out.model_copy(update={"chart": bar_chart(key)})
+
+
+def test_an_elliptical_turn_asks_phase1_the_carried_over_question():
+    search = Search(["101_A"])
+    stat = Stat({"101_A": answered("101_A")})
+    graph = build_graph(search, STAT_LLM, summarize=stat, checkpointer=new_checkpointer())
+    config = {"configurable": {"thread_id": "t"}}
+    graph.invoke({"messages": [("user", PREV)]}, config)
+    r = chat_result(graph.invoke({"messages": [("user", "부산은?")]}, config))
+    assert search.questions == [PREV]  # 이월 턴은 검색하지 않음
+    assert stat.calls[-1] == ("2025년 부산광역시에서 태어난 아이는 몇 명이에요?", "101_A")
+    assert r.reused_table and r.interpreted_by == "rule" and r.resolved_question == stat.calls[-1][0]
+    third = chat_result(graph.invoke({"messages": [("user", "아니 2023년으로")]}, config))
+    assert stat.calls[-1][0] == "2023년 부산광역시에서 태어난 아이는 몇 명이에요?"  # 이월은 직전에 해석된 질문 위에 쌓인다
+    assert third.table_key == "101_A"
+
+
+def test_a_chart_only_turn_redraws_the_previous_answer_without_phase1():
+    stat = Stat({"101_A": charted("101_A")})
+    graph = build_graph(Search(["101_A"]), STAT_LLM, summarize=stat, checkpointer=new_checkpointer())
+    config = {"configurable": {"thread_id": "t"}}
+    graph.invoke({"messages": [("user", PREV)]}, config)
+    r = chat_result(graph.invoke({"messages": [("user", "꺾은선 그래프로 보여줘")]}, config))
+    assert len(stat.calls) == 1  # 숫자는 직전 답 그대로
+    assert r.answer_origin == "chart" and r.outcome == "answered" and r.chart is not None and r.chart_type == "line"
+    assert r.table_key == "101_A"
+
+
+def test_a_chart_only_turn_without_chart_data_says_so():
+    graph = build_graph(Search(["101_A"]), STAT_LLM, summarize=Stat({"101_A": answered("101_A")}),
+                        checkpointer=new_checkpointer())
+    config = {"configurable": {"thread_id": "t"}}
+    graph.invoke({"messages": [("user", PREV)]}, config)
+    r = chat_result(graph.invoke({"messages": [("user", "막대그래프로 그려줘")]}, config))
+    assert r.outcome == "failed" and r.answer == NO_CHART_TEXT and r.chart is None
+
+
+def test_the_harness_grades_chart_requests_through_make_chart():
+    """차트 요청 턴은 make_chart(chart_type)를 부르고, 요청 없는 턴은 부르지 않는다(extra_call 방지)."""
+    stat = Stat({"101_A": charted("101_A")})
+    graph = build_graph(Search(["101_A"]), STAT_LLM, summarize=stat, checkpointer=new_checkpointer())
+    chart = {"name": "make_chart", "args": {"table_key": "101_A", "chart_type": "bar"}}
+    rows, records = _graded(graph,
+                            (PREV, {"tools": [{"name": "search_tables"}, {"name": "summarize_stat"}], "table_key": "101_A"}),
+                            ("그 표로 막대그래프 그려줘", {"tools": [chart], "table_key": "101_A"}))
+    assert [r["passed"] for r in rows] == [True, True], [r["errors"] for r in rows]
+    graph2 = build_graph(Search(["101_A"]), STAT_LLM, summarize=stat, checkpointer=new_checkpointer())
+    rows, _ = _graded(graph2, (PREV + " 막대그래프로도 그려줘",
+                               {"tools": [{"name": "search_tables"}, {"name": "summarize_stat"}, chart]}))
+    assert rows[0]["passed"], rows[0]["errors"]
+
+
+def test_phase1_chart_kinds():
+    assert phase1_kind("bar", "line") == "timeline" and phase1_kind("bar", "multi_line") == "grouped_bar"
+    assert phase1_kind("line", "timeline") == "line" and phase1_kind("line", "grouped_bar") == "multi_line"
+    assert phase1_kind("pie", "bar") == "pie" and phase1_kind("bar", "bar") == "bar"
+    out = draw(bar_chart("101_A"), "bar")
+    assert out["vega_lite"] is not None and out["kind"] == "bar" and out["note"] is None
+    assert draw(None, "bar")["note"] == NO_CHART_TEXT

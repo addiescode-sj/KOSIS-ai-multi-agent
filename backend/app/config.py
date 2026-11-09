@@ -14,6 +14,8 @@ then reads os.environ. In the container compose passes the same file as `env_fil
     STAT_PROVIDER STAT_MODEL STAT_RETRY_INTERVAL    phase 1 model (hcx | mock, HCX-DASH-002), seconds before a retry
     HCX_API_KEY                                     phase 1 key too (None: LLMKeyMissing when a phase 1 LLM step runs)
     ALT_TABLE_BUDGET                                candidate tables tried after a table-mismatch refusal (default 0 = off, T3-23)
+    INTERPRETER INTERPRETER_MODEL                   follow-up reading rules | hybrid | llm (default hybrid, T3-27) and its
+                                                    HCX model for ChatClovaX (empty = no LLM step: hybrid reads by rules only)
 
 The search names and defaults are phase 2's backend/app/config.py search_config_from_shell @56b4252 (which this repo
 cannot import: its backend.app shadows phase 2's), so an unset variable means the phase 2 default. The phase 1 model
@@ -47,6 +49,8 @@ class AgentConfig(NamedTuple):
     stat_llm: StatLLMConfig
     stat_retry_interval: float
     alt_table_budget: int  # T3-23: tables tried after the first one refuses for a table mismatch
+    interpreter: str  # T3-27: rules | hybrid | llm (src/kosis_agent/graph/context.py)
+    interpreter_model: str | None  # T3-27: ChatClovaX model for the LLM step; None = no LLM step
 
 
 def _env(name: str) -> str | None:
@@ -106,4 +110,6 @@ def agent_config() -> AgentConfig:
     )
     return AgentConfig(spec=spec, options=options, stage2_llm=stage2_llm(options.stage2), stat_llm=stat_llm(),
                        stat_retry_interval=float(_env("STAT_RETRY_INTERVAL") or 0.0),
-                       alt_table_budget=int(_env("ALT_TABLE_BUDGET") or 0))
+                       alt_table_budget=int(_env("ALT_TABLE_BUDGET") or 0),
+                       interpreter=(_env("INTERPRETER") or "hybrid").strip().lower(),
+                       interpreter_model=_env("INTERPRETER_MODEL"))

@@ -3,6 +3,7 @@ this only exposes it. Settings: <repo>/.env loaded at import (shell values win),
 
 from __future__ import annotations
 
+import os
 import threading
 import uuid
 from typing import Any, Iterator
@@ -37,7 +38,20 @@ def build_agent():
     # ponytail: in-memory checkpointer, lost on restart and kept per thread for the process lifetime;
     # a Postgres saver once the compose Postgres is wired (KOS-86)
     return build_graph(search, cfg.stat_llm, retry_interval=cfg.stat_retry_interval, checkpointer=new_checkpointer(),
-                       alt_table_budget=cfg.alt_table_budget)
+                       alt_table_budget=cfg.alt_table_budget, interpreter=cfg.interpreter, llm=interpreter_llm(cfg))
+
+
+def interpreter_llm(cfg):
+    """The follow-up reader's LLM step (T3-27): ChatClovaX on INTERPRETER_MODEL with HCX_API_KEY, else None (rules only).
+    A missing key is not an error here: the hybrid reader then reads by rules, as with no model set."""
+    key = os.environ.get("HCX_API_KEY")
+    if not cfg.interpreter_model or not key or cfg.interpreter == "rules":
+        return None
+    from langchain_naver import ChatClovaX
+
+    from kosis_agent.graph.context import make_llm_reader
+
+    return make_llm_reader(ChatClovaX(model=cfg.interpreter_model, api_key=key, temperature=0))
 
 
 def get_graph():

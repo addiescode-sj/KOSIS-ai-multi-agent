@@ -1,18 +1,22 @@
-"""메인 그래프 (T3-23 옵션 A: 결정적 워크플로). 다음에 무엇을 할지는 LLM이 아니라 아래 조건부 경로(코드)가 정한다.
+"""메인 그래프 (T3-23 결정적 워크플로 + T3-27 이월·차트 요청). 다음에 무엇을 할지는 아래 조건부 경로(코드)가 정한다.
 
-    START → context ─(지시어 + 직전 표 있음: 검색 생략)───────────────────┐
-                └─(새 질문)→ search ─(refuse · 넘길 표 없음)→ finalize       │
-                                └─(found)→ statistics ←─────────────────────┘
-                                             ├─(표 불일치 거절 · 예산 남음)→ statistics (다음 후보 표)
-                                             ├─(답함)→ chart → finalize
+    START → context ─(차트만 다시: "그 표로 막대그래프")──────────────────────────────┐
+                ├─(직전 표 재사용: 지시어 "그 표에서…", 이월 "부산은?"·"아니 2023년으로")─┐   │
+                └─(새 질문)→ search ─(refuse · 넘길 표 없음)→ finalize                 │   │
+                                └─(found)→ statistics ←───────────────────────────────┘   │
+                                             ├─(표 불일치 거절 · 예산 남음)→ statistics      │
+                                             ├─(답함)→ chart → finalize ←──────────────────┘
                                              └─(되묻기 · 질문 문제 · 예산 끝)→ finalize
     finalize → END   (outcome: answered | refused | clarify | failed)
 
 노드별 역할:
-- context    이번 턴 상태를 비우고, 질문이 직전 표를 가리키는지 규칙으로 판단한다(graph/context.py).
-- search     search_tables 툴(실전 2 검색 그래프 전체)을 부른다.
+- context    이번 턴 상태를 비우고, 이번 질문을 직전 대화에 비춰 해석한다(graph/context.py read_turn):
+             직전 표를 다시 쓸지, 실전 1에 넘길 문장(이월이면 조건을 채운 독립 질문), 차트 요청.
+             규칙이 먼저 판단하고, 규칙이 판단하지 못한 턴만 LLM 한 번(interpreter="hybrid", LLM이 있을 때).
+- search     search_tables 툴(실전 2 검색 그래프 전체)을 사용자 원문으로 부른다.
 - statistics summarize_stat 툴(실전 1)을 표 하나로 부른다. 표 불일치로 거절되면 다음 후보 표로 다시 들어온다.
-- chart      실전 1이 준 ChartSpec을 Vega-Lite로 바꾼다(툴이 아닌 함수 호출: services/chart.py 참고).
+- chart      사용자가 차트를 요청했으면 make_chart 툴로 요청한 종류를 그리고, 아니면 실전 1이 준 ChartSpec을
+             그대로 Vega-Lite로 바꾼다(툴 아님: 요청하지 않은 툴 호출은 하네스가 extra_call로 감점).
 - finalize   outcome과 답 메시지를 정한다. 답 문장은 실전 1·2가 만든 것이나 코드 고정 문장만 쓴다(LLM 문장 생성 없음).
 
 노드는 실전 1·2를 직접 부르지 않고 LangChain 툴을 거친다. 그래서 `execute_tool <name>` span이 생기고, T3-06 agent
@@ -31,10 +35,10 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool
 from langgraph.graph import END, START, StateGraph
 
-from kosis_agent.graph.context import refers_to_previous_table
+from kosis_agent.graph.context import LLMReader, Mode, chart_request, read_turn
 from kosis_agent.graph.state import AgentState
 from kosis_agent.retrieval.search import make_search_tables_tool
-from kosis_agent.services.chart import to_vega_lite
+from kosis_agent.services.chart import CHART_NAMES, make_chart_tool, to_vega_lite
 from kosis_agent.services.statistics import make_summarize_stat_tool
 from kosis_chat.api import summarize_stat_run
 from kosis_chat.schemas.io import StatOutput
@@ -89,7 +93,8 @@ def default_parser(search: Any) -> Callable[[str], ParsedQuery]:
 
 def build_graph(search: Any, stat_llm: StatLLMConfig, *, retry_interval: float = 0.0,
                 summarize: Callable[..., StatOutput] = summarize_stat_run, checkpointer: Any = None,
-                alt_table_budget: int = 0, parse: Callable[[str], ParsedQuery] | None = None):
+                alt_table_budget: int = 0, parse: Callable[[str], ParsedQuery] | None = None,
+                interpreter: Mode = "hybrid", llm: LLMReader | None = None):
     """메인 그래프를 compile한다.
 
     In: search = kosis_rag.api.SearchModule (테스트·stat_oracle에서는 .stream(SearchInput)만 있는 가짜);
@@ -101,6 +106,8 @@ def build_graph(search: Any, stat_llm: StatLLMConfig, *, retry_interval: float =
             정답 표가 아닌 표로 "답함"이 됐다(거절 → 틀린 표의 숫자). 데이터 정확성이 먼저라서, HCX·실시간 검색으로
             충분한 표본을 잰 뒤에 켤지 정한다.
         parse = 질문 → ParsedQuery (None이면 default_parser(search)). summarize_stat의 조건 인자를 채운다.
+        interpreter = 이월 해석 방식 rules | hybrid | llm (graph/context.py). llm = LLMReader(make_llm_reader로 만듦).
+            llm이 None이면 hybrid는 rules와 같다(LLM 단계 없음).
     Out: AgentState 위의 compiled graph. stream_mode "custom"으로 돌리면 실전 2 노드마다 (노드 이름, trace 항목),
         그다음 실전 1 시도마다 ("stat", {"seconds", "key", "spans"})가 온다.
     Errors: 실전 1의 LLMKeyMissing·RuntimeError와 실전 2의 예외는 그대로 올라간다(SSE `error`). 실전 1의
@@ -110,20 +117,28 @@ def build_graph(search: Any, stat_llm: StatLLMConfig, *, retry_interval: float =
         raise ValueError("alt_table_budget cannot be negative")
     search_tables = make_search_tables_tool(search)
     summarize_stat = make_summarize_stat_tool(stat_llm, retry_interval=retry_interval, summarize=summarize)
+    make_chart = make_chart_tool()
     parse = parse or default_parser(search)
 
     def context_node(state: AgentState) -> dict:
-        """이번 턴 상태를 비우고, 질문이 직전 표("그 표")를 가리키는지 정한다."""
+        """이번 턴 상태를 비우고, 이번 질문을 해석한다(직전 표 재사용 · 실전 1에 넘길 문장 · 차트 요청)."""
         question = state["messages"][-1].content
-        reuse = bool(state.get("active_table")) and refers_to_previous_table(question)
-        return {"question": question, "reused_table": reuse, "attempts": [], "stat": None, "table_key": None,
-                "chart": None, "outcome": None, "degraded": False}
+        reading = read_turn(question, active_table=state.get("active_table"),
+                            active_question=state.get("active_question"), parse=parse, mode=interpreter, llm=llm)
+        # 종류 말 없이 "그래프로도 보여줘"도 차트 요청이다(chart_type None = 실전 1이 고른 종류)
+        wants_chart = reading.chart_only or reading.chart_type is not None or chart_request(question)[0]
+        return {"question": question, "resolved_question": reading.resolved_question, "interpreted_by": reading.by,
+                "reused_table": reading.use_previous_table, "chart_requested": wants_chart,
+                "chart_type": reading.chart_type, "chart_only": reading.chart_only, "chart_note": None,
+                "attempts": [], "stat": None, "table_key": None, "chart": None, "outcome": None, "degraded": False}
 
     def after_context(state: AgentState) -> str:
+        if state["chart_only"]:
+            return "chart"
         return "statistics" if state["reused_table"] else "search"
 
     def search_node(state: AgentState, config: RunnableConfig) -> dict:
-        """이번 질문으로 표를 찾는다. 2차 리랭커가 실패했으면 degraded로 표시한다(실전 2는 조용히 1차 순서로 대신함)."""
+        """사용자 원문으로 표를 찾는다(해석기가 다시 쓴 문장이 아님). 2차 리랭커가 실패했으면 degraded로 표시한다."""
         out: SearchOutput = call_tool(search_tables, {"question": state["question"]}, config).artifact
         degraded = any(s.get("node") == "rerank2" and s.get("stage2_error") for s in out.spans)
         return {"search": out, "degraded": degraded}
@@ -142,12 +157,14 @@ def build_graph(search: Any, stat_llm: StatLLMConfig, *, retry_interval: float =
     def statistics_node(state: AgentState, config: RunnableConfig) -> dict:
         """표 하나로 실전 1에 답을 받는다. 숫자는 실전 1의 코드가 계산한다.
 
-        툴 인자 = 질문 + 표 키 + 조건 4개(기간·시도·분류). 조건은 실전 2와 같은 규칙으로 이번 질문에서 읽는다(LLM 아님).
-        지시어 턴("그 표에서 부산은?")도 이번 질문을 읽으므로, 바뀐 조건(부산)이 인자에 그대로 드러난다.
+        툴 인자 = 질문 + 표 키 + 조건 4개(기간·시도·분류). 질문은 해석된 문장(resolved_question)이다: 이월 턴이면
+        "부산은?"이 아니라 "2025년 부산광역시에서 태어난 아이는 몇 명이에요?"를 넘긴다(실전 1은 문장에서 조건을 읽음).
+        조건 인자는 그 문장을 실전 2와 같은 규칙으로 읽은 값이라, 이월이 맞는 조건을 담았는지가 인자에 드러난다.
         """
         key = next_table(state)
-        parsed = parse(state["question"])
-        args = {"question": state["question"], "table_key": key,
+        question = state.get("resolved_question") or state["question"]
+        parsed = parse(question)
+        args = {"question": question, "table_key": key,
                 **{field: getattr(parsed, field) for field in CONDITION_FIELDS}}
         stat: StatOutput = call_tool(summarize_stat, args, config).artifact
         answer = stat.answer
@@ -165,18 +182,37 @@ def build_graph(search: Any, stat_llm: StatLLMConfig, *, retry_interval: float =
                  and len(state["attempts"]) <= alt_table_budget and next_table(state) is not None)
         return "statistics" if retry else "finalize"
 
-    def chart_node(state: AgentState) -> dict:
-        return {"chart": to_vega_lite(state["stat"].chart)}
+    def chart_node(state: AgentState, config: RunnableConfig) -> dict:
+        """차트를 요청했으면 make_chart 툴(요청 종류), 아니면 실전 1이 준 차트를 그대로 그린다."""
+        if state["chart_only"]:  # 숫자는 직전 답 그대로, 차트만 다시
+            spec, key = state.get("active_chart"), state.get("active_table")
+        else:
+            spec, key = state["stat"].chart, state["table_key"]
+        if not state["chart_requested"]:
+            return {"chart": to_vega_lite(spec)}
+        args = {"table_key": key, "chart": spec.model_dump(mode="json") if spec else None,
+                "chart_type": state.get("chart_type")}
+        out = call_tool(make_chart, args, config).artifact
+        return {"chart": out["vega_lite"], "chart_note": out["note"]}
 
     def finalize_node(state: AgentState) -> dict:
-        """outcome과 답 메시지를 정한다. 답한 표는 다음 턴의 "그 표"(active_table)가 된다."""
+        """outcome과 답 메시지를 정한다. 답한 표는 다음 턴의 "그 표"(active_table)가 되고, 해석된 질문과 차트 데이터는
+        다음 턴의 이월·차트 요청에 쓰인다(active_question · active_chart)."""
         stat: StatOutput | None = state.get("stat")
+        if state["chart_only"]:  # 차트만 다시 그린 턴: 대화 상태(표·질문·차트)는 그대로 둔다
+            if state.get("chart") is None:
+                return {"outcome": "failed", "messages": [AIMessage(state.get("chart_note") or "")]}
+            name = CHART_NAMES.get(state.get("chart_type") or "", "차트")
+            text = f"직전 답을 {name}로 다시 그렸어요." + (f" {state['chart_note']}" if state.get("chart_note") else "")
+            return {"outcome": "answered", "messages": [AIMessage(text)]}
         if stat is None:  # 실전 1까지 가지 못함: 검색 거절, 또는 넘길 표 없음
             out: SearchOutput = state["search"]
             if out.route == "refuse":
                 return {"outcome": "refused", "messages": [AIMessage(out.refusal_text or "")]}
             return {"outcome": "failed", "messages": [AIMessage(NO_TABLE_TEXT)]}
         return {"outcome": stat.answer.outcome, "active_table": state["table_key"],
+                "active_question": state.get("resolved_question") or state["question"],
+                "active_chart": stat.chart if stat.chart is not None else None,
                 "messages": [AIMessage(stat.answer.text)]}
 
     graph = StateGraph(AgentState)
@@ -186,7 +222,7 @@ def build_graph(search: Any, stat_llm: StatLLMConfig, *, retry_interval: float =
     graph.add_node("chart", chart_node)
     graph.add_node("finalize", finalize_node)
     graph.add_edge(START, "context")
-    graph.add_conditional_edges("context", after_context, ["search", "statistics"])
+    graph.add_conditional_edges("context", after_context, ["search", "statistics", "chart"])
     graph.add_conditional_edges("search", after_search, ["statistics", "finalize"])
     graph.add_conditional_edges("statistics", after_statistics, ["statistics", "chart", "finalize"])
     graph.add_edge("chart", "finalize")

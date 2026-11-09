@@ -3,6 +3,13 @@
 > A new session starts here. Keep this short and current — it is the handoff
 > packet between sessions.
 
+## T3-27 멀티턴 조건 이월 · 멀티쿼리 (2026-11-09, 브랜치 T3-27-multiturn-context, PR #9 위, 진행 중)
+
+- 해석기: `src/kosis_agent/graph/context.py` `read_turn` — 규칙(남는 내용 낱말 · 슬롯 바꿔 끼우기 · 차트어) 우선, 판단 못 한 턴만 LLM(`INTERPRETER`=hybrid, `INTERPRETER_MODEL` 있을 때). LLM 독립 질문은 숫자·시도·낱말이 두 질문 안에 있을 때만 쓴다.
+- 차트: `make_chart(table_key, chart, chart_type)` 툴, 차트만 요청하면 `active_chart`를 다시 그림.
+- 측정: `python -m evals.builders.multiturn` → `run_eval --layer agent --agent evals.runners.multiturn_dev:build --scenarios evals/datasets/agent_scenarios_multiturn_dev_structure.jsonl` (`STAT_PROVIDER=mock`). 대화 성공률 0.340 → 0.915. 상세 `plans/T3-27.md` Result.
+- 남은 것: 사용자 검증용 표현, HCX 수치·LLM 단계 측정, 실시간 검색.
+
 ## T3-23 워크플로 그래프 + 6장 폴더 구조 (2026-11-09, 브랜치 T3-23-workflow-graph, 진행 중)
 
 - 폴더: `src/kosis_agent/{graph,retrieval,services,observability}` + `runtime.py`(연구 문서 6장 구조). `src/kosis_data/fetch.py` → `services/parquet_repository.py`. 지도는 `src/kosis_agent/retrieval/README.md`. 주석은 한국어(CLAUDE.md §4 예외).

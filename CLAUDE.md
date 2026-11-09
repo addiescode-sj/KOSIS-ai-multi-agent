@@ -50,7 +50,7 @@ TASK.md를 고치면 `.claude/hooks/linear_sync.py`가 `T3-xx` 제목으로 Line
 ```
 backend/app/       FastAPI (main.py: /chat/stream SSE, build_agent() = 서비스·agent 평가 진입점) · config.py(셸 환경 → 설정 객체). 로직은 src/
 src/kosis_agent/   에이전트 (docs/research/KOSIS-RAG-Retrieval-Agent-Architecture.md 6장 구조, T3-23)
-  graph/           실행 순서·분기: main_graph.py(워크플로 조립) · state.py(AgentState · ChatResult · checkpointer) · context.py(지시어 규칙)
+  graph/           실행 순서·분기: main_graph.py(워크플로 조립) · state.py(AgentState · ChatResult · checkpointer) · context.py(지시어·이월·차트 요청 해석: 규칙 우선, 판단 못 한 턴만 LLM, T3-27)
   retrieval/       search.py(search_tables 툴 = 실전 2 SearchModule) · README.md(검색 알고리즘이 실전 2 어디 있는지 지도)
   services/        statistics.py(summarize_stat 툴 = 실전 1) · chart.py(ChartSpec → Vega-Lite, make_chart 툴) · parquet_repository.py(T3-17)
   observability/   tracing.py(노드·툴·LLM OTel span 콜백, 서비스·평가 공용)
