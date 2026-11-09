@@ -3,6 +3,7 @@ services:
     build:
       context: .
       dockerfile: backend/Dockerfile
+      target: backend
     env_file:
       # Optional: /health and the stack come up without keys; /chat/stream needs HCX_API_KEY (503 otherwise)
       - path: .env
@@ -28,6 +29,9 @@ services:
         condition: service_healthy
       postgres:
         condition: service_healthy
+      # tables exist before the API starts (T3-18)
+      migrate:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
     healthcheck:
@@ -70,6 +74,20 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+
+  migrate:
+    # One-shot: alembic upgrade head on the postgres service, then exits (T3-18). Rerun after adding a migration:
+    # docker compose run --rm migrate
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+      target: migrate
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-kosis}:${POSTGRES_PASSWORD:-kosis}@postgres:5432/${POSTGRES_DB:-kosis}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
 
   redis:
     # Cache, session, async eval job queue (M3)

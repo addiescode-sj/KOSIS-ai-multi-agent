@@ -21,8 +21,13 @@
 ## 실행
 
 ```bash
-docker compose up -d postgres
+docker compose up -d postgres migrate
 ```
+
+- compose `migrate` 서비스가 `postgres`가 healthy가 된 뒤 `alembic upgrade head`를 한 번 실행하고 끝난다.
+  `docker compose up`으로 전체를 띄우면 backend는 `migrate`가 성공한 뒤에 뜬다. 마이그레이션을 더한 뒤에는
+  `docker compose run --rm migrate`로 다시 실행한다 (이미지는 `backend/Dockerfile`의 `migrate` 단계, torch 없음).
+- 호스트에서 직접 실행할 때:
 
 ```bash
 DATABASE_URL=postgresql+psycopg://kosis:kosis@localhost:5432/kosis PYTHONPATH=src alembic upgrade head
