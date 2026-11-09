@@ -2,7 +2,8 @@
 
 Same variable names and defaults as phase 2 `backend/app/config.py` `search_config_from_shell` (that module is shadowed
 by this repo's `backend.app`, and CLAUDE.md §3 allows importing only `kosis_rag.*` from phase 2). Data paths point at
-`<KOSIS_WORKSPACE>/data`, not `vendor/phase2/data`. No .env is read: set the variables in the shell.
+`<KOSIS_WORKSPACE>/data`, not `vendor/phase2/data`. `python -m evals.run_eval` / `evals.suite` load <repo>/.env into
+os.environ first (kosis_agent.envfile, shell values win); this module reads os.environ.
 
     CHROMA_HOST CHROMA_PORT CHROMA_COLLECTION · TEXT_FORMAT EMBED_CKPT RERANK_CKPT RERANK_MODE
     STAGE2 COND_FILTER ANSWER_K · HQ_BUILD HQ_WEIGHT HQ_BM25 · HCX_API_KEY HCX_THINKING OPENAI_API_KEY

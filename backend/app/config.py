@@ -1,8 +1,9 @@
 """The agent's settings from the shell environment: phase 2 search (IndexSpec, SearchOptions, stage 2 LLMConfig) and
 phase 1 stat (its own LLMConfig). Both modules read no .env and no environment; this is where the app declares them.
 
-Nothing here reads .env: set the variables in the shell (Windows cmd: `set X=...`, or load .env with
-`for /f "usebackq eol=# tokens=1,* delims==" %a in (".env") do @set "%a=%b"`) or through docker compose `env_file`.
+Phase 3 reads its .env: the entry points (backend/app/main.py, evals, scripts) call kosis_agent.envfile.load_env_file()
+first, which puts <repo>/.env into os.environ without overriding the shell (so `set X=...` still wins). This module
+then reads os.environ. In the container compose passes the same file as `env_file`.
 
     KOSIS_WORKSPACE                                 repo root; data files default to <root>/data (phase 1 reads it too)
     CHROMA_HOST CHROMA_PORT CHROMA_COLLECTION      Chroma server and the dense collection (default localhost:8001)
@@ -73,7 +74,7 @@ def stat_llm() -> StatLLMConfig:
 
 
 def agent_config() -> AgentConfig:
-    """The agent's settings from os.environ (never .env).
+    """The agent's settings from os.environ (.env already loaded into it by the entry point, shell values first).
 
     Data files default to <workspace>/data (tables.jsonl, sigungu.json, hq/); the phase 2 defaults would be
     vendor/phase2/data. EMBED_CKPT / RERANK_CKPT are passed as given (as phase 2 does, so the L1 config fingerprint

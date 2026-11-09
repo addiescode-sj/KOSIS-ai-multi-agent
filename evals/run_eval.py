@@ -44,6 +44,31 @@ POOL = DATASETS / "retrieval_pool.csv"
 METADATA_SAMPLE = DATASETS / "metadata_sample.jsonl"  # L0 accuracy sample, labelled by the evaluation side (§3.3)
 OPS_FIELDS = ("latency_ms", "llm_calls", "input_tokens", "output_tokens", "model", "failed", "retried")
 TRACE_FIELDS = ("spans", "retrieve_ms", "search_spans")
+# T3-23: search settings as arguments (argument > shell > .env > default). Each sets the variable evals/config.py reads.
+SEARCH_ARGS = {
+    "chroma_host": ("CHROMA_HOST", "Chroma host (default localhost)"),
+    "chroma_port": ("CHROMA_PORT", "Chroma port (default 8001)"),
+    "collection": ("CHROMA_COLLECTION", "dense collection, e.g. kosis_a_bgeft_202611032104"),
+    "embed_ckpt": ("EMBED_CKPT", "query embedder checkpoint .pt, or base (untrained bge-m3)"),
+    "rerank_ckpt": ("RERANK_CKPT", "stage 1 re-ranker .pt, or base (untrained bge-reranker-v2-m3); presets without stage 1 ignore it"),
+    "text_format": ("TEXT_FORMAT", "table text format the collection must hold (n2-L60)"),
+    "rerank_mode": ("RERANK_MODE", "stage 1: blend | score"),
+    "answer_k": ("ANSWER_K", "candidates handed to gate"),
+    "hq_build": ("HQ_BUILD", "question index build id (T2-39)"),
+    "hcx_thinking": ("HCX_THINKING", "stage 2 hcx: none | low"),
+}
+
+
+def apply_settings(args) -> Path | None:
+    """Load .env (unless --no-env-file), then put the given search arguments into os.environ over it and the shell.
+    Returns the .env file loaded, or None."""
+    from kosis_agent.envfile import load_env_file
+
+    loaded = None if args.no_env_file else load_env_file(args.env_file)
+    for field, (name, _) in SEARCH_ARGS.items():
+        if (value := getattr(args, field)) is not None:
+            os.environ[name] = str(value)
+    return loaded
 
 
 def sha256(path: Path) -> str:
@@ -577,7 +602,14 @@ def main(argv: list[str] | None = None) -> Path:
     parser.add_argument("--agent", help="agent: module:function returning a compiled graph, run live")
     parser.add_argument("--oracle", action="store_true", help="agent: grade the perfect run (self-check, all 1.000)")
     parser.add_argument("--repeat", type=int, default=1, help="agent: runs per scenario for pass^k")
+    settings = parser.add_argument_group("settings (argument > shell > .env > default)")
+    settings.add_argument("--env-file", type=Path, default=None, help="default: <repo>/.env (skipped when KOSIS_DOTENV=off)")
+    settings.add_argument("--no-env-file", action="store_true", help="do not read any .env")
+    for field, (name, what) in SEARCH_ARGS.items():
+        settings.add_argument("--" + field.replace("_", "-"), type=int if field in ("chroma_port", "answer_k") else str,
+                              help=f"{name}: {what}")
     args = parser.parse_args(argv)
+    apply_settings(args)
     args.split = args.split or ("dev" if args.layer == "l012" else "test")
 
     layers = {"l0": run_l0, "l1": run_l1, "l2": run_l2, "ablation": run_ablation, "l012": run_l012, "l3": run_l3, "e2e": run_e2e, "agent": run_agent}

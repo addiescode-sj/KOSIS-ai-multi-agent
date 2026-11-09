@@ -192,4 +192,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
+    from kosis_agent.envfile import load_env_file
+
+    load_env_file()  # <repo>/.env, shell values win
     sys.exit(main())

@@ -46,12 +46,11 @@ export PYTHONPATH=.:src:vendor/phase2/src:vendor/phase1:vendor/phase1/src
   (cd ~/work/KOSIS-ai-RAG && docker compose up -d chroma)    # localhost:8001
   ```
   이 레포 compose의 chroma는 포트가 같고 볼륨이 비어 있어 동시에 띄우지 않는다.
-- 셸 값: 평가 코드는 `.env`를 읽지 않는다(실전 2 T2-41 이후 모듈도 안 읽음). 셸에 올린다.
-  ```bash
-  set -a; source .env; set +a        # CHROMA_COLLECTION, EMBED_CKPT, RERANK_CKPT, TEXT_FORMAT, HCX_API_KEY ...
-  ```
-  이름과 기본값은 위 "검색 설정은 셸 환경변수로" 절. 값이 없으면 기본값으로 **조용히** 돈다 → 스위트 사전 점검으로 먼저 확인한다.
-- Windows: `set PYTHONUTF8=1`, `export` 대신 `set`, `source` 대신 값을 직접 `set`.
+- 설정 값: `python -m evals.run_eval`·`evals.suite`는 시작할 때 레포 루트 `.env`를 읽는다(T3-23, `src/kosis_agent/envfile.py`). 셸에 이미 있는 값이 이긴다.
+  `run_eval`은 검색 설정을 인자로도 받는다(우선순위 **인자 > 셸 > `.env` > 기본값**): `--collection` `--embed-ckpt` `--rerank-ckpt` `--chroma-host` `--chroma-port` `--text-format` `--rerank-mode` `--answer-k` `--hq-build` `--hcx-thinking`, `--env-file <파일>` · `--no-env-file`. 체크포인트에 `base`를 주면 학습 전 기반 모델이다.
+  실전 1·2 모듈은 여전히 `.env`도 환경도 읽지 않고, 이 레포가 만든 설정 객체를 받는다. `KOSIS_DOTENV=off`면 `.env`를 건너뛴다(pytest는 항상 끔).
+  이름과 기본값은 아래 "검색 설정" 절. 값이 없으면 기본값으로 **조용히** 돈다 → 스위트 사전 점검으로 먼저 확인한다.
+- Windows: `set PYTHONUTF8=1`, `export` 대신 `set`.
 
 ### 0.3 권장 순서
 
@@ -129,7 +128,7 @@ L1 프리셋(`retrieval.STAGED`): `hybrid` · `hybrid+cond` · `staged` · `clov
 | `ModuleNotFoundError: No module named 'kosis_agent'` (`evals/__init__.py`) | `PYTHONPATH` 미설정이거나 레포 루트가 아닌 곳에서 실행 → 0.2의 export, 루트에서 실행 |
 | `No module named 'kosis_rag.query'` 같은 옛 이름 | 서브모듈이 옛 커밋 → `git submodule update` |
 | 점검 `Chroma localhost:8001 응답 없음` | Docker 꺼짐 / 실전 2 chroma 안 띄움 → 0.2 |
-| `ValueError: no collection` · 점검 `CHROMA_COLLECTION 미설정` | 셸에 값 없음 → `set -a; source .env; set +a` |
+| `ValueError: no collection` · 점검 `CHROMA_COLLECTION 미설정` | `.env`·셸 모두 값 없음 → `.env`에 넣거나 `set CHROMA_COLLECTION=...` |
 | `LLMKeyMissing` · 점검 `HCX_API_KEY 미설정` | 셸에 키 없음, 또는 `--llm mock`으로 경로만 확인 |
 | 프로세스가 `exit 137`로 죽음 | 큰 Parquet 표(10MB 넘는 7개) 셀을 읽다 메모리 부족 → 다른 프로그램을 닫거나 그 문항 제외(별도 이슈) |
 | `uv sync` 뒤 torch가 없어짐 | 그룹 하나만 sync함 → `uv sync --group embed --group ragas` |
@@ -211,10 +210,10 @@ uv run python -m evals.run_eval --layer l3 --stage <이름> --interval 5 --calc-
 | `results.jsonl` | 문항별 행. `errors`, `spans`, `failure`, `trace_id`가 들어 있다 |
 | `manifest.json` | 골든·데이터 해시, git, 요약(`summary.failures` = 단계별 건수) |
 
-### 검색 설정은 셸 환경변수로 (실전 2 T2-41 이후)
+### 검색 설정 (`.env` → 환경변수 → 설정 객체)
 
-실전 2 모듈은 `.env`도 환경도 읽지 않는다. `evals/config.py`가 셸 변수로 `IndexSpec`·`SearchOptions`를 만든다(이름·기본값은 실전 2 `search_config_from_shell`과 같음, 데이터 경로는 이 레포 `data/`).
-**`.env`는 읽지 않는다.** 값이 없으면 기본값(`localhost:8001`, 컬렉션 없음, stage 2 끔)으로 조용히 돈다. 옛 결과와 비교하려면 같은 값을 셸에 둔다.
+실전 2 모듈은 `.env`도 환경도 읽지 않는다. 진입점이 레포 루트 `.env`를 환경변수로 올리고(셸 값 우선), `evals/config.py`가 환경변수로 `IndexSpec`·`SearchOptions`를 만들어 넘긴다(이름·기본값은 실전 2 `search_config_from_shell`과 같음, 데이터 경로는 이 레포 `data/`).
+값이 없으면 기본값(`localhost:8001`, 컬렉션 없음, stage 2 끔)으로 조용히 돈다. 옛 결과와 비교하려면 같은 값을 둔다.
 
 `CHROMA_HOST` `CHROMA_PORT` `CHROMA_COLLECTION` `EMBED_CKPT` `RERANK_CKPT`(staged*) `TEXT_FORMAT` `HQ_BUILD`(비우면 끔) · HCX 프리셋·L3 HCX는 `HCX_API_KEY`, gpt 프리셋은 `OPENAI_API_KEY`.
 L2·ablation(`--slot-source pred`)은 `data/sigungu.json`을 `parse_query(sigungu=…)`에 넘긴다(넘기지 않으면 시군구 질문의 `regions`만 조용히 떨어진다).
