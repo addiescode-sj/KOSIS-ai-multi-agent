@@ -456,3 +456,37 @@ def test_phase1_chart_kinds():
     out = draw(bar_chart("101_A"), "bar")
     assert out["vega_lite"] is not None and out["kind"] == "bar" and out["note"] is None
     assert draw(None, "bar")["note"] == NO_CHART_TEXT
+
+
+def test_a_verified_llm_rewrite_that_borrows_the_previous_question_is_a_follow_up():
+    """HCX-005 실측: 독립 질문은 직전 질문을 이어받아 맞게 썼는데 use_previous_table=false로 답했다 → 문장을 믿는다."""
+    llm = FakeLLM(LLMReading(standalone_question="2025년 경기도에서 태어난 남자 아이는 몇 명이에요?",
+                             use_previous_table=False))
+    r = read_turn("남자는?", active_table="T", active_question=PREV, parse=parse_query, mode="hybrid", llm=llm)
+    assert r.by == "llm" and r.use_previous_table and r.resolved_question.startswith("2025년 경기도")
+    same = FakeLLM(LLMReading(standalone_question="남자는?", use_previous_table=False))  # 빌린 낱말 없음 = 새 질문
+    assert not read_turn("남자는?", active_table="T", active_question=PREV, parse=parse_query, mode="hybrid",
+                         llm=same).use_previous_table
+
+
+@pytest.mark.parametrize("question", ["대구는 어떻게 나와?", "울산 쪽 숫자도 알려줘", "2022년 수치로 다시 알려줘"])
+def test_a_short_follow_up_with_a_slot_is_carried_over_by_rules(question):
+    """조건 표현을 지우고 남는 말이 6자보다 짧고 시도·연도가 있으면 이월 (골든 문항 중 가장 짧은 것이 8자)."""
+    r = rules(question)
+    assert r.use_previous_table and r.by == "rule" and r.resolved_question != question
+
+
+@pytest.mark.parametrize("question, kind", [("선으로 그려줄 수 있어?", "line"), ("막대로 보여줘", "bar"),
+                                            ("꺾은선으로 시각화해줘", "line")])
+def test_a_chart_request_with_a_polite_ending_is_still_chart_only(question, kind):
+    r = rules(question)
+    assert r.chart_only and r.chart_type == kind
+
+
+def test_the_llm_reply_is_read_from_its_first_json_object():
+    from kosis_agent.graph.context import parse_llm_reading
+
+    got = parse_llm_reading('답: {"standalone_question": "q", "use_previous_table": true} {"x": 1}')
+    assert got.standalone_question == "q" and got.use_previous_table
+    with pytest.raises(ValueError):
+        parse_llm_reading("JSON이 없는 답")

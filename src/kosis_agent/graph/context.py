@@ -13,12 +13,14 @@
 
 규칙 (LLM 0):
 1. 직전 표가 없으면 새 질문이다.
-2. 차트 말("막대그래프", "꺾은선", "차트로 그려")만 있고 다른 내용이 없으면 차트만 다시 그린다.
+2. 차트 말("막대그래프", "꺾은선", "차트로 그려")이 있고 지표 낱말·시도·연도·분류가 없으면 차트만 다시 그린다
+   ("선으로 그려줄 수 있어?"처럼 차트를 부탁하는 말투가 붙어도 된다).
 3. "그 표", "이 통계" 같은 지시어가 있으면 직전 표에 이번 질문을 그대로 묻는다(PR #9 규칙).
-4. 조건 표현(연도·시도·정정어·조사·지시어·차트어)을 지우고도 내용 낱말이 5자 이상 남거나, 실전 2가 지표 낱말을
+4. 조건 표현(연도·시도·정정어·조사·지시어·차트어)을 지우고도 내용 낱말이 6자 이상 남거나, 실전 2가 지표 낱말을
    읽으면 새 질문이다. 골든 90문항 중 13개는 지표 낱말이 없어서("태어난 아이" 등), 지표 낱말만으로는 새 질문을
    가를 수 없다. 그래서 "남는 내용"을 같이 본다.
-5. 남는 내용이 없고 시도·연도·정정어가 있으면 이월이다("부산은?", "아니 2023년으로"). 직전 질문 문장에서 바뀐
+5. 남는 내용이 6자보다 짧고 시도·연도·정정어가 있으면 이월이다("부산은?", "아니 2023년으로", "울산 쪽 숫자도 알려줘").
+   직전 질문 문장에서 바뀐
    표현(시도 이름, "YYYY년")을 새 값으로 바꿔 끼운 문장을 만든다. 바꿀 표현을 직전 문장에서 못 찾거나 기간이
    범위면 판단하지 않는다(틀린 문장을 만들지 않음).
 6. 그 밖("남자는?", "작년은?")은 판단하지 않는다 → hybrid면 LLM, rules면 원문으로 새 검색.
@@ -30,6 +32,7 @@ LLM 결과는 코드가 검사한다(verify_reading): 독립 질문의 시도·�
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Callable
 from typing import Literal
@@ -62,7 +65,7 @@ def refers_to_previous_table(question: str) -> bool:
 CHART_WORDS = re.compile(r"그래프|차트|시각화|그려|막대|꺾은선|선\s*그래프|원형|파이|도표")
 CHART_KINDS: list[tuple[re.Pattern, ChartType]] = [  # 먼저 맞는 것이 이긴다
     (re.compile(r"막대|바\s*차트|바\s*그래프"), "bar"),
-    (re.compile(r"꺾은선|선\s*그래프|라인"), "line"),
+    (re.compile(r"꺾은선|선\s*그래프|라인|(?<![가-힣])선(?=으로|\s*차트)"), "line"),
     (re.compile(r"원형|파이"), "pie"),
 ]
 
@@ -87,7 +90,10 @@ FILLER_WORDS = re.compile(
     r"해줘|해주세요|알려줘|알려주세요|보여줘|보여주세요|줘|주세요|좀|\d{1,2}\s*월|[?!.,~]"
 )
 PARTICLES = re.compile(r"(은요|는요|이요|도요|으로|쪽은|쪽|로|은|는|요|이|가|의|에|도|만|값)(?=\s|$)")
-NEW_QUESTION_CHARS = 5  # 조건 표현을 지우고도 한글 내용이 이만큼 남으면 새 질문
+# 조건 표현을 지우고도 한글 내용이 이만큼 남으면 새 질문. 시도·연도가 있고 지표 낱말이 없는 골든 문항 중 남는 내용이
+# 가장 짧은 것이 8자("2025년 기대수명은 몇 년이야?" → "기대수명몇년이야")라서, 6자부터 새 질문으로 본다.
+# 그보다 짧은 "어떻게 나와", "숫자도 알려줘", "수치로 다시" 같은 말투는 시도·연도가 있으면 이월로 본다(규칙 5).
+NEW_QUESTION_CHARS = 6
 
 
 def leftover(question: str) -> str:
@@ -151,10 +157,10 @@ class Reading(BaseModel):
 
 
 class LLMReading(BaseModel):
-    """LLM 해석기의 출력 (with_structured_output 스키마). 필드 설명은 LLM에게도 보인다."""
+    """LLM 해석기의 출력. HCX에 JSON 한 줄로 받아 이 모델로 검증한다(make_llm_reader)."""
 
-    standalone_question: str = Field(description="직전 질문의 조건을 채워 그것만 읽어도 뜻이 통하는 질문. 새 주제면 이번 질문 그대로.")
-    use_previous_table: bool = Field(description="직전 질문과 같은 통계(같은 표)를 조건만 바꿔 묻는 후속 질문이면 true.")
+    standalone_question: str = Field(description="이번 질문을 직전 질문의 조건으로 채워, 그것만 읽어도 뜻이 통하게 다시 쓴 질문. 새 주제면 이번 질문 그대로.")
+    use_previous_table: bool = Field(description="이번 질문이 직전 질문과 같은 지표를 묻고 지역·기간·분류만 바꾸거나 차트만 요청하면 true. 다른 지표를 물으면 false.")
     chart_type: ChartType | None = Field(default=None, description="차트를 요청했으면 bar, line, pie 중 하나. 종류를 말하지 않았거나 차트 요청이 없으면 null.")
     chart_only: bool = Field(default=False, description="숫자는 그대로 두고 직전 답을 차트로만 다시 그려 달라는 요청이면 true.")
 
@@ -179,6 +185,13 @@ def _new_words(text: str, sources: str) -> list[str]:
     return out
 
 
+def _borrowed(standalone: str, question: str) -> list[str]:
+    """독립 질문의 한글 낱말 중 이번 질문에 없는 것(= 직전 질문에서 빌려 온 것). 시도 이름은 뺀다."""
+    for alias in REGION_ALIASES:
+        standalone = standalone.replace(alias, " ")
+    return _new_words(standalone, question)
+
+
 def verify_reading(reading: LLMReading, previous: str, question: str, parse: Callable[[str], ParsedQuery]) -> bool:
     """LLM 독립 질문이 직전·이번 질문만으로 만들어졌는가. 하나라도 어기면 False(그 해석은 버림).
 
@@ -200,15 +213,52 @@ def verify_reading(reading: LLMReading, previous: str, question: str, parse: Cal
     return not _new_words(text, previous + " " + question)
 
 
+# HCX 프롬프트의 예시. 빌더 시나리오(evals/builders/multiturn.py)와 다른 표·표현으로 쓴다(시나리오를 외우지 않게).
+LLM_EXAMPLES = [
+    ("2023년 서울 혼인 건수는?", "대구는?",
+     {"standalone_question": "2023년 대구 혼인 건수는?", "use_previous_table": True, "chart_type": None, "chart_only": False}),
+    ("2022년 전국 사망자 수 알려줘", "2019년 걸로 바꿔줘",
+     {"standalone_question": "2019년 전국 사망자 수 알려줘", "use_previous_table": True, "chart_type": None, "chart_only": False}),
+    ("2023년 서울 혼인 건수는?", "인천 외국인 주민 수는?",
+     {"standalone_question": "인천 외국인 주민 수는?", "use_previous_table": False, "chart_type": None, "chart_only": False}),
+    ("2015년부터 2020년까지 합계출산율 추이", "선 그래프로 그려줄래?",
+     {"standalone_question": "2015년부터 2020년까지 합계출산율 추이", "use_previous_table": True, "chart_type": "line",
+      "chart_only": True}),
+]
+
+
+def parse_llm_reading(text: str) -> LLMReading:
+    """HCX 응답 문장에서 첫 JSON 객체를 읽어 LLMReading으로 검증한다. JSON이 없으면 ValueError.
+
+    실전 2 HCX 리랭커(kosis_rag.rerank.hcx.parse)와 같은 방식이다: 모델이 앞뒤에 말을 덧붙이거나 객체를 두 번 써도
+    첫 객체만 쓴다.
+    """
+    start = text.find("{")
+    if start < 0:
+        raise ValueError(f"no JSON in reply: {text[:80]!r}")
+    data, _ = json.JSONDecoder().raw_decode(text, start)
+    return LLMReading.model_validate(data)
+
+
 def make_llm_reader(chat_model) -> LLMReader:
-    """LangChain chat model(예: langchain_naver.ChatClovaX) → LLMReader. 호출 1회, 구조화 출력(LLMReading)."""
-    structured = chat_model.with_structured_output(LLMReading)
+    """LangChain chat model(예: langchain_naver.ChatClovaX) → LLMReader. 호출 1회, JSON 한 줄로 받아 코드가 검증한다.
+
+    with_structured_output을 쓰지 않는 이유 (2026-11-09 HCX 실측, plans/T3-27.md Result):
+    langchain-naver의 function_calling은 `parallel_tool_calls`, json_schema·json_mode는 `response_format`을 보내는데
+    HCX-005·HCX-007 모두 400으로 거절했다. bind_tools는 HCX-005에서만 됐고 독립 질문을 다시 쓰지 않았다.
+    """
+    fields = "\n".join(f"- {name}: {f.description}" for name, f in LLMReading.model_fields.items())
+    examples = "\n".join(f"직전 질문: {p}\n이번 질문: {q}\n답: {json.dumps(a, ensure_ascii=False)}"
+                          for p, q, a in LLM_EXAMPLES)
     system = ("너는 국가통계 챗봇의 대화 해석기다. 직전 질문과 이번 질문을 보고, 이번 질문이 직전 질문의 조건(지표·기간·지역)을 "
               "이어받는 후속 질문인지 판단해 독립 질문으로 다시 쓴다. 독립 질문은 직전 질문과 이번 질문에 있는 낱말과 숫자만으로 "
-              "만든다. 같은 뜻이라도 다른 낱말로 바꾸지 말고, 질문에 없는 지역·지표·분류·숫자를 덧붙이지 마라.")
+              "만든다. 후속 질문이면 직전 질문 문장을 그대로 두고 바뀐 조건 낱말(지역·연도 등)만 바꿔 쓴다. "
+              "같은 뜻이라도 다른 낱말로 바꾸지 말고, 질문에 없는 지역·지표·분류·숫자를 덧붙이지 마라.\n"
+              f"다른 말 없이 JSON 객체 한 줄로만 답하라. 키:\n{fields}\n\n예시:\n{examples}")
 
     def read(previous: str, question: str) -> LLMReading:
-        return structured.invoke([("system", system), ("human", f"직전 질문: {previous}\n이번 질문: {question}")])
+        reply = chat_model.invoke([("system", system), ("human", f"직전 질문: {previous}\n이번 질문: {question}")])
+        return parse_llm_reading(str(reply.content))
 
     return read
 
@@ -235,10 +285,15 @@ def read_turn(question: str, *, active_table: str | None, active_question: str |
     if got.chart_only:
         return Reading(use_previous_table=True, resolved_question=previous, chart_type=got.chart_type,
                        chart_only=True, by="llm")
-    if not got.use_previous_table:
+    verified = verify_reading(got, previous, question, parse)
+    # LLM이 독립 질문에 직전 질문의 낱말을 빌려 썼는데 use_previous_table을 false로 답하는 일이 있다(HCX-005 실측:
+    # "울산 쪽 숫자도 알려줘" → "2024년 울산 외국인 주민은 몇 명이야?", false). 문장이 검증을 통과했고 직전 질문에서
+    # 빌린 낱말이 있으면, 판단 값보다 문장을 믿고 이월로 본다.
+    follow_up = got.use_previous_table or (verified and bool(_borrowed(got.standalone_question, question)))
+    if not follow_up:
         # 새 질문이면 LLM이 다시 쓴 문장이 아니라 사용자 원문으로 검색한다(LLM의 영향을 이월 턴으로 좁힘)
         return Reading(resolved_question=question, chart_type=got.chart_type or kind, by="llm")
-    if not verify_reading(got, previous, question, parse):
+    if not verified:
         return fresh
     return Reading(use_previous_table=True, resolved_question=got.standalone_question,
                    chart_type=got.chart_type or kind, by="llm")
@@ -250,15 +305,15 @@ def _rules(question: str, previous: str, parse: Callable[[str], ParsedQuery], wa
     rest = leftover(question)
     current = parse(question)
     slots = bool(current.regions or current.period_start or current.period_end or current.dimensions or current.recent)
-    if wants_chart and not rest and not slots:  # 규칙 2: 차트만
+    if wants_chart and not slots and not current.measures and len(rest) < 2 * NEW_QUESTION_CHARS:  # 규칙 2: 차트만
         return Reading(use_previous_table=True, resolved_question=previous or question, chart_type=kind,
                        chart_only=True, by="rule")
     if refers_to_previous_table(question):  # 규칙 3: 지시어
         return Reading(use_previous_table=True, resolved_question=question, chart_type=kind, by="rule")
     if len(rest) >= NEW_QUESTION_CHARS or current.measures:  # 규칙 4: 새 질문
         return Reading(resolved_question=question, chart_type=kind, by="rule")
-    if not rest and previous and (current.regions or current.period_start or CORRECTION.search(question)):
-        rewritten = carry_over(previous, parse(previous), current)  # 규칙 5: 이월
+    if previous and (current.regions or current.period_start or CORRECTION.search(question)):
+        rewritten = carry_over(previous, parse(previous), current)  # 규칙 5: 이월 (남는 내용은 위 규칙 4로 6자 미만)
         if rewritten is not None:
             return Reading(use_previous_table=True, resolved_question=rewritten, chart_type=kind, by="rule")
     return None  # 규칙 6: 판단 보류

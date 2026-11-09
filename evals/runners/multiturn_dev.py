@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import inspect
 import json
-import os
 from pathlib import Path
 
 from kosis_agent.graph.main_graph import build_graph
@@ -56,12 +55,18 @@ class GoldenLookupSearch:
 
 
 def build():
-    """The graph under test with the golden lookup search, phase 1 from STAT_PROVIDER, and a checkpointer."""
-    from backend.app.config import stat_llm
+    """The graph under test with the golden lookup search, phase 1 from STAT_PROVIDER, and a checkpointer.
+
+    INTERPRETER (rules | hybrid | llm) and INTERPRETER_MODEL (an HCX model for the LLM step, e.g. HCX-005) are read
+    the way the service reads them (backend/app/config.py, backend.app.main.interpreter_llm)."""
+    from backend.app.config import agent_config, stat_llm
 
     kwargs = {}
     params = inspect.signature(build_graph).parameters
-    # T3-27 interpreter switch (rules | hybrid | llm); the baseline graph (PR #9) has no such parameter
-    if "interpreter" in params and os.environ.get("INTERPRETER"):
-        kwargs["interpreter"] = os.environ["INTERPRETER"]
+    # T3-27 interpreter switch; the baseline graph (PR #9) has no such parameter
+    if "interpreter" in params:
+        from backend.app.main import interpreter_llm
+
+        cfg = agent_config()
+        kwargs.update(interpreter=cfg.interpreter, llm=interpreter_llm(cfg))
     return build_graph(GoldenLookupSearch(), stat_llm(), checkpointer=new_checkpointer(), **kwargs)

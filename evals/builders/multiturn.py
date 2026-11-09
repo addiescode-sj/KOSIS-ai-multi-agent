@@ -52,6 +52,16 @@ ELLIPSIS = ["{r}{eun}?", "{r}{eun}요?", "그럼 {r}{eun} 어때?"]
 CORRECTION = ["아니 {y}년으로", "{y}년 기준으로 다시", "{y}년{eun}?"]
 CHART = [("그 표로 막대그래프 그려줘", "bar"), ("꺾은선 그래프로 보여줘", "line"), ("이걸 막대 차트로 그려줘", "bar")]
 MULTI = [(" 꺾은선 그래프로도 보여줘", "line"), (" 막대그래프로도 그려줘", "bar")]
+# Turn-2 wordings the builder above does not use, for the generalisation check (plans/T3-27.md, scope added
+# 2026-11-09). Written by the agent after the rules, before any rule change, so they are not fully independent of the
+# rules (author bias, noted in the plan); a user-written set still has to replace them.
+PARAPHRASE = {
+    "E": ["{r} 쪽 숫자도 알려줘", "{r} 기준으로는?", "{r}{eun} 얼마나 돼?", "{r}도 궁금해", "{r}{eun} 어떻게 나와?"],
+    "X": ["{y}년 걸로 바꿔줘", "{y}년 기준이면?", "그럼 {y}년{eun}?", "{y}년 수치로 다시 알려줘", "{y}년 것도 보여줘"],
+    "C": [("막대로 보여줘", "bar"), ("선으로 그려줄 수 있어?", "line"), ("이거 막대 그래프로 바꿔줘", "bar"),
+          ("꺾은선으로 시각화해줘", "line")],
+}
+OUT_PARAPHRASE = DATASETS / "agent_scenarios_multiturn_paraphrase_structure.jsonl"
 CAP = 15  # C and M scenarios each, so chart kinds do not outweigh the carry-over kinds in the overall rates
 
 
@@ -210,6 +220,32 @@ def build(calc_path: Path = CALC, seed: int = 0) -> tuple[list[AgentScenario], l
     return [AgentScenario.model_validate(s) for s in scenarios], made
 
 
+def paraphrased(scenarios: list[AgentScenario], seed: int = 1) -> list[AgentScenario]:
+    """The E, X and C scenarios with turn 2 reworded from PARAPHRASE (same expectations, calc_qid removed)."""
+    rng = random.Random(seed)
+    out = []
+    for s in scenarios:
+        if s.notes not in PARAPHRASE:
+            continue
+        data = without_calc(s).model_dump()
+        turn = data["turns"][-1]
+        if s.notes == "C":
+            text, kind = rng.choice(PARAPHRASE["C"])
+            turn["expect"]["tools"][0]["args"]["chart_type"] = kind
+        else:
+            args = turn["expect"]["tools"][0]["args"]
+            if s.notes == "E":
+                short = SHORT[args["regions"][0]]
+                text = rng.choice(PARAPHRASE["E"]).format(r=short, eun=eun(short))
+            else:
+                year = args["period_start"][:4]
+                text = rng.choice(PARAPHRASE["X"]).format(y=year, eun=eun(year + "년"))
+        turn["question"] = text
+        data["sid"] = f"MT-{s.notes}-P{s.sid.rsplit('-', 1)[1]}"  # MT-E-001 -> MT-E-P001 (by_kind reads the letter)
+        out.append(AgentScenario.model_validate(data))
+    return out
+
+
 def without_calc(s: AgentScenario) -> AgentScenario:
     data = s.model_dump()
     for t in data["turns"]:
@@ -223,6 +259,7 @@ def write(scenarios: list[AgentScenario], made: list[CalcItem], out: Path = OUT,
     out.write_text(dump(scenarios), encoding="utf-8")
     out_structure.write_text(dump([without_calc(s) for s in scenarios]), encoding="utf-8")
     out_calc.write_text(dump(made), encoding="utf-8")
+    OUT_PARAPHRASE.write_text(dump(paraphrased(scenarios)), encoding="utf-8")
 
 
 def main(argv: list[str] | None = None) -> None:

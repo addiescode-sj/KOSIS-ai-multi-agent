@@ -51,7 +51,7 @@ def interpreter_llm(cfg):
 
     from kosis_agent.graph.context import make_llm_reader
 
-    return make_llm_reader(ChatClovaX(model=cfg.interpreter_model, api_key=key, temperature=0))
+    return make_llm_reader(ChatClovaX(model=cfg.interpreter_model, api_key=key, temperature=0, timeout=30, max_retries=2))
 
 
 def get_graph():
