@@ -1,5 +1,5 @@
 """KOSIS agent API: the agent graph (phase 2 search -> phase 1 stat) streamed as SSE. Logic lives in src/kosis_agent;
-this only exposes it. Settings come from the shell environment (backend/app/config.py); no .env is read here."""
+this only exposes it. Settings: <repo>/.env loaded at import (shell values win), then backend/app/config.py reads os.environ."""
 
 from __future__ import annotations
 
@@ -11,7 +11,10 @@ from fastapi.sse import EventSourceResponse, ServerSentEvent
 from pydantic import BaseModel, Field
 
 import kosis_agent  # noqa: F401  (sets KOSIS_WORKSPACE before phase 1 / phase 2 modules load)
+from kosis_agent.envfile import load_env_file
 from kosis_agent.graph import build_graph, chat_result
+
+load_env_file()  # phase 3 reads its .env; phase 1 / 2 get objects from agent_config()
 
 app = FastAPI(title="KOSIS Agent API", version="0.1.0", description="국가데이터처(KOSIS) 통계 AI 에이전트 API.")
 
