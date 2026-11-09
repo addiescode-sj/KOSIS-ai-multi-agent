@@ -27,7 +27,7 @@ import re
 from collections import Counter
 from pathlib import Path
 
-from kosis_rag.query import SIDO, SIDO_ORDER
+from kosis_rag.shared.vocab import SIDO, SIDO_ORDER
 
 from evals.builders import diverse
 from evals.builders.phase1 import sha256

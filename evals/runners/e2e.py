@@ -14,19 +14,19 @@ import time
 from langchain_core.retrievers import BaseRetriever
 
 from kosis_ai.schemas import StatAnswer
-from kosis_rag.query import SIDO, SIDO_ORDER
+from kosis_rag.shared.vocab import SIDO, SIDO_ORDER
 
 from evals.schemas import CalcItem, QueryItem, RetrievalItem
 
 OFFICIAL = {name: name for name in SIDO_ORDER} | {alias: name for name, aliases in SIDO.items() for alias in aliases}
 
 
-def run(retriever: BaseRetriever, items: list[CalcItem], k: int, interval: float = 0.0) -> list[dict]:
+def run(retriever: BaseRetriever, items: list[CalcItem], k: int, interval: float = 0.0, llm: str = "hcx") -> list[dict]:
     """Rows shaped like the L3 runner's, plus the ranked keys and the table used; failures are recorded, not raised."""
     from evals.ops import usage_client
     from evals.trace import NodeSpans, summarize  # loads the pipeline: offline commands never import it
 
-    client = usage_client()
+    client = usage_client(llm=llm)
     rows = []
     for n, item in enumerate(items):
         if n and interval:

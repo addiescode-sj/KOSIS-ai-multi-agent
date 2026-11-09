@@ -1,6 +1,6 @@
 """L0 metadata quality (T2-28, docs/research/langchain_eval_design_kosis.md §3): the table fields the filters decide on.
 
-Fields are `kosis_rag.fields.TableFields` (T2-30, KOS-96), computed with the same functions the filters use, so the
+Fields are `kosis_rag.shared.fields.TableFields` (T2-30, KOS-96), computed with the same functions the filters use, so the
 score is about what the filter actually sees, not about a separate copy.
 
 - fill rate: share of tables whose field has a value, over all tables and over the gold tables of the L1 set.
@@ -12,10 +12,9 @@ score is about what the filter actually sees, not about a separate copy.
 
 from __future__ import annotations
 
-from kosis_rag.fields import TableFields, table_fields
-from kosis_rag.filters import has_dimension
-from kosis_rag.query import DIMENSION_WORDS
-from kosis_rag.schemas import TableRecord
+from kosis_rag.schemas.catalog import TableRecord
+from kosis_rag.shared.fields import TableFields, has_dimension, table_fields
+from kosis_rag.shared.vocab import DIMENSION_WORDS
 
 FIELDS = tuple(f for f in TableFields.model_fields if f != "key")
 CANONICAL_DIMS = sorted(set(DIMENSION_WORDS.values()))

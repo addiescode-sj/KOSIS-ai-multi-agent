@@ -2,6 +2,8 @@
 
     python -m evals.report_html --run evals/reports/<run_id>        # re-render; run_eval calls write() itself
 
+Every layer gets one (T3-20): l1 / l3 / e2e / agent have their own views; l0, l2, ablation and l012 show report.md as
+HTML with their ops. The agent view shows each conversation turn by turn with its span waterfall and Jaeger link.
 Self-contained (inline SVG and CSS, no CDN), so it opens offline. Light and dark follow the OS. Every mark has a
 native hover tooltip (<title>). Colors follow the dataviz reference palette: categorical slots 1-3 for Hit@1/5/10,
 status colors (with icon and label) for PASS/PARTIAL/FAIL, one blue for single-series bars.
@@ -12,6 +14,7 @@ from __future__ import annotations
 import argparse
 import html
 import json
+import re
 from pathlib import Path
 
 from evals.evaluators.calculation import ERROR_INFO
@@ -52,6 +55,17 @@ details summary{cursor:pointer;color:var(--text-secondary)}
 .chip.err{border-color:var(--critical);color:var(--critical)}.chip.blame{border-width:2px;font-weight:600}
 .tools{color:var(--text-secondary);font-size:12px}
 .info{margin:12px 0 0;padding-left:18px;font-size:13px}.info li{margin:0 0 8px}a{color:var(--series-1)}
+.guide{border-left:4px solid var(--series-1)}.guide ul{margin:6px 0 0;padding-left:18px;font-size:13px}.guide li{margin:0 0 4px}
+.md h3{font-size:14px;margin:14px 0 4px}.md ul{padding-left:18px;font-size:13px}.md table{margin:6px 0 10px}
+.conv{border:1px solid var(--border);border-radius:10px;margin:0 0 10px;background:var(--surface-1)}
+.conv>summary{padding:8px 12px;color:var(--text-primary)}.conv .turns{padding:0 12px 10px}
+.turn{border-top:1px solid var(--border);padding:8px 0}.turn .q{font-weight:600}.turn .a{color:var(--text-secondary);margin:4px 0;white-space:pre-wrap}
+.wf{margin:6px 0 0;font-size:11px}.wf .r{display:grid;grid-template-columns:200px 1fr 64px;gap:6px;align-items:center;margin:1px 0}
+.wf .n{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text-secondary)}
+.wf .track{position:relative;height:10px;background:var(--grid);border-radius:3px}
+.wf .bar{position:absolute;top:0;height:10px;border-radius:3px;min-width:2px}
+.wf .turn-k{background:var(--muted-bar)}.wf .node-k{background:var(--series-1)}.wf .tool-k{background:var(--series-3)}.wf .llm-k{background:var(--series-2)}
+.wf .err{outline:2px solid var(--critical)}
 """
 
 
@@ -272,8 +286,10 @@ def ops_body(op: dict, rows: list[dict], history: list[dict]) -> str:
              tile(f"{op['tokens']['input']:,}", "입력 토큰"), tile(f"{op['tokens']['output']:,}", "출력 토큰"),
              tile(cost, "Cost (LLM 호출 없음)" if no_llm else "Cost"), tile(pct(op["tool_failure_rate"]), f"Tool Failure Rate ({op['tool_calls']}회)"),
              tile(pct(op["retry_rate"]), "재시도 비율")]
-    labels, counts = histogram([r["latency_ms"] for r in rows if "latency_ms" in r])
-    lat = vbars(labels, counts, ["--series-1"] * len(labels)) if labels else ""
+    latencies = [r["latency_ms"] for r in rows if "latency_ms" in r]
+    labels, counts = histogram(latencies)
+    lat = (vbars(labels, counts, ["--series-1"] * len(labels)) if labels and max(latencies) > 0
+           else '<p class="note">모든 행의 지연이 0 ms다(모델·검색 호출 없이 함수만 실행).</p>')
     tok = [r.get("input_tokens", 0) + r.get("output_tokens", 0) for r in rows]
     tok_chart = ""
     if any(tok):
@@ -386,25 +402,239 @@ def rows_table(layer: str, rows: list[dict]) -> str:
             + "".join(f"<th>{h}</th>" for h in head) + "</tr>" + body + "</table></details>")
 
 
+LAYER_TITLES = {"l0": "L0 메타데이터", "l1": "L1 검색", "l1-gold": "L1 슬롯 필터 (정답 슬롯)", "l1-pred": "L1 슬롯 필터 (파서 슬롯)",
+                "l2": "L2 질의 이해", "ablation": "L1 슬롯 ablation", "l012": "L0 + L1 필터 + L2", "l3": "L3 계산",
+                "e2e": "L4 종단 간 (e2e)", "agent": "에이전트 (멀티턴 · 멀티쿼리)"}
+NO_TRACE = "이 계층은 모델·그래프를 부르지 않아 trace가 없다(지연은 함수 실행 시간)."
+GUIDE = {  # layer -> how to read this page, one line per item
+    "l0": ["채움률: 필터가 쓰는 메타데이터 필드가 채워진 표의 비율. 높을수록 좋다(골든 정답 표 기준이 더 중요).",
+           "미매핑: 질문 어휘로 고를 수 없는 이름의 비율. 낮을수록 좋다.", NO_TRACE],
+    "l2": ["필드별 정확도: 질의 파서가 읽은 기간·지역·분류 등이 사람 라벨과 같은 문항 비율. all_fields = 모든 필드가 맞은 비율.",
+           "목록 필드 P/R: P가 낮으면 질문에 없는 조건을 지어냈고, R이 낮으면 질문의 조건을 놓쳤다.", NO_TRACE],
+    "ablation": ["조합별로 슬롯 필터를 켜고 끄며 정답 표가 필터에서 살아남는지(filter recall) 본다. recall이 떨어지는 슬롯이 해로운 슬롯이다.",
+                 "후보 중앙값: 필터 뒤 남은 표 수. 작을수록 검색이 쉬워지지만 recall이 떨어지면 안 된다.", NO_TRACE],
+    "l012": ["L0(메타데이터) → L1 필터(정답 슬롯 / 파서 슬롯) → L2(질의 이해) 순서로 한 페이지에 모았다. 각 섹션 아래에 그 계층의 운영 지표가 있다.", NO_TRACE],
+    "l1": ["Hit@k: 정답 표가 상위 k개 안에 든 문항 비율. MRR: 첫 정답 순위의 역수 평균. 둘 다 높을수록 좋다.",
+           "LangGraph 검색이면 '실패 노드' 표에서 정답 표를 어느 노드가 밀어냈는지와 노드 경로를 본다."],
+    "l3": ["정답 표를 준 채로 summarize_stat의 숫자를 원본 Parquet 셀과 대조한다. PASS 비율이 높을수록 좋다.",
+           "'실패 문항별 원인'의 span 경로에서 굵은 테두리가 실패로 판정한 단계다."],
+    "e2e": ["검색 1위 표로 summarize_stat까지 돌린다. 실패를 검색 실패(1위가 다른 표)와 답 실패로 나눠 본다.",
+            "span 경로와 Jaeger 링크로 문항별 실행을 따라간다."],
+    "agent": ["대화 성공률: 모든 턴이 통과한 대화 비율(가장 중요한 지표). pass^k: k번 반복 실행이 모두 성공한 시나리오 비율(안정성).",
+              "툴 선택: 툴 이름·순서가 정답과 정확히 같은 턴 비율. 빠진·불필요 호출은 툴별로 따로 센다.",
+              "대화별 화면: 실패한 대화가 위에 펼쳐져 있다. 툴 칩에 마우스를 올리면 인자와 결과가 보인다.",
+              "trace(워터폴): 턴 안의 노드(파랑)·툴(초록)·LLM 호출(주황) 시작과 길이. 빨간 테두리 = error span. --agent로 실제 실행한 run에만 있다."],
+}
+ROW_CAP = 200  # rows shown in the result table; problem rows first, the rest are in results.jsonl
+
+
+def guide(layer: str) -> str:
+    items = GUIDE.get(layer)
+    return f'<div class="card guide"><h2>읽는 법</h2><ul>{"".join(f"<li>{esc(i)}</li>" for i in items)}</ul></div>' if items else ""
+
+
+def _inline(text: str) -> str:
+    out = esc(text)
+    out = re.sub(r"`([^`]+)`", r"<code>\1</code>", out)
+    return re.sub(r"\*\*([^*]+)\*\*", r"<b>\1</b>", out)
+
+
+def md_html(text: str) -> str:
+    """report.md (headings, bullet lines, tables, paragraphs) as HTML; the ops section is drawn by ops_body instead."""
+    text = text.split("\n## 운영 지표")[0]
+    out, table, items = [], [], []
+
+    def flush() -> None:
+        if table:
+            head, *body = table
+            out.append("<table><tr>" + "".join(f"<th>{_inline(c)}</th>" for c in head) + "</tr>"
+                       + "".join("<tr>" + "".join(f"<td>{_inline(c)}</td>" for c in row) + "</tr>" for row in body) + "</table>")
+            table.clear()
+        if items:
+            out.append("<ul>" + "".join(f"<li>{_inline(i)}</li>" for i in items) + "</ul>")
+            items.clear()
+
+    for line in text.splitlines():
+        s = line.strip()
+        if s.startswith("|"):
+            if items:
+                flush()
+            cells = [c.strip() for c in s.strip("|").split("|")]
+            if not all(set(c) <= set("-: ") for c in cells):
+                table.append(cells)
+            continue
+        flush()
+        if not s or s.startswith("<!--") or s.startswith("# "):
+            continue
+        if s.startswith("## "):
+            out.append(f"<h3>{_inline(s[3:])}</h3>")
+        elif s.startswith("- "):
+            items.append(s[2:])
+        else:
+            out.append(f"<p>{_inline(s)}</p>")
+    flush()
+    return '<div class="card md">' + "".join(out) + "</div>"
+
+
+def summary_tiles(layer: str, s: dict) -> str:
+    """The one or two numbers a reader looks for first, per layer without a dedicated body."""
+    tiles = []
+    if layer == "l0":
+        tiles = [tile(f"{s.get('n_tables', 0):,}", "표"), tile(f"{s.get('n_gold', 0):,}", "골든 정답 표")]
+    elif layer == "l2" and (a := (s.get("metrics") or {}).get("all")):
+        tiles = [tile(pct(a["all_fields"]) if a.get("all_fields") is not None else "—", f"모든 필드 정답 (n={a['n']})"),
+                 *[tile(pct(a[f]), f) for f in ("regions", "period_start", "cycle") if a.get(f) is not None]]
+    elif layer in ("ablation", "l1-gold", "l1-pred") and (c := (s.get("combos") or {})):
+        tiles = [tile(pct(c[k]["filter_recall"]), f"filter recall · {k}") for k in ("none", "all") if k in c]
+    return f'<div class="tiles">{"".join(tiles)}</div>' if tiles else ""
+
+
+def _problem(r: dict) -> bool:
+    return (r.get("passed") is False or r.get("verdict") not in (None, "PASS") or r.get("all_fields") == 0
+            or (r.get("answerable") is True and r.get("filter_pass") == 0))
+
+
+def generic_rows_table(rows: list[dict]) -> str:
+    """Scalar columns of the rows, problem rows first, at most ROW_CAP rows."""
+    if not rows:
+        return ""
+    cols = [k for k, v in rows[0].items() if k != "layer" and (v is None or isinstance(v, (str, int, float, bool)))][:10]
+    shown = sorted(rows, key=lambda r: not _problem(r))[:ROW_CAP]
+    cell = lambda v: f'<td class="num">{v:.1f}</td>' if isinstance(v, float) else f"<td>{esc('' if v is None else v)}</td>"  # noqa: E731
+    body = "".join("<tr>" + "".join(cell(r.get(c)) for c in cols) + "</tr>" for r in shown)
+    n_bad = sum(map(_problem, rows))
+    more = f" · {ROW_CAP}행까지 표시, 전체는 results.jsonl" if len(rows) > ROW_CAP else ""
+    return (f'<details class="card"><summary>행별 결과 ({len(rows):,}건, 주의 {n_bad:,}건 먼저{more})</summary><table><tr>'
+            + "".join(f"<th>{esc(c)}</th>" for c in cols) + "</tr>" + body + "</table></details>")
+
+
+def tool_chips(calls: list[dict]) -> str:
+    out = []
+    for c in calls:
+        tip = f"인자: {json.dumps(c.get('args'), ensure_ascii=False)[:400]}\n결과: {json.dumps(c.get('result'), ensure_ascii=False, default=str)[:600]}"
+        cls = "chip err" if c.get("status") == "error" else "chip"
+        out.append(f'<span class="{cls}" title="{esc(tip)}">{"✕ " if c.get("status") == "error" else ""}{esc(c.get("name"))}</span>')
+    return "".join(out) or '<span class="tools">툴 호출 없음</span>'
+
+
+def waterfall(spans: list[dict]) -> str:
+    if not spans:
+        return '<div class="tools">span 없음 (oracle·재채점 run, 또는 --agent 실행 전 기록)</div>'
+    total = max(s["start_ms"] + s["duration_ms"] for s in spans) or 1
+    rows = "".join(
+        f'<div class="r"><span class="n" style="padding-left:{8 * s.get("depth", 0)}px" title="{esc(s["name"])}">{esc(s["name"])}</span>'
+        f'<span class="track"><span class="bar {esc(s.get("kind", "node"))}-k{" err" if s.get("status") == "error" else ""}" '
+        f'style="left:{s["start_ms"] / total * 100:.2f}%;width:{s["duration_ms"] / total * 100:.2f}%" '
+        f'title="{esc(s["name"])} · 시작 {s["start_ms"]:.0f} ms · {s["duration_ms"]:.0f} ms · {esc(s.get("status", "ok"))}"></span></span>'
+        f'<span class="num">{s["duration_ms"]:.0f} ms</span></div>' for s in spans)
+    return f'<div class="wf">{rows}</div>'
+
+
+def agent_body(m: dict, rows: list[dict]) -> str:
+    from evals.evaluators.agent import ERRORS
+
+    s = m["summary"]
+    f = lambda v: "—" if v is None else pct(v)  # noqa: E731
+    tiles = [tile(f(s["conversation_success"]), f"대화 성공률 ({s['n_conversations']}대화)"), tile(f(s["pass^k"]), f"pass^{s['repeats']}"),
+             tile(f(s["turn_pass"]), f"턴 통과율 ({s['n_turns']}턴)"), tile(f(s["tool_selection"]), "툴 선택 정확도"),
+             tile(f(s["param_accuracy"]), "파라미터 정확도"), tile(f(s["state_accuracy"]), f"상태(표 키) 정확도 (n={s['n_state']})"),
+             tile(f(s["numeric_accuracy"]), f"최종 수치 정확도 (n={s['n_numeric']})"), tile(str(s["unsupported_final_number_turns"]), "근거 없는 숫자가 있는 턴")]
+    tools = sorted(set(s["missing_calls"]) | set(s["extra_calls"]))
+    calls = (hbars([f"{t} 빠짐" for t in tools] + [f"{t} 불필요" for t in tools],
+                   [s["missing_calls"].get(t, 0) for t in tools] + [s["extra_calls"].get(t, 0) for t in tools])
+             if tools else '<p class="note">빠진·불필요 호출 없음</p>')
+    fields = list(s["param_by_field"])
+    params = (hbar_groups(fields, [("정확도", "--series-1", [s["param_by_field"][k]["acc"] or 0 for k in fields])],
+                          [s["param_by_field"][k]["n"] for k in fields]) if fields else '<p class="note">채점한 인자 없음</p>')
+    errors = sorted(s["errors"].items(), key=lambda kv: -kv[1])
+    err = (hbars([k for k, _ in errors], [v for _, v in errors]) + '<ul class="info">'
+           + "".join(f"<li><b>{esc(k)}</b> {v}건 — {esc(ERRORS.get(k, ''))}</li>" for k, v in errors) + "</ul>"
+           if errors else '<p class="note">오류 없음</p>')
+    first = s["first_failed_turn"]
+    first_chart = hbars([f"턴 {k}" for k in first], list(first.values())) if first else '<p class="note">실패한 대화 없음</p>'
+    ui = (m.get("jaeger") or {}).get("ui")
+    convs: dict[tuple, list[dict]] = {}
+    for r in rows:
+        convs.setdefault((r["sid"], r.get("run", 0)), []).append(r)
+    order = sorted(convs.items(), key=lambda kv: all(t["passed"] for t in kv[1]))
+    blocks = []
+    for (sid, run_no), turns in order[:ROW_CAP]:
+        ok = all(t["passed"] for t in turns)
+        lat = sum(t.get("latency_ms", 0) for t in turns)
+        tok = sum(t.get("input_tokens", 0) + t.get("output_tokens", 0) for t in turns)
+        head = (f'<summary><span class="{"ok" if ok else "bad"}">{"✓ 성공" if ok else "✕ 실패"}</span> · {esc(sid)} #{run_no} · '
+                f'{len(turns)}턴 · {lat:.0f} ms · 토큰 {tok:,}</summary>')
+        body = "".join(
+            f'<div class="turn"><div class="q">턴 {t["turn"]} · {esc(t["question"])}</div>'
+            f'<div>{tool_chips(t.get("calls") or [])} <span class="tools">끝난 표 {esc(t.get("state_key") or "-")}</span></div>'
+            f'<div class="a">{esc(t.get("answer") or "")}</div>'
+            f'<div>{"<span class=\'chip ok\'>✓ 통과</span>" if t["passed"] else "".join(f"<span class=\'chip err\' title=\'{esc(ERRORS.get(e, e))}\'>{esc(e)}</span>" for e in t["errors"])}'
+            f' <span class="tools">{t.get("latency_ms", 0):.0f} ms · LLM {t.get("llm_calls", 0)}회 · 토큰 {t.get("input_tokens", 0) + t.get("output_tokens", 0):,} · '
+            f'{trace_link(ui, t.get("trace_id"))}</span></div>{waterfall(t.get("spans") or [])}</div>'
+            for t in turns)
+        blocks.append(f'<details class="conv"{"" if ok else " open"}>{head}<div class="turns">{body}</div></details>')
+    more = f'<p class="note">{ROW_CAP}개 대화까지 표시(실패 먼저), 전체는 results.jsonl.</p>' if len(order) > ROW_CAP else ""
+    return "".join([
+        '<div class="tiles">', *tiles, "</div>",
+        '<div class="grid2"><div class="card"><h2>빠진 · 불필요 호출 (툴별)</h2><p class="note">멀티쿼리 턴에서 빠진 요청, 같은 툴 반복 호출을 따로 센다.</p>', calls, "</div>",
+        '<div class="card"><h2>인자 필드별 정확도</h2><p class="note">같은 툴의 k번째 호출과 정답을 필드별로 비교(목록은 집합).</p>', params, "</div></div>",
+        '<div class="grid2"><div class="card"><h2>턴 오류</h2>', err, "</div>",
+        '<div class="card"><h2>처음 실패한 턴</h2><p class="note">실패한 대화가 몇 번째 턴에서 처음 무너졌는지. 0 = 첫 턴.</p>', first_chart, "</div></div>",
+        f'<h2 style="margin-top:12px">대화별 결과와 trace ({len(convs)}대화)</h2>', more, *blocks,
+    ])
+
+
+def golden_label(m: dict) -> str:
+    g = m.get("golden") or {}
+    if "sha256" in g:
+        return f'골든 {esc(g["sha256"][:12])}'
+    return " · ".join(f'골든 {esc(k)} {esc(v["sha256"][:12])}' for k, v in g.items() if isinstance(v, dict) and "sha256" in v)
+
+
+def history_of(layer: str) -> list[dict]:
+    return [{**h, "total_tokens": (h.get("input_tokens") or 0) + (h.get("output_tokens") or 0)}
+            for h in read_history() if h["layer"] == layer]
+
+
+def l012_body(m: dict, rows: list[dict], report: str) -> str:
+    """One section per part (l0, l1-gold, l1-pred, l2): its report.md part, its ops and its rows."""
+    parts = dict(p.split(" -->\n", 1) for p in report.split("<!-- ")[1:])
+    out = []
+    for name in m["summary"]:
+        mine = [r for r in rows if r.get("layer") == name]
+        out += [f'<h2 style="margin-top:28px">{esc(LAYER_TITLES.get(name, name))}</h2>', summary_tiles(name, m["summary"][name]),
+                md_html(parts.get(name, "")), ops_body(m["ops"][name], mine, history_of(name)), generic_rows_table(mine)]
+    return "".join(out)
+
+
 def render(run: Path, questions: dict[str, str] | None = None) -> str:
     m = json.loads((run / "manifest.json").read_text(encoding="utf-8"))
     rows = [json.loads(l) for l in (run / "results.jsonl").read_text(encoding="utf-8").splitlines() if l.strip()]
+    report = (run / "report.md").read_text(encoding="utf-8") if (run / "report.md").exists() else ""
     for r in rows:
-        r.setdefault("question", (questions or {}).get(r["qid"], ""))
-    history = [{**h, "total_tokens": (h.get("input_tokens") or 0) + (h.get("output_tokens") or 0)}
-               for h in read_history() if h["layer"] == m["layer"]]
+        if "qid" in r:
+            r.setdefault("question", (questions or {}).get(r["qid"], ""))
     layer = m["layer"]
-    model = ", ".join(m["ops"]["models"]) or "summarize_stat"
-    target = f'검색기 {m["retriever"]} · 모델 {model}' if layer == "e2e" else f'검색기 {m["retriever"]}' if layer == "l1" else f"모델 {model}"
-    meta = (f'{esc(m["run_id"])} · {esc(target)} · {"split " + esc(m["split"]) + " · " if layer == "l1" else ""}'
-            f'골든 {esc(m["golden"]["sha256"][:12])} · tables.jsonl {esc(m["source_snapshot"]["tables.jsonl"][:12])} · '
+    models = sorted({x for o in (m["ops"].values() if layer == "l012" else [m["ops"]]) for x in o.get("models", [])})
+    model = ", ".join(models) or ("summarize_stat" if layer in ("l3", "e2e") else "LLM 호출 없음")
+    target = {"e2e": f'검색기 {m["retriever"]} · 모델 {model}', "l1": f'검색기 {m["retriever"]}',
+              "agent": f'에이전트 {m.get("agent") or m.get("source") or "-"} · 모델 {model}'}.get(layer, f"모델 {model}")
+    meta = (f'{esc(m["run_id"])} · {esc(target)} · {"split " + esc(m["split"]) + " · " if m.get("split") else ""}'
+            f'{golden_label(m)} · tables.jsonl {esc(m["source_snapshot"]["tables.jsonl"][:12])} · '
             f'git {esc(m["git"][:8])}{" (dirty)" if m.get("git_dirty") else ""}')
-    body = {"l1": l1_body, "e2e": e2e_body}.get(layer, l3_body)(m, rows)
-    title = {"l1": "L1 검색", "l3": "L3 계산", "e2e": "L4 종단 간 (e2e)"}.get(layer, layer)
+    if layer == "l012":
+        body, ops, table = l012_body(m, rows, report), "", ""
+    else:
+        dedicated = {"l1": l1_body, "l3": l3_body, "e2e": e2e_body, "agent": agent_body}
+        body = (dedicated[layer](m, rows) if layer in dedicated else summary_tiles(layer, m["summary"]) + md_html(report))
+        body += failures_body(m, rows) + search_failures_body(m, rows)
+        ops = ops_body(m["ops"], rows, history_of(layer))
+        table = rows_table(layer, rows) if layer in ("l1", "l3", "e2e") else "" if layer == "agent" else generic_rows_table(rows)
+    title = LAYER_TITLES.get(layer, layer)
     return (f'<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
             f"<title>{esc(title)} · {esc(m['stage'])}</title><style>{CSS}</style></head>"
             f'<body><div class="viz-root"><main><h1>{esc(title)} · {esc(m["stage"])}</h1><div class="meta">{meta}</div>'
-            f"{body}{failures_body(m, rows)}{search_failures_body(m, rows)}{ops_body(m['ops'], rows, history)}{rows_table(layer, rows)}</main></div></body></html>")
+            f"{guide(layer)}{body}{ops}{table}</main></div></body></html>")
 
 
 def questions_of(layer: str) -> dict[str, str]:

@@ -14,9 +14,9 @@ from langchain_core.documents import Document
 from langchain_core.retrievers import BaseRetriever
 from langchain_core.runnables import Runnable, RunnableLambda
 
-from kosis_rag.loader import to_document
-from kosis_rag.retriever import BM25TableRetriever, ChromaTableRetriever
-from kosis_rag.schemas import TableRecord
+from kosis_rag.legacy.retrievers import BM25TableRetriever, ChromaTableRetriever
+from kosis_rag.schemas.catalog import TableRecord
+from kosis_rag.shared.catalog import to_document
 
 from evals.ops import UsageCallback
 from evals.schemas import TABLES, RetrievalItem
@@ -38,7 +38,7 @@ def load_records(path: Path = TABLES) -> list[TableRecord]:
 
 
 def bm25_retrievers(records: list[TableRecord], k: int) -> dict[str, BM25TableRetriever]:
-    """BM25 over the catalog document (kosis_rag.loader) and over TableRecord.search_text (T2-01)."""
+    """BM25 over the catalog document (kosis_rag.shared.catalog) and over TableRecord.search_text (T2-01)."""
     catalog = [to_document(r.info) for r in records]
     rich = [Document(page_content=r.search_text, metadata=d.metadata, id=d.id) for r, d in zip(records, catalog)]
     return {
@@ -47,7 +47,7 @@ def bm25_retrievers(records: list[TableRecord], k: int) -> dict[str, BM25TableRe
     }
 
 
-# Staged search (T2-06, T2-07): name -> settings over .env (CHROMA_COLLECTION, EMBED_CKPT, RERANK_CKPT, HCX_API_KEY).
+# Staged search (T2-06, T2-07): name -> overrides over the shell (CHROMA_COLLECTION, EMBED_CKPT, RERANK_CKPT, HCX_API_KEY).
 STAGED = {
     "hybrid": {"cond_filter": False, "rerank_ckpt": "", "stage2": "none"},
     "hybrid+cond": {"cond_filter": True, "rerank_ckpt": "", "stage2": "none"},
@@ -66,16 +66,32 @@ STAGE2_FIELDS = ("stage2_picked_n", "stage2_reason", "stage2_error", "stage2_cal
 GRAPH = "graph:"  # graph:<STAGED name> = the same settings run through the LangGraph search (T2-10)
 
 
-def _staged_settings(name: str):
-    """SearchSettings for a STAGED preset: .env plus the preset's overrides (empty rerank_ckpt = stage 1 off).
+def _staged_config(name: str):
+    """(IndexSpec, SearchOptions, stage 2 LLMConfig | None) of a STAGED preset: shell values plus the preset.
 
-    In: name = a STAGED key. Out: SearchSettings. Side effects: loads .env into the environment.
-    Node: not used by the graph (the runner builds the search with it).
+    An empty rerank_ckpt in the preset turns stage 1 off (None); no key keeps the shell's RERANK_CKPT. The stage 2
+    LLM is built from the preset's stage2, not the shell's STAGE2. Node: not used by the graph.
     """
-    from kosis_rag.pipeline import SearchSettings
+    from evals.config import search_config, stage2_llm
 
     overrides = {key: (value or None) if key == "rerank_ckpt" else value for key, value in STAGED[name].items()}
-    return SearchSettings.from_env(**overrides)
+    spec, options = search_config(**overrides)
+    return spec, options, stage2_llm(options.stage2)
+
+
+def _resources(name: str):
+    from kosis_rag.adapters.loader import load_resources
+
+    spec, options, llm = _staged_config(name)
+    return load_resources(spec=spec, options=options, llm=llm)
+
+
+def connect_chroma(k: int = 20) -> ChromaTableRetriever:
+    """The dense table collection named by the shell (CHROMA_HOST / CHROMA_PORT / CHROMA_COLLECTION, EMBED_CKPT)."""
+    from evals.config import search_config
+
+    spec, _ = search_config()
+    return ChromaTableRetriever.connect(k=k, embed_ckpt=spec.embed_ckpt, chroma=spec.chroma)
 
 
 def build(name: str, items: list[RetrievalItem], k: int) -> Runnable:
@@ -91,19 +107,18 @@ def build(name: str, items: list[RetrievalItem], k: int) -> Runnable:
     if name == "oracle":
         return OracleRetriever(gold={i.question: [s[0] for s in i.required] for i in items})
     if name == "chroma":  # needs the shared server and CHROMA_COLLECTION (T2-26)
-        return ChromaTableRetriever.connect(k=k)
+        return connect_chroma(k)
     if name in STAGED:  # the pipeline keeps its own pool of 50; the runner cuts to k
-        from kosis_rag.pipeline import build_search
+        from kosis_rag.legacy.pipeline import build_search
 
-        return build_search(_staged_settings(name))
+        return build_search(_resources(name))
     if name.startswith(GRAPH) and name[len(GRAPH):] in STAGED:
-        # The graph's ranked pool (state.docs), uncut, with the run config (callbacks) passed through. The guide node
-        # gets Phase 1 MockClient: no model call, so L1 counts the same calls and tokens as the retriever above.
-        from kosis_chat.llm.model import MockClient
-        from kosis_rag.graph import build_graph, run_search
-        from kosis_rag.pipeline import load_resources
+        # The graph's whole ranked pool (state.docs, the preset's pool of 50), uncut, with the run config (callbacks)
+        # passed through. The graph ends at gate (T2-41 S5), so no model is called after it. Not SearchModule's
+        # candidates: those are cut to answer_k and would change Hit@10.
+        from kosis_rag.graph.search import build_graph, run_search
 
-        graph = build_graph(load_resources(_staged_settings(name[len(GRAPH):])), MockClient())
+        graph = build_graph(_resources(name[len(GRAPH):]))
         return RunnableLambda(lambda question, config: run_search(graph, question, config).docs, name=name)
     retrievers = bm25_retrievers(load_records(), k)
     if name not in retrievers:

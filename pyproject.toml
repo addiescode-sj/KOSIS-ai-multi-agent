@@ -16,7 +16,6 @@ dependencies = [
     "pyarrow>=15.0",
     "pyyaml>=6.0",
     "python-dotenv>=1.0",
-    "google-genai>=2.3",
     # Phase 2 runtime (vendor/phase2/pyproject.toml)
     "rank-bm25>=0.2.2",
     "chromadb-client==1.5.9",

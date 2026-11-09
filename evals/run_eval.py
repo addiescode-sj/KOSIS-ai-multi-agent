@@ -10,6 +10,8 @@
     python -m evals.run_eval --layer l2 --stage T2-28-l2 --split dev                   # parse_query vs query_golden
     python -m evals.run_eval --layer ablation --stage T2-28-slots --split dev --slot-source pred [--retriever chroma]
     python -m evals.run_eval --layer l012 --stage T2-28-l012                           # L0 + L1 filter (gold, pred) + L2, dev
+    python -m evals.run_eval --layer agent --stage T3-06-oracle --oracle --split all   # agent metrics self-check (1.000)
+    python -m evals.run_eval --layer agent --stage T3-07-react --agent <module:function> --repeat 3   # live, pass^3
 
 L1 runs every item (BM25 is fast) so the no-answer threshold tau is chosen on dev and applied to the split shown.
 Every run writes results.jsonl, manifest.json, ops.json (latency, tokens, cost, tool failure rate), report.md and
@@ -32,14 +34,41 @@ from pathlib import Path
 
 from evals import ops, report_html, trace
 from evals.evaluators import calculation, retrieval
-from evals.schemas import DATASETS, GOLDEN, QUERY_GOLDEN, ROOT, TABLES, CalcItem, QueryItem, load_items, load_jsonl
+from evals.schemas import (AGENT_SCENARIOS, DATASETS, GOLDEN, QUERY_GOLDEN, ROOT, TABLES, AgentScenario, CalcItem, QueryItem,
+                           load_items, load_jsonl)
 
 REPORTS = ROOT / "evals" / "reports"
+MOCK_NOTE = " · **llm mock: 경로 확인용, 점수 아님** (모델 대신 코드 템플릿이 답함)"
 CALC_GOLDEN = DATASETS / "calculation_golden.jsonl"
 POOL = DATASETS / "retrieval_pool.csv"
 METADATA_SAMPLE = DATASETS / "metadata_sample.jsonl"  # L0 accuracy sample, labelled by the evaluation side (§3.3)
 OPS_FIELDS = ("latency_ms", "llm_calls", "input_tokens", "output_tokens", "model", "failed", "retried")
 TRACE_FIELDS = ("spans", "retrieve_ms", "search_spans")
+# T3-23: search settings as arguments (argument > shell > .env > default). Each sets the variable evals/config.py reads.
+SEARCH_ARGS = {
+    "chroma_host": ("CHROMA_HOST", "Chroma host (default localhost)"),
+    "chroma_port": ("CHROMA_PORT", "Chroma port (default 8001)"),
+    "collection": ("CHROMA_COLLECTION", "dense collection, e.g. kosis_a_bgeft_202611032104"),
+    "embed_ckpt": ("EMBED_CKPT", "query embedder checkpoint .pt, or base (untrained bge-m3)"),
+    "rerank_ckpt": ("RERANK_CKPT", "stage 1 re-ranker .pt, or base (untrained bge-reranker-v2-m3); presets without stage 1 ignore it"),
+    "text_format": ("TEXT_FORMAT", "table text format the collection must hold (n2-L60)"),
+    "rerank_mode": ("RERANK_MODE", "stage 1: blend | score"),
+    "answer_k": ("ANSWER_K", "candidates handed to gate"),
+    "hq_build": ("HQ_BUILD", "question index build id (T2-39)"),
+    "hcx_thinking": ("HCX_THINKING", "stage 2 hcx: none | low"),
+}
+
+
+def apply_settings(args) -> Path | None:
+    """Load .env (unless --no-env-file), then put the given search arguments into os.environ over it and the shell.
+    Returns the .env file loaded, or None."""
+    from kosis_agent.envfile import load_env_file
+
+    loaded = None if args.no_env_file else load_env_file(args.env_file)
+    for field, (name, _) in SEARCH_ARGS.items():
+        if (value := getattr(args, field)) is not None:
+            os.environ[name] = str(value)
+    return loaded
 
 
 def sha256(path: Path) -> str:
@@ -64,10 +93,19 @@ def run_l1(args) -> tuple[list[dict], dict, str]:
     from evals.runners import retrieval as runner  # LangChain loads only for L1
 
     items = load_items(args.golden)
-    rows = runner.run(runner.build(args.retriever, items, args.k), items, args.k)
     by_qid = {i.qid: i for i in items}
-    tau = args.tau if args.tau is not None else retrieval.best_tau(
-        [(r["top_score"], not r["answerable"]) for r in rows if r["split"] == "dev"])
+    if args.from_run:  # T3-22: regrade the saved rankings under the current labels; search is not run again
+        past = json.loads((args.from_run / "manifest.json").read_text(encoding="utf-8"))
+        args.retriever, args.k = past["retriever"], past["top_k"]
+        rows = [json.loads(line) for line in (args.from_run / "results.jsonl").read_text(encoding="utf-8").splitlines() if line.strip()]
+        for r in rows:  # answerable / reason follow the current golden (labels may have changed)
+            r["answerable"] = by_qid[r["qid"]].answerable
+        # the saved run keeps only its split, so tau cannot be picked on dev again: reuse the run's tau
+        tau = args.tau if args.tau is not None else past["summary"]["tau"]
+    else:
+        rows = runner.run(runner.build(args.retriever, items, args.k), items, args.k)
+        tau = args.tau if args.tau is not None else retrieval.best_tau(
+            [(r["top_score"], not r["answerable"]) for r in rows if r["split"] == "dev"])
     judged = judged_keys(args.pool)
     shown = [r for r in rows if args.split == "all" or r["split"] == args.split]
     for r in shown:
@@ -87,6 +125,15 @@ def run_l1(args) -> tuple[list[dict], dict, str]:
     return shown, summary, l1_report(args, summary)
 
 
+def load_sigungu() -> dict[str, list[str]]:
+    """The 시군구 -> 시도 dictionary parse_query needs (T2-41: without it parse reads no 시군구 and L2 regions drop)."""
+    from kosis_rag.adapters.files import load_sigungu as load
+
+    from evals.config import data_dir
+
+    return load(data_dir() / "sigungu.json")
+
+
 def run_l0(args) -> tuple[list[dict], dict, str]:
     """L0 metadata quality over the registry; the load check runs only with --retriever chroma (needs the server)."""
     from evals.evaluators import metadata
@@ -98,8 +145,7 @@ def run_l0(args) -> tuple[list[dict], dict, str]:
                if line.strip()} if METADATA_SAMPLE.exists() else None)
     loaded = None
     if args.retriever == "chroma":
-        from kosis_rag.retriever import ChromaTableRetriever
-        loaded = set(ChromaTableRetriever.connect().collection.get(include=[])["ids"])
+        loaded = set(runner.connect_chroma().collection.get(include=[])["ids"])
     s = metadata.score(records, gold, sample, loaded)
     rows = [{"key": k, **metadata.fields(r), "latency_ms": 0.0} for k, r in records.items()]
     lines = ["| 필드 | 채움률 (전체) | 채움률 (골든 정답 표) |", "| --- | --- | --- |"]
@@ -107,7 +153,7 @@ def run_l0(args) -> tuple[list[dict], dict, str]:
     fmt = lambda v: "—" if v is None else f"{v:.3f}"
     report = "\n".join([
         f"# L0 metadata quality — {args.stage}", "",
-        f"- 표 {s['n_tables']}개, 골든 정답 표 {s['n_gold']}개 · 필드는 필터가 쓰는 함수로 읽음 (kosis_rag.filters / roles)", "",
+        f"- 표 {s['n_tables']}개, 골든 정답 표 {s['n_gold']}개 · 필드는 필터가 쓰는 함수로 읽음 (kosis_rag.shared.fields / filters / roles)", "",
         *lines, "",
         f"- regions \"해당 없음\"(행정구역 분류 없는 표): 전체 {s['all']['regions_none']:.3f} · 골든 {s['gold']['regions_none']:.3f}",
         f"- measure 미매핑(이름이 세는 대상을 말하지 않음·기타): 전체 {s['all']['measure_unmapped']:.3f} · 골든 {s['gold']['measure_unmapped']:.3f}",
@@ -122,18 +168,19 @@ def run_l0(args) -> tuple[list[dict], dict, str]:
 
 
 def run_l2(args) -> tuple[list[dict], dict, str]:
-    """L2: parse_query on every labelled question against query_golden.jsonl."""
-    from kosis_rag.query import parse_query
+    """L2: parse_query on every labelled question against query_golden.jsonl, with the 시군구 dictionary."""
+    from kosis_rag.parse.node import parse_query
 
     from evals.evaluators import query
 
     items: list[QueryItem] = load_jsonl(args.query_golden, QueryItem)
+    sigungu = load_sigungu()
     rows = []
     for item in items:
         if args.split != "all" and item.split != args.split:
             continue
         started = time.perf_counter()
-        pred = parse_query(item.question).model_dump()
+        pred = parse_query(item.question, sigungu=sigungu).model_dump()
         rows.append({"qid": item.qid, "split": item.split, **query.score_query(item, pred), "pred": pred,
                      "latency_ms": (time.perf_counter() - started) * 1000})
     agg = query.aggregate(rows)
@@ -155,7 +202,7 @@ def run_l2(args) -> tuple[list[dict], dict, str]:
 
 def run_ablation(args) -> tuple[list[dict], dict, str]:
     """Slot ablation (§4.4): filter recall per combination; with --retriever chroma also Hit/MRR, flips, verdicts."""
-    from kosis_rag.query import parse_query
+    from kosis_rag.parse.node import parse_query
 
     from evals.runners import ablation
     from evals.runners import retrieval as runner
@@ -165,12 +212,12 @@ def run_ablation(args) -> tuple[list[dict], dict, str]:
     if args.slot_source == "gold":
         slots = {q.qid: ablation.gold_parsed(q) for q in load_jsonl(args.query_golden, QueryItem)}
     else:
-        slots = {i.qid: parse_query(i.question) for i in items}
+        sigungu = load_sigungu()
+        slots = {i.qid: parse_query(i.question, sigungu=sigungu) for i in items}
     on = ablation.combos(args.slots.split(","))
     retriever = None
     if args.retriever == "chroma":
-        from kosis_rag.retriever import ChromaTableRetriever
-        retriever = ChromaTableRetriever.connect(k=args.k)
+        retriever = runner.connect_chroma(args.k)
     rows = ablation.run(items, slots, records, on, retriever, args.k)
     tau = args.tau
     if tau is None and retriever is not None:  # chosen once on `none`, kept for every combination
@@ -238,11 +285,17 @@ def l1_report(args, s: dict) -> str:
                   for name, m in nr.items() if name in ("tau", "llm", "either")]
         rules += ["", f"- llm: 2차 LLM이 고른 표 0개(호출 오류 제외) · either: llm 또는 tau · LLM 사유 일치 "
                       f"{nr['llm_reason_match'][0]}/{nr['llm_reason_match'][1]} · LLM 호출 오류 {nr['llm_errors']}건"]
+    a = s["metrics"]["all"]
+    bounds = ([f"- 판정 구간 (하한 = 판정 없는 표를 오답, 상한 = 정답으로 볼 때. 실제 값은 이 사이): "
+               + " · ".join(f"{name} {a[c]:.3f} ~ {a[c + '_upper']:.3f}"
+                            for name, c in (("Hit@1", "hit@1"), ("Hit@5", "hit@5"), ("Hit@10", "hit@10"), ("MRR", "rr"))), ""]
+              if "rr_upper" in a else [])
     return "\n".join([
         f"# L1 retrieval — {args.stage}", "",
-        f"- retriever `{args.retriever}`, k={args.k}, split `{args.split}`, 답 있는 문항 기준", "",
-        *lines, "",
-        f"- 답 없음 (tau={s['tau']:.4g}, dev에서 선택): P {na['precision']:.3f} · R {na['recall']:.3f} · F1 {na['f1']:.3f} "
+        f"- retriever `{args.retriever}`, k={args.k}, split `{args.split}`, 답 있는 문항 기준"
+        + (f" · 과거 실행 재채점 `{args.from_run}` (검색 다시 안 함, tau는 그 run 값)" if args.from_run else ""), "",
+        *lines, "", *bounds,
+        f"- 답 없음 (tau={s['tau']:.4g}, {'재채점한 run의 값' if args.from_run else 'dev에서 선택'}): P {na['precision']:.3f} · R {na['recall']:.3f} · F1 {na['f1']:.3f} "
         f"(tp {na['tp']}, fp {na['fp']}, fn {na['fn']})",
         "- 사유별 답 없음 판정 (§4.3, no_period는 필터 완화 회귀 감시): " + (", ".join(
             f"{k} {v['refused']}/{v['n']} ({v['rate']:.0%})" for k, v in s.get("refusal_by_reason", {}).items()) or "답 없음 문항 없음"),
@@ -389,13 +442,14 @@ def run_l3(args) -> tuple[list[dict], dict, str]:
     from evals.runners import stat as runner
 
     items: list[CalcItem] = calc_items(args.calc_golden)
-    answers = runner.read_run(args.from_run, items) if args.from_run else runner.run(items, args.interval)
+    answers = runner.read_run(args.from_run, items) if args.from_run else runner.run(items, args.interval, args.llm)
     rows = grade(items, answers)
     verdicts, errors, lines = verdict_table(rows)
     summary = {"verdicts": verdicts, "errors": dict(errors)}
     report = "\n".join([
         f"# L3 calculation — {args.stage}", "",
-        f"- 답: {'과거 실행 재채점 ' + str(args.from_run) if args.from_run else 'summarize_stat 호출'} · 정답 표 고정(oracle)", "",
+        f"- 답: {'과거 실행 재채점 ' + str(args.from_run) if args.from_run else 'summarize_stat 호출'} · 정답 표 고정(oracle)"
+        + (MOCK_NOTE if args.llm == "mock" and not args.from_run else ""), "",
         *lines, "",
         "- 오류 유형: " + (", ".join(f"{k} {v}" for k, v in errors.most_common()) or "없음"),
     ]) + "\n"
@@ -413,7 +467,7 @@ def run_e2e(args) -> tuple[list[dict], dict, str]:
     # §6.3: the L1 slots judge the table and the L2 labels the 연도·지역, linked by qid (golden v2 shares qids)
     l1 = {i.qid: i for i in load_items(args.golden)} if args.golden.exists() else {}
     l2 = {q.qid: q for q in load_jsonl(args.query_golden, QueryItem)} if args.query_golden.exists() else {}
-    raw = e2e.run(runner.build(args.retriever, [], args.k), items, args.k, args.interval)
+    raw = e2e.run(runner.build(args.retriever, [], args.k), items, args.k, args.interval, args.llm)
     rows = [{**g, **e2e.locate(item, a, g["verdict"], l1.get(item.qid)), **e2e.template_slots(a["answer"], l2.get(item.qid)),
              "error": a["error"], "no_period_item": "no_period" in item.allowed_reasons}
             for item, a, g in zip(items, raw, grade(items, raw))]
@@ -433,7 +487,8 @@ def run_e2e(args) -> tuple[list[dict], dict, str]:
     n = len(rows) or 1
     report = "\n".join([
         f"# L4 end to end — {args.stage}", "",
-        f"- retriever `{args.retriever}`, k={args.k} · 검색 1위 표로 summarize_stat 호출 · L3와 같은 채점기(정답 표 기준)", "",
+        f"- retriever `{args.retriever}`, k={args.k} · 검색 1위 표로 summarize_stat 호출 · L3와 같은 채점기(정답 표 기준)"
+        + (MOCK_NOTE if args.llm == "mock" else ""), "",
         *lines, "",
         f"- 검색 1위가 정답 표: {len(right)}/{len(rows)} ({len(right) / n:.1%})",
         f"  - 맞힌 표에서 PASS {split['right'].get('PASS', 0)}/{len(right)} · 틀린 표에서 PASS {split['wrong'].get('PASS', 0)}/{len(rows) - len(right)}",
@@ -448,15 +503,91 @@ def run_e2e(args) -> tuple[list[dict], dict, str]:
     return rows, summary, report
 
 
-def main(argv: list[str] | None = None) -> int:
+def run_agent(args) -> tuple[list[dict], dict, str]:
+    """Agent layer (T3-06, KOS-120): multi-turn / multi-query scenarios graded from each turn's tool calls (no LLM).
+
+    --oracle grades the run a perfect agent would leave (self-check: every rate 1.000), --from-run regrades a past
+    run's transcripts, --agent module:function runs a compiled graph live (spans -> records, runners.agent).
+    """
+    from evals.evaluators import agent as grader
+    from evals.runners import agent as runner
+
+    scenarios: list[AgentScenario] = [s for s in load_jsonl(args.scenarios, AgentScenario)
+                                      if args.split == "all" or s.split == args.split]
+    needed = {t.expect.calc_qid for s in scenarios for t in s.turns if t.expect.calc_qid}
+    calc = {i.qid: i for i in calc_items(args.calc_golden)} if needed else {}
+    if missing := needed - set(calc):
+        raise SystemExit(f"calc_qid not in {[str(p) for p in args.calc_golden]}: {sorted(missing)[:5]}")
+    cache: dict[str, dict] = {}
+    cells_of = lambda key: cache.setdefault(key, calculation.read_cells(ROOT / "data" / "values" / f"{key}.parquet"))  # noqa: E731
+    telemetry = None
+    if args.oracle:
+        records = {(s.sid, 0): grader.oracle_records(s, calc) for s in scenarios}
+        source = "oracle (정답 호출을 그대로 낸 기록, 자기검증: 모든 비율 1.000이어야 함)"
+    elif args.from_run:
+        records = defaultdict(list)
+        for line in (args.from_run / "results.jsonl").read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                r = json.loads(line)
+                records[(r["sid"], r.get("run", 0))].append(r)
+        source = f"과거 실행 재채점 {args.from_run}"
+    elif args.agent:
+        telemetry = runner.tracing()
+        records = runner.run(runner.load_graph(args.agent), scenarios, args.repeat, telemetry)
+        source = f"`{args.agent}` 실행 ×{args.repeat} (턴 기록 = 실행 중 OTel span)"
+    else:
+        raise SystemExit("--layer agent needs --oracle, --from-run <run folder> or --agent module:function")
+    by_sid = {s.sid: s for s in scenarios}
+    rows = [{**row, "run": run_no}
+            for (sid, run_no), recs in sorted(records.items()) if sid in by_sid
+            for row in grader.grade_conversation(by_sid[sid], sorted(recs, key=lambda r: r.get("turn", 0)), calc, cells_of)]
+    for r in rows:
+        r.setdefault("latency_ms", 0.0)
+    if telemetry:
+        runner.link_verdicts(telemetry[0], rows)
+    s = grader.aggregate(rows)
+    fmt = lambda v: "—" if v is None else f"{v:.3f}"  # noqa: E731
+    count = lambda d: ", ".join(f"{k} {v}" for k, v in sorted(d.items())) or "0"  # noqa: E731
+    failed = [r for r in rows if not r["passed"]]
+    report = "\n".join([
+        f"# Agent (multi-turn · multi-query) — {args.stage}", "",
+        f"- 기록: {source} · 시나리오 `{os.path.relpath(args.scenarios.resolve(), ROOT)}` split `{args.split}` · "
+        f"시나리오 {s['n_scenarios']}, 대화 {s['n_conversations']}, 턴 {s['n_turns']}", "",
+        "| 지표 | 값 |", "| --- | --- |",
+        f"| 대화 성공률 (모든 턴 통과) | {fmt(s['conversation_success'])} |",
+        f"| pass^{s['repeats']} (반복 실행 모두 성공한 시나리오) | {fmt(s['pass^k'])} |",
+        f"| 턴 통과율 | {fmt(s['turn_pass'])} |",
+        f"| 툴 선택 정확도 (이름·순서 정확 일치) | {fmt(s['tool_selection'])} |",
+        f"| 툴 순서 일치 (불필요 호출 허용) | {fmt(s['tool_order'])} |",
+        f"| 빠진 호출 | {count(s['missing_calls'])} |",
+        f"| 불필요 호출 | {count(s['extra_calls'])} |",
+        f"| 파라미터 정확도 (필드 단위) | {fmt(s['param_accuracy'])} |",
+        f"| 상태(표 키) 정확도 | {fmt(s['state_accuracy'])} ({s['n_state']}) |",
+        f"| 최종 수치 정확도 (L3 PASS) | {fmt(s['numeric_accuracy'])} ({s['n_numeric']}) |",
+        f"| 근거 없는 숫자가 있는 턴 | {s['unsupported_final_number_turns']} |", "",
+        "| 인자 필드 | 정확도 | n |", "| --- | --- | --- |",
+        *[f"| {f} | {fmt(v['acc'])} | {v['n']} |" for f, v in s["param_by_field"].items()], "",
+        "- 오류: " + (", ".join(f"{k} {v}" for k, v in sorted(s["errors"].items(), key=lambda kv: -kv[1])) or "없음"),
+        "- 처음 실패한 턴 (0부터): " + (count(s["first_failed_turn"]) if s["first_failed_turn"] else "없음"), "",
+        f"## 실패한 턴 ({len(failed)}, 50개까지)", "",
+        *(["| 시나리오#실행 | 턴 | 오류 | 부른 툴 | 끝난 표 |", "| --- | --- | --- | --- | --- |",
+           *[f"| {r['sid']}#{r['run']} | {r['turn']} | {', '.join(r['errors'])} | {' → '.join(c['name'] for c in r.get('calls') or []) or '-'} "
+             f"| {r['state_key'] or '-'} |" for r in failed[:50]]] if failed else ["없음"]),
+        "", "오류 뜻: " + " · ".join(f"`{k}` {v}" for k, v in grader.ERRORS.items()),
+    ]) + "\n"
+    return rows, s, report
+
+
+def main(argv: list[str] | None = None) -> Path:
+    """Run one layer; returns the run folder (evals.suite reads it)."""
     parser = argparse.ArgumentParser(description="Run one evaluation layer (L1 retrieval, L3 calculation, e2e).")
-    parser.add_argument("--layer", choices=("l0", "l1", "l2", "ablation", "l012", "l3", "e2e"), required=True)  # e2e: first part of L4
+    parser.add_argument("--layer", choices=("l0", "l1", "l2", "ablation", "l012", "l3", "e2e", "agent"), required=True)  # e2e: first part of L4
     parser.add_argument("--stage", required=True, help="what this run measures, e.g. T2-04-bm25")
     parser.add_argument("--split", choices=("dev", "test", "all"), help="default: dev for l012 (the slot baselines), test otherwise")
     parser.add_argument("--retriever", default="bm25-catalog", help="l1, e2e: oracle (l1 only) | bm25-catalog | bm25-record | chroma")
     parser.add_argument("--k", type=int, default=10)
     parser.add_argument("--tau", type=float, help="l1: fixed no-answer threshold (default: best F1 on dev)")
-    parser.add_argument("--from-run", type=Path, help="l3: grade a past run folder instead of calling the model")
+    parser.add_argument("--from-run", type=Path, help="l1, l3, agent: grade a past run folder instead of searching / calling the model (l1 reuses its retriever, k and tau)")
     parser.add_argument("--slot-source", choices=("gold", "pred"), default="pred", help="ablation: query_golden labels or parse_query")
     parser.add_argument("--slots", default="year,cycle,region,dimension,measure", help="ablation: slots to switch")
     parser.add_argument("--golden", type=Path, default=GOLDEN, help="l0, l1, ablation, l012, e2e (§6.3 table slots by qid): retrieval golden (v2: retrieval_golden_v2.jsonl)")
@@ -465,10 +596,23 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--calc-golden", type=Path, nargs="+", default=[CALC_GOLDEN],
                         help="l3, e2e: golden files, e.g. calculation_golden.jsonl calculation_golden_diverse.jsonl")
     parser.add_argument("--interval", type=float, default=0.0, help="l3, e2e: seconds between model calls")
+    parser.add_argument("--llm", choices=("hcx", "mock"), default="hcx",
+                        help="l3, e2e: hcx (HCX_API_KEY, costs) | mock (no call: checks the path, scores are not scores; not in ops_history)")
+    parser.add_argument("--scenarios", type=Path, default=AGENT_SCENARIOS, help="agent: multi-turn scenarios (T3-05)")
+    parser.add_argument("--agent", help="agent: module:function returning a compiled graph, run live")
+    parser.add_argument("--oracle", action="store_true", help="agent: grade the perfect run (self-check, all 1.000)")
+    parser.add_argument("--repeat", type=int, default=1, help="agent: runs per scenario for pass^k")
+    settings = parser.add_argument_group("settings (argument > shell > .env > default)")
+    settings.add_argument("--env-file", type=Path, default=None, help="default: <repo>/.env (skipped when KOSIS_DOTENV=off)")
+    settings.add_argument("--no-env-file", action="store_true", help="do not read any .env")
+    for field, (name, what) in SEARCH_ARGS.items():
+        settings.add_argument("--" + field.replace("_", "-"), type=int if field in ("chroma_port", "answer_k") else str,
+                              help=f"{name}: {what}")
     args = parser.parse_args(argv)
+    apply_settings(args)
     args.split = args.split or ("dev" if args.layer == "l012" else "test")
 
-    layers = {"l0": run_l0, "l1": run_l1, "l2": run_l2, "ablation": run_ablation, "l012": run_l012, "l3": run_l3, "e2e": run_e2e}
+    layers = {"l0": run_l0, "l1": run_l1, "l2": run_l2, "ablation": run_ablation, "l012": run_l012, "l3": run_l3, "e2e": run_e2e, "agent": run_agent}
     rows, summary, report = layers[args.layer](args)
     exported = False
     if args.layer in ("l3", "e2e"):  # only these rows carry verdict/spans for trace.blame
@@ -480,6 +624,8 @@ def main(argv: list[str] | None = None) -> int:
     elif "search_failures" in summary:  # L1 over the LangGraph search
         exported = trace.export(rows, args.layer, args.retriever)
         report += search_failure_section(rows, exported)
+    elif args.layer == "agent":  # live spans already went to OTLP (runners.agent) when the endpoint is set
+        exported = bool(args.agent and os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT"))
     if owners := owner_section(args.layer, rows, summary):  # right under the title: the first thing a teammate reads
         head, _, rest = report.partition("\n\n")
         report = f"{head}\n\n{owners}{rest}"
@@ -489,13 +635,14 @@ def main(argv: list[str] | None = None) -> int:
     else:
         op = ops.summarize(rows)
         report += ops_section(op)
+    live_llm = args.layer in ("l3", "e2e") and not args.from_run  # runs that call summarize_stat now
     run_id = f"{dt.datetime.now():%Y%m%d-%H%M%S}-{args.stage}"
     out = REPORTS / run_id
     out.mkdir(parents=True)
     with (out / "results.jsonl").open("w", encoding="utf-8") as f:
         f.writelines(json.dumps(r, ensure_ascii=False, default=str) + "\n" for r in rows)
     ref = lambda path: {"path": os.path.relpath(path.resolve(), ROOT), "sha256": sha256(path)}  # noqa: E731
-    golden = {"l2": args.query_golden}.get(args.layer, args.golden)
+    golden = {"l2": args.query_golden, "agent": args.scenarios}.get(args.layer, args.golden)
     slotted = args.layer in ("ablation", "l012")
     manifest = {
         "run_id": run_id, "layer": args.layer, "stage": args.stage, "split": args.split,
@@ -511,12 +658,18 @@ def main(argv: list[str] | None = None) -> int:
         "from_run": str(args.from_run) if args.from_run else None,
         "summary": summary,
         "ops": op,
-        "jaeger": {"ui": trace.JAEGER_UI, "service": "kosis-evals"} if exported else None,
+        "agent": (args.agent or ("oracle" if args.oracle else "from-run")) if args.layer == "agent" else None,
+        "llm": args.llm if live_llm else None,
+        "jaeger": {"ui": trace.JAEGER_UI, "service": "kosis-agent-evals" if args.layer == "agent" else "kosis-evals"} if exported else None,
     }
     (out / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
     (out / "ops.json").write_text(json.dumps(op, ensure_ascii=False, indent=2), encoding="utf-8")
     (out / "report.md").write_text(report, encoding="utf-8")
-    if args.layer == "l012":
+    if args.llm == "mock" and live_llm:
+        pass  # a mock run checks the path; its numbers stay out of the committed history
+    elif args.layer == "l1" and args.from_run:
+        pass  # a regrade copies the past run's latencies: they are already in the history once
+    elif args.layer == "l012":
         for name, o in op.items():
             ops.append_history(run_id, name, args.stage, {"l0": "registry", "l2": "parse_query"}.get(name, args.retriever), o)
     else:
@@ -525,13 +678,14 @@ def main(argv: list[str] | None = None) -> int:
             target = "registry" if args.layer == "l0" else "parse_query"
         if args.layer == "e2e":
             target = f"{args.retriever}+{target}"
+        if args.layer == "agent":
+            target = args.agent or ("oracle" if args.oracle else "from-run")
         ops.append_history(run_id, args.layer, args.stage, target, op)
-    if args.layer in ("l1", "l3", "e2e"):  # ponytail: l0/l2/ablation write report.md only; add charts when they are presented
-        report_html.write(out)
+    report_html.write(out)  # every layer (T3-20); l0 / l2 / ablation show report.md as HTML, dedicated charts when they are presented
     print(report)
     print(f"-> {out}")
-    return 0
+    return out
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    main()

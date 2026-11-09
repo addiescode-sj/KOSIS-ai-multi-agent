@@ -14,12 +14,12 @@ services:
       CHROMA_PORT: ${COMPOSE_CHROMA_PORT:-8000}
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-kosis}:${POSTGRES_PASSWORD:-kosis}@postgres:5432/${POSTGRES_DB:-kosis}
       REDIS_URL: redis://redis:6379/0
-      # Phase 1 reads data/ and .env under this root
+      # Phase 1 finds a table key in <root>/data/tables.csv; phase 2 paths come from backend/app/config.py (<root>/data)
       KOSIS_WORKSPACE: /app
     volumes:
-      # Provided data stays outside the image (security pledge). Phase 2 reads vendor/phase2/data (fixed path).
+      # Provided data stays outside the image (security pledge). Both modules read it under /app/data.
+      # EMBED_CKPT / RERANK_CKPT in .env must be container paths here, e.g. data/models/<file>.pt (cwd /app)
       - ./data:/app/data:ro
-      - ./data:/app/vendor/phase2/data:ro
       # Embedding model weights, downloaded on the first search and kept across restarts
       - hf-cache:/root/.cache/huggingface
     ports:
