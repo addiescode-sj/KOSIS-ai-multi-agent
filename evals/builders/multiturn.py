@@ -32,10 +32,11 @@ import pyarrow.parquet as pq
 from kosis_ai.schemas import Cell, Fact
 from kosis_rag.shared.vocab import SIDO
 
-from evals.schemas import DATASETS, AgentScenario, CalcItem
+from evals.schemas import DATASETS, AgentScenario, CalcItem, RetrievalItem
 
 ROOT = Path(__file__).resolve().parents[2]
 CALC = DATASETS / "calculation_golden.jsonl"
+RETRIEVAL = DATASETS / "retrieval_golden.jsonl"  # its gold slots name the other tables that answer a question
 OUT = DATASETS / "agent_scenarios_multiturn_dev.jsonl"
 OUT_STRUCTURE = DATASETS / "agent_scenarios_multiturn_dev_structure.jsonl"
 OUT_CALC = DATASETS / "calculation_golden_multiturn.jsonl"
@@ -130,8 +131,31 @@ def synthetic(item: CalcItem, cell: Cell, qid: str, question: str) -> CalcItem:
                     split="dev")
 
 
+def alternates(retrieval_path: Path = RETRIEVAL) -> dict[str, set[str]]:
+    """calculation_golden qid -> every L1 gold table of the same question (RetrievalItem.phase1_id). Live search often
+    ends on one of the others (2026-11-09: 101_DT_1B81A12 for the 출생 questions of 101_DT_1B8000H)."""
+    if not retrieval_path.is_file():
+        return {}
+    items = [RetrievalItem.model_validate_json(line) for line in retrieval_path.read_text(encoding="utf-8").splitlines()
+             if line.strip()]
+    return {i.phase1_id: i.gold_keys for i in items if i.phase1_id and i.answerable}
+
+
+def add_alternates(scenario: dict, alt: dict[str, set[str]], source: dict[str, str]) -> dict:
+    """Fill each turn's alt_table_keys from the golden question it was made from (source: turn calc qid -> golden qid)."""
+    for turn in scenario["turns"]:
+        e = turn["expect"]
+        origin = source.get(e.get("calc_qid") or "", e.get("calc_qid")) or e.get("origin")
+        e.pop("origin", None)
+        if e.get("table_key") and origin in alt:
+            e["alt_table_keys"] = sorted(alt[origin] - {e["table_key"]})
+    return scenario
+
+
 def build(calc_path: Path = CALC, seed: int = 0) -> tuple[list[AgentScenario], list[CalcItem]]:
     rng = random.Random(seed)
+    alt = alternates()
+    source: dict[str, str] = {}  # synthetic calc qid -> the golden item it was made from
     items = [CalcItem.model_validate_json(line) for line in calc_path.read_text(encoding="utf-8").splitlines()
              if line.strip()]
     answerable = [i for i in items if i.kind == "answerable"]
@@ -143,8 +167,8 @@ def build(calc_path: Path = CALC, seed: int = 0) -> tuple[list[AgentScenario], l
 
     def add(kind: str, turns: list[dict]) -> None:
         n = sum(s["notes"] == kind for s in scenarios) + 1
-        scenarios.append({"sid": f"MT-{kind}-{n:03d}", "split": "dev", "source": "synthetic", "notes": kind,
-                          "turns": turns})
+        scenarios.append(add_alternates({"sid": f"MT-{kind}-{n:03d}", "split": "dev", "source": "synthetic",
+                                         "notes": kind, "turns": turns}, alt, source))
 
     # R: two golden questions of one table, the second behind a reference phrase
     for key, group in sorted(by_table.items()):
@@ -171,6 +195,7 @@ def build(calc_path: Path = CALC, seed: int = 0) -> tuple[list[AgentScenario], l
                 q = rng.choice(ELLIPSIS).format(r=short, eun=eun(short))
                 calc = synthetic(item, cell, f"MT-E-{item.qid}-{cell.ref().split('|')[2]}", f"{item.question} → {q}")
                 made.append(calc)
+                source[calc.qid] = item.qid
                 add("E", [first_turn(item), {"question": q, "expect": {
                     "tools": [stat_call(item.table_key, regions=[target])], "table_key": item.table_key,
                     "calc_qid": calc.qid}}])
@@ -189,6 +214,7 @@ def build(calc_path: Path = CALC, seed: int = 0) -> tuple[list[AgentScenario], l
                 period = target + fact.period[4:]
                 calc = synthetic(item, cell, f"MT-X-{item.qid}-{period}", f"{item.question} → {q}")
                 made.append(calc)
+                source[calc.qid] = item.qid
                 add("X", [first_turn(item), {"question": q, "expect": {
                     "tools": [stat_call(item.table_key, period_start=period, period_end=period)],
                     "table_key": item.table_key, "calc_qid": calc.qid}}])
@@ -211,7 +237,7 @@ def build(calc_path: Path = CALC, seed: int = 0) -> tuple[list[AgentScenario], l
         q, kind = rng.choice(CHART)
         add("C", [first_turn(item), {"question": q, "expect": {
             "tools": [{"name": "make_chart", "args": {"table_key": item.table_key, "chart_type": kind}}],
-            "table_key": item.table_key}}])
+            "table_key": item.table_key, "origin": item.qid}}])
     for item in charted[CAP:2 * CAP] or charted[:CAP]:
         tail, kind = rng.choice(MULTI)
         chart = {"name": "make_chart", "args": {"table_key": item.table_key, "chart_type": kind}}

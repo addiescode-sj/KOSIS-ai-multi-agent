@@ -5,6 +5,7 @@
                 └─(새 질문)→ search ─(refuse · 넘길 표 없음)→ finalize                 │   │
                                 └─(found)→ statistics ←───────────────────────────────┘   │
                                              ├─(표 불일치 거절 · 예산 남음)→ statistics      │
+                                             ├─(이월 턴인데 직전 표가 표 불일치로 거절)→ search(다시 쓴 문장)
                                              ├─(답함)→ chart → finalize ←──────────────────┘
                                              └─(되묻기 · 질문 문제 · 예산 끝)→ finalize
     finalize → END   (outcome: answered | refused | clarify | failed)
@@ -127,8 +128,13 @@ def build_graph(search: Any, stat_llm: StatLLMConfig, *, retry_interval: float =
                             active_question=state.get("active_question"), parse=parse, mode=interpreter, llm=llm)
         # 종류 말 없이 "그래프로도 보여줘"도 차트 요청이다(chart_type None = 실전 1이 고른 종류)
         wants_chart = reading.chart_only or reading.chart_type is not None or chart_request(question)[0]
+        # 이월 턴 = 직전 표를 쓰되 질문을 다시 쓴 턴("부산은?" → 조건을 채운 독립 질문). 지시어 턴("그 표에서 …")은
+        # 원문을 그대로 쓰므로 여기에 들지 않는다. 이월 턴만 "직전 표가 못 답하면 다시 쓴 문장으로 검색"을 한다.
+        carried = (reading.use_previous_table and not reading.chart_only
+                   and reading.resolved_question != question)
         return {"question": question, "resolved_question": reading.resolved_question, "interpreted_by": reading.by,
-                "reused_table": reading.use_previous_table, "chart_requested": wants_chart,
+                "reused_table": reading.use_previous_table, "carried_over": carried, "fallback_searched": False,
+                "chart_requested": wants_chart,
                 "chart_type": reading.chart_type, "chart_only": reading.chart_only, "chart_note": None,
                 "attempts": [], "stat": None, "table_key": None, "chart": None, "outcome": None, "degraded": False}
 
@@ -138,14 +144,26 @@ def build_graph(search: Any, stat_llm: StatLLMConfig, *, retry_interval: float =
         return "statistics" if state["reused_table"] else "search"
 
     def search_node(state: AgentState, config: RunnableConfig) -> dict:
-        """사용자 원문으로 표를 찾는다(해석기가 다시 쓴 문장이 아님). 2차 리랭커가 실패했으면 degraded로 표시한다."""
-        out: SearchOutput = call_tool(search_tables, {"question": state["question"]}, config).artifact
+        """표를 찾는다. 2차 리랭커가 실패했으면 degraded로 표시한다.
+
+        - 새 질문: 사용자 원문으로 찾는다(해석기가 다시 쓴 문장이 아님. LLM의 영향을 이월 턴으로 좁힘).
+        - 이월 턴인데 직전 표가 표 불일치로 거절함(after_statistics → 여기): 다시 쓴 독립 질문으로 찾는다.
+          "부산은?"을 그대로 검색하면 실시간 검색은 거절한다(2026-11-09 실측). 다시 쓴 문장은 이전 질문의 지표·기간에
+          지역만 바꾼 완전한 질문이라 맞는 표를 찾을 수 있다. 이 뒤로는 일반 턴처럼 후보 표에서 고른다.
+        """
+        fallback = bool(state.get("carried_over") and state["attempts"])
+        question = state["resolved_question"] if fallback else state["question"]
+        out: SearchOutput = call_tool(search_tables, {"question": question}, config).artifact
         degraded = any(s.get("node") == "rerank2" and s.get("stage2_error") for s in out.spans)
-        return {"search": out, "degraded": degraded}
+        update = {"search": out, "degraded": degraded}
+        if fallback:  # 이제부터 직전 표가 아니라 새 검색 후보에서 고른다(이미 시도한 직전 표는 next_table이 건너뜀)
+            update.update(reused_table=False, fallback_searched=True)
+        return update
 
     def after_search(state: AgentState) -> str:
+        # 시도하지 않은 후보가 있을 때만 실전 1로 간다. 이월 턴의 다시 검색이 직전 표만 찾으면, 직전 표의 거절로 끝낸다.
         out = state["search"]
-        return "statistics" if out.route == "found" and candidate_keys(out) else "finalize"
+        return "statistics" if out.route == "found" and next_table(state) is not None else "finalize"
 
     def next_table(state: AgentState) -> str | None:
         """다음에 실전 1에 넘길 표 키. 지시어 턴은 직전 표 하나만 쓴다(사용자가 가리킨 표를 몰래 바꾸지 않음)."""
@@ -178,6 +196,9 @@ def build_graph(search: Any, stat_llm: StatLLMConfig, *, retry_interval: float =
         last = state["attempts"][-1]
         if last["outcome"] == "answered":
             return "chart"
+        mismatch = last["outcome"] == "refused" and last["reason"] in TABLE_MISMATCH
+        if mismatch and state.get("carried_over") and not state.get("fallback_searched"):
+            return "search"  # 이월 턴: 직전 표에 그 지역·기간이 없음 → 다시 쓴 문장으로 검색 (search_node)
         retry = (last["outcome"] == "refused" and last["reason"] in TABLE_MISMATCH
                  and len(state["attempts"]) <= alt_table_budget and next_table(state) is not None)
         return "statistics" if retry else "finalize"
@@ -224,7 +245,7 @@ def build_graph(search: Any, stat_llm: StatLLMConfig, *, retry_interval: float =
     graph.add_edge(START, "context")
     graph.add_conditional_edges("context", after_context, ["search", "statistics", "chart"])
     graph.add_conditional_edges("search", after_search, ["statistics", "finalize"])
-    graph.add_conditional_edges("statistics", after_statistics, ["statistics", "chart", "finalize"])
+    graph.add_conditional_edges("statistics", after_statistics, ["statistics", "search", "chart", "finalize"])
     graph.add_edge("chart", "finalize")
     graph.add_edge("finalize", END)
     return graph.compile(checkpointer=checkpointer)

@@ -59,3 +59,12 @@ def test_excluded_items_make_no_ellipsis_or_correction_scenarios(built):
     _, made = built
     sources = {c.qid.split("-", 2)[2].rsplit("-", 1)[0] for c in made}
     assert not sources & set(multiturn.EXCLUDE)
+
+
+def test_turns_carry_the_other_l1_gold_tables_of_their_question(built):
+    scenarios, _ = built
+    alt = multiturn.alternates()
+    with_alt = [t.expect for s in scenarios for t in s.turns if t.expect.alt_table_keys]
+    assert with_alt and all(e.table_key not in e.alt_table_keys for e in with_alt)
+    first = next(s for s in scenarios if s.sid == "MT-E-001").turns  # 2025년 경기도 출생 (S-VAL-03)
+    assert set(first[1].expect.alt_table_keys) == alt["S-VAL-03"] - {first[1].expect.table_key}

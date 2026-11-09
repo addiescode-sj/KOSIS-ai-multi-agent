@@ -46,6 +46,8 @@ class AgentState(MessagesState):
     chart_only: bool  # 숫자는 그대로 두고 직전 답을 차트로만 다시 그림
     chart_note: str | None  # 요청한 종류로 못 그렸거나 차트 데이터가 없을 때의 안내
     reused_table: bool  # True면 이번 턴은 검색을 건너뛰고 active_table로 답함
+    carried_over: bool  # 이월 턴(질문을 다시 써서 직전 표에 물음). 직전 표가 못 답하면 다시 쓴 문장으로 검색한다
+    fallback_searched: bool  # 이월 턴에서 그 검색을 이미 했는가 (한 번만)
     attempts: list[dict]  # 실전 1에 넘긴 표마다 {"key", "outcome", "reason"}, 시도 순서대로
     stat: StatOutput | None  # 이번 턴의 최종 실전 1 결과 = 마지막으로 시도한 표의 결과
     table_key: str | None  # stat을 만든 표 키 (tables.csv 키 "<org_id>_<tbl_id>", tbl_id 아님)

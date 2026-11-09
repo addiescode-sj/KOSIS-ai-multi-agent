@@ -490,3 +490,76 @@ def test_the_llm_reply_is_read_from_its_first_json_object():
     assert got.standalone_question == "q" and got.use_previous_table
     with pytest.raises(ValueError):
         parse_llm_reading("JSON이 없는 답")
+
+
+# ---------------------------------------------------------------- 이월 턴의 다시 검색 (2026-11-09 실측 후 추가)
+
+class KeyedSearch(Search):
+    """질문마다 다른 후보를 돌려주는 가짜 검색: {질문에 들어 있는 말: [표 키]}."""
+
+    def __init__(self, routes: dict[str, list[str]]):
+        super().__init__([])
+        self.routes = routes
+
+    def stream(self, inp):
+        self.questions.append(inp.question)
+        keys = next((v for k, v in self.routes.items() if k in inp.question), [])
+        yield "output", SearchOutput(question=inp.question, route="found" if keys else "refuse",
+                                     picked=[table(k) for k in keys], candidates=[table(k) for k in keys],
+                                     refusal_reason=None if keys else "out_of_scope",
+                                     refusal_text=None if keys else "범위 밖이에요.")
+
+
+def _two_turns(search, stat, second):
+    graph = build_graph(search, STAT_LLM, summarize=stat, checkpointer=new_checkpointer())
+    config = {"configurable": {"thread_id": "t"}}
+    graph.invoke({"messages": [("user", PREV)]}, config)
+    return chat_result(graph.invoke({"messages": [("user", second)]}, config))
+
+
+def test_a_carried_over_turn_searches_with_the_rewritten_question_when_the_previous_table_cannot_answer():
+    """"부산은?" → 직전 표(경기도만 있는 표)가 no_item으로 거절 → "2025년 부산광역시에서 …"로 검색 → 그 표로 답한다."""
+    search = KeyedSearch({"경기도": ["101_GG"], "부산광역시": ["101_BS"]})
+    stat = Stat({"101_GG": answered("101_GG"), "101_BS": answered("101_BS")})
+    graph = build_graph(search, STAT_LLM, summarize=stat, checkpointer=new_checkpointer())
+    config = {"configurable": {"thread_id": "t"}}
+    graph.invoke({"messages": [("user", PREV)]}, config)
+    stat.by_key["101_GG"] = refused("101_GG", "no_item")
+    r = chat_result(graph.invoke({"messages": [("user", "부산은?")]}, config))
+    assert search.questions[-1] == "2025년 부산광역시에서 태어난 아이는 몇 명이에요?"  # "부산은?"이 아니라 다시 쓴 문장
+    assert [k for _, k in stat.calls[-2:]] == ["101_GG", "101_BS"]
+    assert r.outcome == "answered" and r.table_key == "101_BS" and r.attempted_keys == ["101_GG", "101_BS"]
+
+
+def test_a_reference_turn_does_not_search_again():
+    search = KeyedSearch({"경기도": ["101_GG"], "부산": ["101_BS"]})
+    stat = Stat({"101_GG": answered("101_GG")})
+    graph = build_graph(search, STAT_LLM, summarize=stat, checkpointer=new_checkpointer())
+    config = {"configurable": {"thread_id": "t"}}
+    graph.invoke({"messages": [("user", PREV)]}, config)
+    stat.by_key["101_GG"] = refused("101_GG", "no_item")
+    r = chat_result(graph.invoke({"messages": [("user", "그 표에서 부산은?")]}, config))
+    assert len(search.questions) == 1 and r.outcome == "refused" and r.table_key == "101_GG"
+
+
+def test_the_search_again_that_finds_only_the_same_table_keeps_its_refusal():
+    search = KeyedSearch({"태어난": ["101_GG"]})  # 다시 써도 같은 표만 나옴
+    stat = Stat({"101_GG": answered("101_GG")})
+    graph = build_graph(search, STAT_LLM, summarize=stat, checkpointer=new_checkpointer())
+    config = {"configurable": {"thread_id": "t"}}
+    graph.invoke({"messages": [("user", PREV)]}, config)
+    stat.by_key["101_GG"] = refused("101_GG", "no_period")
+    r = chat_result(graph.invoke({"messages": [("user", "아니 2001년으로")]}, config))
+    assert len(search.questions) == 2 and r.outcome == "refused" and r.no_answer_reason == "no_period"
+    assert [k for _, k in stat.calls].count("101_GG") == 2  # 같은 표를 두 번 묻지 않음 (턴마다 한 번)
+
+
+def test_a_question_problem_on_a_carried_over_turn_does_not_search_again():
+    search = KeyedSearch({"경기도": ["101_GG"], "부산광역시": ["101_BS"]})
+    stat = Stat({"101_GG": answered("101_GG"), "101_BS": answered("101_BS")})
+    graph = build_graph(search, STAT_LLM, summarize=stat, checkpointer=new_checkpointer())
+    config = {"configurable": {"thread_id": "t"}}
+    graph.invoke({"messages": [("user", PREV)]}, config)
+    stat.by_key["101_GG"] = refused("101_GG", "missing_value")
+    r = chat_result(graph.invoke({"messages": [("user", "부산은?")]}, config))
+    assert len(search.questions) == 1 and r.no_answer_reason == "missing_value"

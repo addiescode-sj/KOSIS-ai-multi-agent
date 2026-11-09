@@ -236,3 +236,35 @@ def test_layer_agent_oracle_and_from_run(tmp_path):
     (tmp_path / "results.jsonl").write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows), encoding="utf-8")
     _, summary, report = run_agent(Namespace(**base, oracle=False, from_run=tmp_path))
     assert summary["missing_calls"] == {"make_chart": 1} and summary["conversation_success"] == 0.0 and "s2#0 | 0 |" in report
+
+
+def _alt_scenario():
+    return AgentScenario.model_validate({"sid": "s1", "turns": [{"question": "2024년 서울 출생아 수", "expect": {
+        "tools": [SEARCH, {"name": "summarize_stat", "args": {"table_key": "101_DT_X"}}], "table_key": "101_DT_X",
+        "alt_table_keys": ["101_DT_ALT"], "calc_qid": "c1"}}]})
+
+
+def _answer_from(key: str, value: float) -> dict:
+    """A summarize_stat call on `key` whose answer holds one fact with `value` (another table's cell)."""
+    return {"name": "summarize_stat", "args": {"table_key": key}, "status": "ok", "result": {
+        "outcome": "answered", "text": f"{value:g}명", "result": {"facts": [
+            {"id": "f1", "value": value, "source_ref": f"{key.split('_', 1)[1]}|T9|11|2024", "unit": "명",
+             "period": "2024"}]}, "parts": [{"kind": "fact", "fact_id": "f1"}],
+        "source": {"org_id": "101", "tbl_id": key.split("_", 1)[1], "survey_nm": "조사", "tbl_nm": "표"}}}
+
+
+def test_an_alternate_gold_table_with_the_same_values_passes_and_is_counted_apart():
+    """T3-27: live search ends on another L1 gold table; the same numbers pass (via_alternate), other numbers fail."""
+    s = _alt_scenario()
+    search = {"name": "search_tables", "args": {}, "result": {"route": "found", "picked": [{"key": "101_DT_ALT"}]}}
+    (same,) = agent.grade_conversation(s, [{"calls": [search, _answer_from("101_DT_ALT", 100.0)],
+                                            "answer": "100명", "error": None}], CALC, cells_of)
+    assert same["passed"], same["errors"]
+    assert same["state_ok"] and same["calc"]["via_alternate"] and same["calc"]["l3"] != "PASS"
+    assert agent.aggregate([same])["numeric_pass_via_alternate"] == 1
+    (other,) = agent.grade_conversation(s, [{"calls": [search, _answer_from("101_DT_ALT", 90.0)],
+                                             "answer": "90명", "error": None}], CALC, cells_of)
+    assert other["state_ok"] and "wrong_numbers" in other["errors"]
+    (outside,) = agent.grade_conversation(s, [{"calls": [search, _answer_from("101_DT_ZZZ", 100.0)],
+                                               "answer": "100명", "error": None}], CALC, cells_of)
+    assert "lost_state" in outside["errors"] and "wrong_args" in outside["errors"]
