@@ -150,7 +150,9 @@ def test_tool_spans_carry_what_the_agent_harness_grades():
     calls = record["calls"]
     assert [c["name"] for c in calls] == ["search_tables", "summarize_stat"]
     assert calls[0]["args"] == {"question": "2030년 출생아 수"} and calls[0]["result"]["route"] == "found"
-    assert calls[1]["args"] == {"question": "2030년 출생아 수", "table_key": "101_DT_1B8000H"}
+    # question + table_key + the conditions phase 2's parse_query reads (the harness's ARG_FIELDS names)
+    assert calls[1]["args"] == {"question": "2030년 출생아 수", "table_key": "101_DT_1B8000H", "period_start": "2030",
+                                "period_end": "2030", "regions": [], "dimensions": []}
     assert grader.state_key(calls) == "101_DT_1B8000H"
     assert grader.stat_answer(calls).refusal.reason == "out_of_scope"  # the result validates as a StatAnswer
     assert grader.refused(calls) and record["error"] is None

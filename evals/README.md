@@ -341,6 +341,7 @@ uv run python -m evals.run_eval --layer agent --stage <이름> --from-run evals/
 - 시나리오: `evals/datasets/agent_scenarios.jsonl` (T3-05, `--scenarios`로 바꿈). 계약은 `evals/schemas.py`의 `AgentScenario`.
   턴마다 `expect`에 부를 툴(순서대로, 채점할 인자 필드만), 턴이 끝날 표(`table_key`), 거절 여부(`refuse`), L3 문항(`calc_qid`)을 적는다.
   한 턴에 여러 요청("찾아서, 계산해서, 그려줘")은 `tools`에 여러 개를 적고, "이거"·"그 표"는 다음 턴의 `table_key`로 채점된다.
+  `summarize_stat`의 인자는 `question`·`table_key`와 조건 4개(`period_start`·`period_end`·`regions`·`dimensions`)다. 조건 이름은 L2 라벨(`QueryItem`)·실전 2 `ParsedQuery`와 같으므로, 시나리오 `args`에는 L2 라벨 값을 그대로 적으면 된다. 지금 워크플로 그래프는 실전 2 `parse_query`로 조건을 채운다(`src/kosis_agent/graph/main_graph.py`).
 - 실행 기록: 턴마다 그래프를 `thread_id = <sid>#<run>`으로 `invoke`하고, 실행 중 열린 OTel span(`kosis_agent.observability.tracing.LiveSpans`)에서 툴 이름·인자·결과·지연·LLM 호출·토큰을 읽는다.
   span 이름·속성은 OTel GenAI 규약 그대로다: `invoke_agent`(`gen_ai.conversation.id`, `kosis.turn.index`) · `execute_tool <name>`(`gen_ai.tool.name`, `gen_ai.tool.call.arguments`·`.result`) · `chat <model>`(`gen_ai.request.model`, `gen_ai.usage.input_tokens`·`output_tokens`).
   `OTEL_EXPORTER_OTLP_ENDPOINT`가 있으면 같은 span이 Jaeger로 가고, 채점 뒤 `eval.scenario` span이 턴 root span들에 링크로 판정(`kosis.verdict`, `kosis.failure.turn`)을 붙인다.
@@ -354,6 +355,7 @@ uv run python -m evals.run_eval --layer agent --stage <이름> --from-run evals/
 | 상태(표 키) 정확도 | 턴이 끝난 표 == 정답 `table_key`. 끝난 표 = 마지막 `summarize_stat`/`make_chart`의 `table_key`, 없으면 마지막 검색 1위 | 결정적 |
 | 최종 수치 정확도 | `calc_qid` 턴의 `summarize_stat` 답을 L3 채점기(`calculation.grade`, Parquet 셀 대조) 그대로 채점해 PASS인 비율 | 결정적 |
 | 근거 없는 숫자 | 최종 답 문장의 숫자 중 이 대화의 툴 결과·질문에 없고 사실 값의 반올림도 아닌 것이 있는 턴 수 (0이 목표) | 결정적 |
+| 대체 표 시도 | `summarize_stat`이 거절(또는 툴 오류)된 뒤 바로 **다른** `table_key`로 다시 부른 호출 수(`alt_attempts`)와 그런 턴 수. 시도는 감점하지 않고 위 지표에서 모두 뺀다. 툴·인자·상태·거절·수치는 **최종 호출**로만 채점하므로, 최종 표가 정답 표와 다르면 `lost_state`, 최종 답이 틀리면 `wrong_numbers`다 (T3-23). 같은 표를 다시 부르거나 답한 뒤 다시 부른 호출은 시도가 아니라 불필요 호출이다 | 결정적 |
 | 턴 통과율 | 오류가 하나도 없는 턴의 비율 | 결정적 |
 | 대화 성공률 | 모든 턴이 통과한 대화(실행)의 비율. 리포트에 처음 실패한 턴 분포 | 결정적 |
 | pass^k | `--repeat k`번 모두 성공한 시나리오의 비율 | 결정적 |

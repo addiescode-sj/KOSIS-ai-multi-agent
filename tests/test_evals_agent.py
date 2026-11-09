@@ -108,6 +108,51 @@ def test_numbers_use_the_l3_grader_and_the_final_text_must_be_grounded():
     assert later["passed"]  # a number from an earlier turn's tool result is grounded
 
 
+def _attempt(key: str, status: str = "ok") -> dict:
+    """A summarize_stat call on `key` that refused (or failed): what an alternate-table retry moves on from."""
+    return {"name": "summarize_stat", "args": {"table_key": key, "regions": ["서울특별시"]},
+            "result": {"outcome": "refused", "refusal": {"reason": "no_period", "message": "없음"}}, "status": status}
+
+
+def test_an_answer_from_an_alternate_table_is_graded_on_the_final_call_only():
+    """T3-23: refused on 101_DT_W, then answered on the expected 101_DT_X -> no extra_call, no false_refusal."""
+    search, stat = agent.oracle_records(CHAT, CALC)[0]["calls"]
+    row = grade(CHAT, _oracle_with(0, calls=[search, _attempt("101_DT_W"), stat]))[0]
+    assert row["passed"], row["errors"]
+    assert row["alt_attempts"] == 1 and row["extra"] == {} and not row["refused"] and row["calc"]["verdict"] == "PASS"
+    chain = grade(CHAT, _oracle_with(0, calls=[search, _attempt("101_DT_V"), _attempt("101_DT_W"), stat]))[0]
+    assert chain["passed"] and chain["alt_attempts"] == 2
+
+
+def test_an_alternate_table_still_fails_when_the_final_table_is_wrong():
+    search, stat = agent.oracle_records(CHAT, CALC)[0]["calls"]
+    elsewhere = {**stat, "args": {**stat["args"], "table_key": "101_DT_W"}}
+    row = grade(CHAT, _oracle_with(0, calls=[search, _attempt("101_DT_X"), elsewhere]))[0]
+    assert row["state_key"] == "101_DT_W" and "lost_state" in row["errors"]
+    assert "extra_call" not in row["errors"] and "false_refusal" not in row["errors"]
+
+
+def test_a_failed_tool_call_retried_on_another_table_is_an_attempt():
+    search, stat = agent.oracle_records(CHAT, CALC)[0]["calls"]
+    row = grade(CHAT, _oracle_with(0, calls=[search, _attempt("101_DT_W", status="error"), stat]))[0]
+    assert row["passed"] and row["alt_attempts"] == 1
+
+
+def test_a_repeated_call_on_the_same_table_or_a_final_refusal_is_not_set_aside():
+    search, stat = agent.oracle_records(CHAT, CALC)[0]["calls"]
+    same = grade(CHAT, _oracle_with(0, calls=[search, _attempt("101_DT_X"), stat]))[0]
+    assert same["alt_attempts"] == 0 and "extra_call" in same["errors"]  # same table again: a call of its own
+    gave_up = grade(CHAT, _oracle_with(0, calls=[search, stat, _attempt("101_DT_W")]))[0]
+    assert gave_up["alt_attempts"] == 0 and "extra_call" in gave_up["errors"]  # an answer is never set aside
+
+
+def test_alternate_attempts_are_counted_in_the_summary():
+    search, stat = agent.oracle_records(CHAT, CALC)[0]["calls"]
+    rows = grade(CHAT, _oracle_with(0, calls=[search, _attempt("101_DT_W"), stat]))
+    s = agent.aggregate(rows)
+    assert s["alt_attempts"] == 1 and s["alt_attempt_turns"] == 1 and s["turn_pass"] == 1.0
+
+
 # Live run: a real LangGraph graph with a checkpointer, tools and a chat model, read back from the spans
 
 

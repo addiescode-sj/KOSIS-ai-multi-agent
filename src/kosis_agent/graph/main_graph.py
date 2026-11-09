@@ -39,7 +39,12 @@ from kosis_agent.services.statistics import make_summarize_stat_tool
 from kosis_chat.api import summarize_stat_run
 from kosis_chat.schemas.io import StatOutput
 from kosis_chat.schemas.resources import LLMConfig as StatLLMConfig
+from kosis_rag.parse.node import parse_query
+from kosis_rag.parse.schemas import ParsedQuery
 from kosis_rag.schemas.io import SearchOutput
+
+# summarize_stat의 조건 인자로 넘기는 ParsedQuery 필드 (= evals/schemas.ARG_FIELDS 중 summarize_stat에 해당하는 것)
+CONDITION_FIELDS = ("period_start", "period_end", "regions", "dimensions")
 
 # 실전 1이 이 이유로 거절하면 "질문은 괜찮은데 이 표가 맞지 않는다"는 뜻이라 다음 후보 표를 시도해 볼 만하다.
 #   no_period(요청 기간이 표에 없음) · no_item(요청 항목이 표에 없음) · class_mismatch(분류가 그 수준·시점에 없음)
@@ -72,9 +77,19 @@ def candidate_keys(search: SearchOutput | None) -> list[str]:
     return list(dict.fromkeys(c.key for c in [*search.picked, *search.candidates]))
 
 
+def default_parser(search: Any) -> Callable[[str], ParsedQuery]:
+    """실전 2 검색이 쓰는 것과 같은 질의 해석 규칙(parse_query + 시군구 사전).
+
+    시군구 사전은 SearchModule.resources.sigungu에 이미 열려 있다(실전 2 parse 노드도 이것을 쓴다). 사전이 없는
+    가짜 검색(테스트)에서는 시군구 없이 읽는다(시도 이름·연도·분류는 그대로 읽힘).
+    """
+    sigungu = getattr(getattr(search, "resources", None), "sigungu", None)
+    return lambda question: parse_query(question, sigungu=sigungu)
+
+
 def build_graph(search: Any, stat_llm: StatLLMConfig, *, retry_interval: float = 0.0,
                 summarize: Callable[..., StatOutput] = summarize_stat_run, checkpointer: Any = None,
-                alt_table_budget: int = 0):
+                alt_table_budget: int = 0, parse: Callable[[str], ParsedQuery] | None = None):
     """메인 그래프를 compile한다.
 
     In: search = kosis_rag.api.SearchModule (테스트·stat_oracle에서는 .stream(SearchInput)만 있는 가짜);
@@ -85,6 +100,7 @@ def build_graph(search: Any, stat_llm: StatLLMConfig, *, retry_interval: float =
             기본을 끈 이유: T3-22 실제 검색 순위를 재생한 측정(plans/T3-23.md Result)에서 재시도 2건 중 1건이
             정답 표가 아닌 표로 "답함"이 됐다(거절 → 틀린 표의 숫자). 데이터 정확성이 먼저라서, HCX·실시간 검색으로
             충분한 표본을 잰 뒤에 켤지 정한다.
+        parse = 질문 → ParsedQuery (None이면 default_parser(search)). summarize_stat의 조건 인자를 채운다.
     Out: AgentState 위의 compiled graph. stream_mode "custom"으로 돌리면 실전 2 노드마다 (노드 이름, trace 항목),
         그다음 실전 1 시도마다 ("stat", {"seconds", "key", "spans"})가 온다.
     Errors: 실전 1의 LLMKeyMissing·RuntimeError와 실전 2의 예외는 그대로 올라간다(SSE `error`). 실전 1의
@@ -94,6 +110,7 @@ def build_graph(search: Any, stat_llm: StatLLMConfig, *, retry_interval: float =
         raise ValueError("alt_table_budget cannot be negative")
     search_tables = make_search_tables_tool(search)
     summarize_stat = make_summarize_stat_tool(stat_llm, retry_interval=retry_interval, summarize=summarize)
+    parse = parse or default_parser(search)
 
     def context_node(state: AgentState) -> dict:
         """이번 턴 상태를 비우고, 질문이 직전 표("그 표")를 가리키는지 정한다."""
@@ -123,18 +140,22 @@ def build_graph(search: Any, stat_llm: StatLLMConfig, *, retry_interval: float =
         return next((k for k in candidate_keys(state["search"]) if k not in tried), None)
 
     def statistics_node(state: AgentState, config: RunnableConfig) -> dict:
-        """표 하나로 실전 1에 답을 받는다. 숫자는 실전 1의 코드가 계산한다."""
+        """표 하나로 실전 1에 답을 받는다. 숫자는 실전 1의 코드가 계산한다.
+
+        툴 인자 = 질문 + 표 키 + 조건 4개(기간·시도·분류). 조건은 실전 2와 같은 규칙으로 이번 질문에서 읽는다(LLM 아님).
+        지시어 턴("그 표에서 부산은?")도 이번 질문을 읽으므로, 바뀐 조건(부산)이 인자에 그대로 드러난다.
+        """
         key = next_table(state)
-        stat: StatOutput = call_tool(summarize_stat, {"question": state["question"], "table_key": key}, config).artifact
+        parsed = parse(state["question"])
+        args = {"question": state["question"], "table_key": key,
+                **{field: getattr(parsed, field) for field in CONDITION_FIELDS}}
+        stat: StatOutput = call_tool(summarize_stat, args, config).artifact
         answer = stat.answer
         attempts = [*state["attempts"], {"key": key, "outcome": answer.outcome,
                                          "reason": answer.refusal.reason if answer.refusal else None}]
-        update: dict = {"attempts": attempts}
-        # 최종 결과로 남길 것: 처음 시도한 표(검색 1순위)의 결과. 나중 표가 답하면 그 답으로 바꾼다.
-        # 모든 표가 거절하면 사용자는 1순위 표의 거절 이유를 보게 된다(덜 관련된 표의 이유가 아님).
-        if state.get("stat") is None or (answer.outcome == "answered" and state["stat"].answer.outcome != "answered"):
-            update.update(stat=stat, table_key=key)
-        return update
+        # 턴은 마지막으로 시도한 표에서 끝난다. 대체 표로 다시 들어오면 그 표의 결과로 덮어쓴다.
+        # 평가 하네스도 "마지막 summarize_stat 호출"을 이 턴의 표·답으로 채점하므로 둘이 같은 기준이다.
+        return {"attempts": attempts, "stat": stat, "table_key": key}
 
     def after_statistics(state: AgentState) -> str:
         last = state["attempts"][-1]

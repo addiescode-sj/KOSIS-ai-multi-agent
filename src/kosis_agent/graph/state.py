@@ -39,7 +39,7 @@ class AgentState(MessagesState):
     question: str  # 이번 턴 사용자 질문
     reused_table: bool  # True면 이번 턴은 검색을 건너뛰고 active_table로 답함
     attempts: list[dict]  # 실전 1에 넘긴 표마다 {"key", "outcome", "reason"}, 시도 순서대로
-    stat: StatOutput | None  # 이번 턴의 최종 실전 1 결과 (답한 표가 있으면 그 표, 없으면 첫 시도)
+    stat: StatOutput | None  # 이번 턴의 최종 실전 1 결과 = 마지막으로 시도한 표의 결과
     table_key: str | None  # stat을 만든 표 키 (tables.csv 키 "<org_id>_<tbl_id>", tbl_id 아님)
     chart: dict | None  # stat.chart를 Vega-Lite로 바꾼 것
     outcome: Outcome | None

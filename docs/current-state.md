@@ -8,7 +8,7 @@
 - 폴더: `src/kosis_agent/{graph,retrieval,services,observability}` + `runtime.py`(연구 문서 6장 구조). `src/kosis_data/fetch.py` → `services/parquet_repository.py`. 지도는 `src/kosis_agent/retrieval/README.md`. 주석은 한국어(CLAUDE.md §4 예외).
 - 그래프(옵션 A, supervisor 없음): context → search(`search_tables` 툴) → statistics(`summarize_stat` 툴, 대체 표 재시도 `ALT_TABLE_BUDGET` 기본 0) → chart → finalize(outcome 4종). 진입점 `backend.app.main:build_agent`(checkpointer, `/chat/stream`의 `thread_id`).
 - 툴 계약: content = 채점 대상 JSON(SearchOutput / StatAnswer), artifact = 노드용 객체. `tracing.to_json`은 ToolMessage의 content를 기록.
-- 확인한 것: 옛 그래프 대비 패리티 90/90, pytest 137. 남은 것: Chroma·HCX로 agent 계층 실측(시나리오는 T3-05), T3-06에 `refused()` 기준 확인 요청. 상세는 `plans/T3-23.md` Result.
+- 확인한 것: 옛 그래프 대비 패리티 90/90, pytest 145. agent 채점은 대체 표 시도를 빼고 최종 호출로만 채점(`evals/evaluators/agent.py` `final_calls`), summarize_stat 인자 = question·table_key + L2 조건 4개(실전 2 parse_query). 남은 것: Chroma·HCX로 agent 계층 실측(시나리오는 T3-05). 상세는 `plans/T3-23.md` Result.
 
 ## 실전 1·2 리팩터 모듈 연결 (2026-11-06, 브랜치 T3-01-connect-modules)
 

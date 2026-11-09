@@ -108,8 +108,8 @@ def test_the_budget_caps_the_attempts():
     stat = Stat({k: refused(k, "no_item") for k in ("101_A", "101_B", "101_C")})
     r = chat_result(run(Search(["101_A", "101_B", "101_C"]), stat, alt_table_budget=1))
     assert [k for _, k in stat.calls] == ["101_A", "101_B"]
-    # 모두 거절하면 검색 1순위 표의 거절을 보여 준다
-    assert r.outcome == "refused" and r.table_key == "101_A" and r.answer == "101_A: 거절 (no_item)"
+    # 턴은 마지막으로 시도한 표에서 끝난다 (평가 하네스의 "마지막 summarize_stat 호출" 기준과 같음)
+    assert r.outcome == "refused" and r.table_key == "101_B" and r.answer == "101_B: 거절 (no_item)"
 
 
 @pytest.mark.parametrize("reason", ["causal", "unit_mismatch", "not_aggregatable", "missing_value"])
@@ -223,3 +223,52 @@ def test_the_service_default_is_off():
 def test_a_negative_budget_is_rejected():
     with pytest.raises(ValueError):
         build_graph(Search(["101_A"]), STAT_LLM, summarize=Stat({}), alt_table_budget=-1)
+
+
+# ---------------------------------------------------------------- 평가 하네스와 함께 (그래프 → span → 채점기)
+
+def _graded(graph, *turns):
+    """turns = (질문, 기대) 목록을 한 대화로 돌리고, agent 계층 채점 결과를 턴별로 돌려준다."""
+    from evals.evaluators import agent as grader
+    from evals.runners import agent as runner
+    from evals.schemas import AgentScenario
+
+    scenario = AgentScenario.model_validate({"sid": "s", "turns": [{"question": q, "expect": e} for q, e in turns]})
+    records = runner.run(graph, [scenario])[("s", 0)]
+    return grader.grade_conversation(scenario, records, {}, lambda key: {}), records
+
+
+def test_the_harness_grades_an_alternate_table_answer_on_its_final_table():
+    """대체 표로 답한 턴: 기대 표가 대체 표(101_B)면 통과, 시도는 감점 없이 alt_attempts로만 남는다."""
+    stat = Stat({"101_A": refused("101_A", "no_period"), "101_B": answered("101_B")})
+    graph = build_graph(Search(["101_A"], ["101_A", "101_B"]), STAT_LLM, summarize=stat,
+                        checkpointer=new_checkpointer(), alt_table_budget=1)
+    expect = {"tools": [{"name": "search_tables"}, {"name": "summarize_stat", "args": {"table_key": "101_B"}}],
+              "table_key": "101_B"}
+    (row,), _ = _graded(graph, ("2024년 서울 출생아 수", expect))
+    assert row["passed"], row["errors"]
+    assert row["alt_attempts"] == 1 and row["extra"] == {} and not row["refused"]
+
+
+def test_the_harness_still_fails_an_alternate_table_that_is_not_the_expected_one():
+    stat = Stat({"101_A": refused("101_A", "no_period"), "101_B": answered("101_B")})
+    graph = build_graph(Search(["101_A"], ["101_A", "101_B"]), STAT_LLM, summarize=stat,
+                        checkpointer=new_checkpointer(), alt_table_budget=1)
+    (row,), _ = _graded(graph, ("2024년 서울 출생아 수", {"tools": [{"name": "search_tables"}, {"name": "summarize_stat"}],
+                                                       "table_key": "101_A"}))
+    assert row["errors"] == ["lost_state"]  # 최종 답의 표가 정답 표와 다를 때만 감점
+
+
+def test_summarize_stat_args_carry_the_conditions_of_each_turn():
+    """조건 인자(기간·시도·분류)는 실전 2 parse_query로 이번 질문에서 읽는다. 지시어 턴은 표는 그대로, 조건은 새 질문 것."""
+    stat = Stat({"101_A": answered("101_A")})
+    graph = build_graph(Search(["101_A"]), STAT_LLM, summarize=stat, checkpointer=new_checkpointer())
+    seoul = {"tools": [{"name": "search_tables"},
+                       {"name": "summarize_stat", "args": {"table_key": "101_A", "period_start": "2024",
+                                                           "period_end": "2024", "regions": ["서울특별시"]}}]}
+    busan = {"tools": [{"name": "summarize_stat", "args": {"table_key": "101_A", "regions": ["부산광역시"]}}],
+             "table_key": "101_A"}
+    rows, records = _graded(graph, ("2024년 서울 출생아 수", seoul), ("그 표에서 부산은?", busan))
+    assert [r["passed"] for r in rows] == [True, True], [r["errors"] for r in rows]
+    assert [c["name"] for c in records[1]["calls"]] == ["summarize_stat"]  # 지시어 턴은 검색하지 않음
+    assert records[1]["calls"][0]["args"]["question"] == "그 표에서 부산은?"
