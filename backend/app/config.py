@@ -60,8 +60,9 @@ def stage2_llm(name: str) -> SearchLLMConfig | None:
     """The stage 2 LLM: phase 2's default config for the name with its key and HCX_THINKING; None when off."""
     if name in OFF or name not in selectors.LLM_RERANKERS:
         return None
-    return selectors.default_config(name, api_key=_env(STAGE2_KEY_ENV[name]),
-                                    thinking=(_env("HCX_THINKING") or "none").strip().lower())
+    return selectors.default_config(name, api_key=_env("STAGE2_API_KEY") or _env(STAGE2_KEY_ENV[name]),
+                                    thinking=(_env("HCX_THINKING") or "none").strip().lower(),
+                                    model=_env("STAGE2_MODEL"), base_url=_env("STAGE2_BASE_URL"))
 
 
 def stat_llm() -> StatLLMConfig:
