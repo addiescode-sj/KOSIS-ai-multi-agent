@@ -3,7 +3,7 @@
 import json
 from types import SimpleNamespace
 
-from evals import run_eval
+from evals.tasks import l1_retrieval
 from evals.builders import pool
 from evals.evaluators import retrieval
 from evals.schemas import RetrievalItem
@@ -64,7 +64,7 @@ def test_l1_from_run_regrades_saved_rankings_with_the_runs_tau(tmp_path):
     judged.write_text("qid,key,slot\nq1,a,1\n", encoding="utf-8")
     args = SimpleNamespace(golden=golden, from_run=run, retriever="ignored", k=5, tau=None, pool=judged,
                            split="test", stage="t")
-    shown, summary, report = run_eval.run_l1(args)
+    shown, summary, report = l1_retrieval.run(args)
     assert args.retriever == "staged" and summary["tau"] == 0.5 and summary["no_answer"]["tp"] == 1
     assert summary["metrics"]["all"]["hit@1"] == 0 and summary["metrics"]["all"]["hit@1_upper"] == 1
     assert "0.000 ~ 1.000" in report and "과거 실행 재채점" in report

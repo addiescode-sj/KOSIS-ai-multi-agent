@@ -4,7 +4,7 @@ import json
 from argparse import Namespace
 
 from evals import ops, report_html
-from evals.run_eval import run_agent
+from evals.tasks.agent import run as run_agent
 from tests.test_evals_agent import CHAT, scenario
 
 BASE = {"stage": "t", "split": "all", "source_snapshot": {"tables.jsonl": "0" * 64}, "git": "0" * 40, "git_dirty": False,
