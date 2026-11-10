@@ -143,6 +143,21 @@ def unsupported_final_numbers(answer: str, grounded: set[str], facts: list[Fact]
     return out
 
 
+def same_values(item: CalcItem, answer: StatAnswer | None) -> bool:
+    """Every required fact's value is among the answer's facts (rounded as the golden fact says)."""
+    if answer is None or answer.outcome != "answered":
+        return False
+    got = [f.value for f in answer.result.facts if f.value is not None]
+    for fact in item.required_facts:
+        if fact.value is None:
+            return False
+        digits = fact.round if fact.round is not None else (len(str(fact.value).split(".")[1].rstrip("0"))
+                                                            if "." in str(fact.value) else 0)
+        if not any(calculation.close(fact.value, v, digits) for v in got):
+            return False
+    return True
+
+
 def grade_turn(expect: TurnExpect, record: dict, calc: dict[str, CalcItem], cells_of: Callable[[str], dict],
                grounded: set[str], facts: list[Fact]) -> dict:
     """One turn's metrics and errors. grounded / facts = numbers and facts of the conversation so far (this turn's
@@ -160,7 +175,8 @@ def grade_turn(expect: TurnExpect, record: dict, calc: dict[str, CalcItem], cell
         seen[call.name] += 1
         for field, gold in call.args.items():
             value = _norm((pred.get("args") or {}).get(field)) if pred else None
-            ok = pred is not None and field_correct(field, gold, value)
+            ok = pred is not None and (field_correct(field, gold, value)
+                                       or (field == "table_key" and value in expect.alt_table_keys))
             args.append({"tool": call.name, "field": field, "ok": ok})
     key = state_key(calls)
     did_refuse = refused(calls)
@@ -175,7 +191,7 @@ def grade_turn(expect: TurnExpect, record: dict, calc: dict[str, CalcItem], cell
         errors.append("wrong_order")
     if any(not a["ok"] for a in args):
         errors.append("wrong_args")
-    state_ok = None if expect.table_key is None else key == expect.table_key
+    state_ok = None if expect.table_key is None else (key == expect.table_key or key in expect.alt_table_keys)
     if state_ok is False:
         errors.append("lost_state")
     if expect.refuse and not did_refuse:
@@ -185,15 +201,21 @@ def grade_turn(expect: TurnExpect, record: dict, calc: dict[str, CalcItem], cell
     calc_grade = None
     if expect.calc_qid:
         item = calc[expect.calc_qid]
-        g = calculation.grade(item, stat_answer(calls), cells_of(item.table_key), record.get("error"))
+        answer = stat_answer(calls)
+        g = calculation.grade(item, answer, cells_of(item.table_key), record.get("error"))
         calc_grade = {"verdict": g.verdict, "errors": g.errors}
-        if g.verdict != "PASS":
+        if g.verdict != "PASS" and key in expect.alt_table_keys and same_values(item, answer):
+            # an alternate gold table: the L3 grader checks cells of the golden table only, so the same numbers read
+            # from another table fail on dims / support. Equal values pass, counted apart (T3-27).
+            calc_grade = {"verdict": "PASS", "errors": [], "via_alternate": True, "l3": g.verdict}
+        if calc_grade["verdict"] != "PASS":
             errors.append("wrong_numbers")
     unsupported = unsupported_final_numbers(record.get("answer") or "", grounded, facts)
     if unsupported:
         errors.append("unsupported_final_number")
     return {"tools_ok": want == got, "order_ok": _subsequence(want, got), "missing": dict(missing), "extra": dict(extra),
             "args": args, "state_key": key, "state_ok": state_ok, "refused": did_refuse, "calc": calc_grade,
+            "expected_table": expect.table_key,
             "alt_attempts": len(every) - len(calls),
             "unsupported_numbers": unsupported, "errors": errors, "passed": not errors}
 
@@ -261,6 +283,9 @@ def aggregate(rows: list[dict]) -> dict:
         "state_accuracy": rate([r["state_ok"] for r in rows if r["state_ok"] is not None]),
         "n_state": sum(r["state_ok"] is not None for r in rows),
         "numeric_accuracy": rate([v == "PASS" for v in calc]), "n_numeric": len(calc),
+        "numeric_pass_via_alternate": sum(bool(r["calc"] and r["calc"].get("via_alternate")) for r in rows),
+        "state_via_alternate": sum(bool(r["state_ok"] and r["state_key"] != r.get("expected_table")) for r in rows
+                                   if r.get("expected_table")),
         "unsupported_final_number_turns": sum(bool(r["unsupported_numbers"]) for r in rows),
         "errors": dict(Counter(e for r in rows for e in r["errors"])),
         "first_failed_turn": {str(k): v for k, v in sorted(first_fail.items())},

@@ -338,6 +338,21 @@ uv run python -m evals.run_eval --layer agent --stage <이름> --agent <module:f
 uv run python -m evals.run_eval --layer agent --stage <이름> --from-run evals/reports/<run>          # 과거 실행 재채점
 ```
 
+**멀티턴 dev 시나리오 (T3-27, `plans/T3-27.md`)**: T3-05 정식 평가셋 전까지 쓰는 dev 세트다. `calculation_golden`의 같은 표 문항을 이어 붙여 6유형(R 지시어 · E 생략 이월 · X 정정 · S 주제 전환 · C 차트 후속 · M 한 턴 여러 요청)을 코드로 만든다. E·X의 정답은 원천 문항의 셀 키에서 지역 코드·연도만 바꿔 Parquet에서 읽는다(합성 정답, 셀이 없거나 기호면 만들지 않음).
+
+```bash
+uv run python -m evals.builders.multiturn     # → agent_scenarios_multiturn_dev(_structure).jsonl, calculation_golden_multiturn.jsonl
+# 구조 지표 (mock 실전 1, calc_qid 뺀 파일). 검색은 골든 조회(원문이 들어 있으면 그 표, 아니면 관련 없는 표 하나)
+STAT_PROVIDER=mock INTERPRETER=hybrid uv run python -m evals.run_eval --layer agent --stage <이름> --split dev \
+  --agent evals.runners.multiturn_dev:build --scenarios evals/datasets/agent_scenarios_multiturn_dev_structure.jsonl
+# 수치 지표 (HCX 실전 1, 합성 정답을 같이 넘김)
+STAT_PROVIDER=hcx uv run python -m evals.run_eval --layer agent --stage <이름> --split dev \
+  --agent evals.runners.multiturn_dev:build --scenarios evals/datasets/agent_scenarios_multiturn_dev.jsonl \
+  --calc-golden evals/datasets/calculation_golden.jsonl evals/datasets/calculation_golden_multiturn.jsonl
+```
+
+`INTERPRETER`는 rules | hybrid | llm이다. 유형별 비율은 리포트에 따로 나오지 않으므로 `results.jsonl`의 `sid`(`MT-<유형>-<번호>`)로 나눠 본다.
+
 - 시나리오: `evals/datasets/agent_scenarios.jsonl` (T3-05, `--scenarios`로 바꿈). 계약은 `evals/schemas.py`의 `AgentScenario`.
   턴마다 `expect`에 부를 툴(순서대로, 채점할 인자 필드만), 턴이 끝날 표(`table_key`), 거절 여부(`refuse`), L3 문항(`calc_qid`)을 적는다.
   한 턴에 여러 요청("찾아서, 계산해서, 그려줘")은 `tools`에 여러 개를 적고, "이거"·"그 표"는 다음 턴의 `table_key`로 채점된다.

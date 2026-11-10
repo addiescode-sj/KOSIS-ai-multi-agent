@@ -29,7 +29,7 @@ def build_agent():
     conversation. The service's graph, and the agent eval layer's entry point (T3-23):
     run_eval --layer agent --agent backend.app.main:build_agent. Settings come from the shell (backend/app/config.py).
     Opens the phase 2 resources (records, Chroma, models); a missing key fails only when an LLM step runs."""
-    from backend.app.config import agent_config
+    from backend.app.config import agent_config, interpreter_llm
     from kosis_rag.api import SearchModule
 
     cfg = agent_config()
@@ -37,7 +37,7 @@ def build_agent():
     # ponytail: in-memory checkpointer, lost on restart and kept per thread for the process lifetime;
     # a Postgres saver once the compose Postgres is wired (KOS-86)
     return build_graph(search, cfg.stat_llm, retry_interval=cfg.stat_retry_interval, checkpointer=new_checkpointer(),
-                       alt_table_budget=cfg.alt_table_budget)
+                       alt_table_budget=cfg.alt_table_budget, interpreter=cfg.interpreter, llm=interpreter_llm(cfg))
 
 
 def get_graph():
