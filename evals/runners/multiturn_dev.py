@@ -1,7 +1,7 @@
 """Agent graph for the multi-turn dev scenarios (T3-27): `run_eval --layer agent --agent evals.runners.multiturn_dev:build`.
 
 run_eval calls the function with no arguments and --llm does not reach the agent layer, so the settings come from
-the shell: STAT_PROVIDER (mock | hcx, as backend/app/config.py) for phase 1, and everything else the graph takes.
+the shell: STAT_PROVIDER (hcx default | openai | gemma | mock, as backend/app/config.py) for phase 1, and everything else the graph takes.
 
 Search is a golden lookup instead of phase 2, so context handling is measured apart from retrieval quality:
 - a question that contains a calculation_golden question verbatim gets that question's table (`found`);
@@ -76,4 +76,8 @@ def build():
 
         cfg = agent_config()
         kwargs.update(interpreter=cfg.interpreter, llm=interpreter_llm(cfg))
+    if "splitter" in params:  # T3-28 multi-query splitter; the T3-27 graph has no such parameter
+        from backend.app.config import splitter_llm
+
+        kwargs.update(splitter=splitter_llm(agent_config()))
     return build_graph(GoldenLookupSearch(), stat_llm(), checkpointer=new_checkpointer(), **kwargs)

@@ -134,9 +134,9 @@ class E2EItem(BaseModel):
 
 
 AGENT_SCENARIOS = DATASETS / "agent_scenarios.jsonl"  # T3-05 (KOS-41) fills it; T3-06 grades it
-ToolName = Literal["search_tables", "summarize_stat", "make_chart"]
+ToolName = Literal["search_tables", "summarize_stat", "make_chart", "combine_values"]  # combine_values: T3-28
 # Graded argument fields (KOS-120): list fields match as sets and the rest exactly (evaluators.query.field_correct)
-ARG_FIELDS = ("table_key", "period_start", "period_end", "regions", "dimensions", "chart_type")
+ARG_FIELDS = ("table_key", "period_start", "period_end", "regions", "dimensions", "chart_type", "op")
 
 
 class ExpectedCall(BaseModel):
@@ -166,6 +166,10 @@ class TurnExpect(BaseModel):
     alt_table_keys: list[str] = Field(default_factory=list)
     refuse: bool = False  # out of scope / no data: search_tables or summarize_stat must refuse (or no tool runs)
     calc_qid: str | None = None  # L3 item graded on this turn's summarize_stat answer (evaluators.calculation)
+    # T3-28 multi-query: L3 items graded on this turn's summarize_stat answers in call order (one per sub-question),
+    # and the value combine_values must return (computed by the builder from the golden facts)
+    calc_qids: list[str] = Field(default_factory=list)
+    combine_value: float | None = None
 
     @model_validator(mode="after")
     def _consistent(self) -> TurnExpect:
@@ -173,6 +177,12 @@ class TurnExpect(BaseModel):
             raise ValueError("a refusing turn draws no chart")
         if self.calc_qid and not any(c.name == "summarize_stat" for c in self.tools):
             raise ValueError("calc_qid needs a summarize_stat call")
+        if self.calc_qid and self.calc_qids:
+            raise ValueError("use calc_qid or calc_qids, not both")
+        if len(self.calc_qids) > sum(c.name == "summarize_stat" for c in self.tools):
+            raise ValueError("calc_qids needs one summarize_stat call each")
+        if self.combine_value is not None and not any(c.name == "combine_values" for c in self.tools):
+            raise ValueError("combine_value needs a combine_values call")
         return self
 
 
