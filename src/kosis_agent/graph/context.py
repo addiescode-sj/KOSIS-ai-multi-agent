@@ -23,7 +23,9 @@
    직전 질문 문장에서 바뀐
    표현(시도 이름, "YYYY년")을 새 값으로 바꿔 끼운 문장을 만든다. 바꿀 표현을 직전 문장에서 못 찾거나 기간이
    범위면 판단하지 않는다(틀린 문장을 만들지 않음).
-6. 그 밖("남자는?", "작년은?")은 판단하지 않는다 → hybrid면 LLM, rules면 원문으로 새 검색.
+   상대 연도("작년은?", "재작년은?", "3년 전은?", "다음 해는?")는 직전 질문의 연도에서 코드가 계산해 "YYYY년"으로
+   바꾼 뒤 같은 이월을 한다(absolute_year). LLM이 계산한 연도는 verify_reading이 막으므로 규칙이 맡는다.
+6. 그 밖("남자는?")은 판단하지 않는다 → hybrid면 LLM, rules면 원문으로 새 검색.
 
 LLM 결과는 코드가 검사한다(verify_reading): 독립 질문의 시도·분류·지표 낱말과 숫자가 직전 질문 또는 이번 질문에
 있는 것이어야 한다. 하나라도 벗어나면 그 해석을 버린다(LLM이 지어낸 조건이 실전 1에 들어가지 않게).
@@ -115,6 +117,34 @@ def single_year(parsed: ParsedQuery) -> str | None:
     """질문이 연도 하나를 말하면 그 연도("YYYY"), 범위·여러 해·월이면 None."""
     if parsed.period_start and parsed.period_start == parsed.period_end and len(parsed.period_start) == 4:
         return parsed.period_start
+    return None
+
+
+# 상대 연도 표현 → 직전 질문 연도에서 더할 햇수 (먼저 맞는 것이 이긴다: "재작년"이 "작년"보다 앞).
+# 뒤에 "대비·보다"가 오면 비교("전년 대비 증가율")라서 연도를 바꾸지 않는다.
+NOT_COMPARISON = r"(?!\s*(?:대비|보다))"
+RELATIVE_YEAR: list[tuple[re.Pattern, int]] = [
+    (re.compile(r"재작년" + NOT_COMPARISON), -2),
+    (re.compile(r"(?P<n>\d{1,2})\s*년\s*(?:전|앞)" + NOT_COMPARISON), -1),
+    (re.compile(r"(?P<n>\d{1,2})\s*년\s*(?:뒤|후)" + NOT_COMPARISON), 1),
+    (re.compile(r"(?:작년|전년(?:도)?|지난\s*해|(?:그\s*|직)?전\s*해|한\s*해\s*전)" + NOT_COMPARISON), -1),
+    (re.compile(r"(?:내년|익년|이듬해|(?:그\s*)?다음\s*해|한\s*해\s*(?:뒤|후))" + NOT_COMPARISON), 1),
+]
+
+
+def absolute_year(question: str, prev: ParsedQuery) -> str | None:
+    """상대 연도를 직전 질문 연도 기준 "YYYY년"으로 바꾼 질문. 상대 연도 말이 없거나 직전 질문 시점이 하나가 아니면 None.
+
+    예: 직전 "2025년 …" + "작년은?" → "2024년은?", "3년 전은?" → "2022년은?"
+        직전 "2025년 3월 …"(시점 202503)도 연도 2025 기준이다. 월은 carry_over가 직전 문장에 그대로 남긴다.
+    """
+    if not prev.period_start or prev.period_start != prev.period_end:
+        return None
+    base = prev.period_start[:4]
+    for pattern, step in RELATIVE_YEAR:
+        if m := pattern.search(question):
+            year = int(base) + step * int(m.groupdict().get("n") or 1)
+            return f"{question[:m.start()]}{year}년{question[m.end():]}"
     return None
 
 
@@ -312,8 +342,11 @@ def _rules(question: str, previous: str, parse: Callable[[str], ParsedQuery], wa
         return Reading(use_previous_table=True, resolved_question=question, chart_type=kind, by="rule")
     if len(rest) >= NEW_QUESTION_CHARS or current.measures:  # 규칙 4: 새 질문
         return Reading(resolved_question=question, chart_type=kind, by="rule")
-    if previous and (current.regions or current.period_start or CORRECTION.search(question)):
-        rewritten = carry_over(previous, parse(previous), current)  # 규칙 5: 이월 (남는 내용은 위 규칙 4로 6자 미만)
+    prev = parse(previous) if previous else None
+    if prev is not None and (absolute := absolute_year(question, prev)):
+        current = parse(absolute)  # 규칙 5: 상대 연도는 코드가 계산한 연도로 읽는다
+    if prev is not None and (current.regions or current.period_start or CORRECTION.search(question)):
+        rewritten = carry_over(previous, prev, current)  # 규칙 5: 이월 (남는 내용은 위 규칙 4로 6자 미만)
         if rewritten is not None:
             return Reading(use_previous_table=True, resolved_question=rewritten, chart_type=kind, by="rule")
     return None  # 규칙 6: 판단 보류

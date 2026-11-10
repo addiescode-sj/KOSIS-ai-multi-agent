@@ -25,6 +25,7 @@ from evals.schemas import DATASETS
 
 ROOT = Path(__file__).resolve().parents[2]
 CALC = DATASETS / "calculation_golden.jsonl"
+RETRIEVAL = DATASETS / "retrieval_golden.jsonl"
 # A small table no golden question uses: what the lookup "finds" for a question it does not know
 DISTRACTOR = "111_DT_1B040A30"  # 국제결혼 안내프로그램 이수현황 (9 KB), unrelated to every golden question
 
@@ -38,10 +39,16 @@ def candidate(key: str) -> TableCandidate:
 class GoldenLookupSearch:
     """Stands in for kosis_rag.api.SearchModule: .stream(SearchInput) -> ("output", SearchOutput)."""
 
-    def __init__(self, calc_path: Path = CALC, distractor: str = DISTRACTOR):
+    def __init__(self, calc_path: Path = CALC, distractor: str = DISTRACTOR, retrieval_path: Path = RETRIEVAL):
         rows = [json.loads(line) for line in calc_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        known = {r["question"]: r["table_key"] for r in rows}
+        if retrieval_path.is_file():  # retrieval golden questions get the first key of their gold slot
+            for line in retrieval_path.read_text(encoding="utf-8").splitlines():
+                r = json.loads(line) if line.strip() else {}
+                if r.get("required"):
+                    known.setdefault(r["question"], r["required"][0][0])
         # longest first, so a question that contains a shorter golden question still gets its own table
-        self.known = sorted(((r["question"], r["table_key"]) for r in rows), key=lambda qk: -len(qk[0]))
+        self.known = sorted(known.items(), key=lambda qk: -len(qk[0]))
         self.distractor = distractor
         self.questions: list[str] = []
 
@@ -57,15 +64,15 @@ class GoldenLookupSearch:
 def build():
     """The graph under test with the golden lookup search, phase 1 from STAT_PROVIDER, and a checkpointer.
 
-    INTERPRETER (rules | hybrid | llm) and INTERPRETER_MODEL (an HCX model for the LLM step, e.g. HCX-005) are read
-    the way the service reads them (backend/app/config.py, backend.app.main.interpreter_llm)."""
+    INTERPRETER (rules | hybrid | llm) and INTERPRETER_MODEL (the LLM step's model, default gpt-4o-mini) are read
+    the way the service reads them (backend/app/config.py, interpreter_llm)."""
     from backend.app.config import agent_config, stat_llm
 
     kwargs = {}
     params = inspect.signature(build_graph).parameters
     # T3-27 interpreter switch; the baseline graph (PR #9) has no such parameter
     if "interpreter" in params:
-        from backend.app.main import interpreter_llm
+        from backend.app.config import interpreter_llm
 
         cfg = agent_config()
         kwargs.update(interpreter=cfg.interpreter, llm=interpreter_llm(cfg))

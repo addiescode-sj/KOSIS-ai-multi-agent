@@ -315,7 +315,31 @@ def test_a_chart_only_request(question, kind):
     assert r.chart_only and r.use_previous_table and r.chart_type == kind
 
 
-@pytest.mark.parametrize("question", ["남자는?", "작년은?"])
+@pytest.mark.parametrize("question, expected", [
+    ("작년은?", "2024년 경기도에서 태어난 아이는 몇 명이에요?"),
+    ("전년도는?", "2024년 경기도에서 태어난 아이는 몇 명이에요?"),
+    ("직전 해 기준으로는?", "2024년 경기도에서 태어난 아이는 몇 명이에요?"),
+    ("재작년은?", "2023년 경기도에서 태어난 아이는 몇 명이에요?"),
+    ("3년 전 수치는?", "2022년 경기도에서 태어난 아이는 몇 명이에요?"),
+    ("작년 부산은?", "2024년 부산광역시에서 태어난 아이는 몇 명이에요?"),
+])
+def test_a_relative_year_is_computed_from_the_previous_year(question, expected):
+    """상대 연도는 코드가 직전 질문 연도에서 계산한다(LLM이 만든 연도는 verify_reading이 버림)."""
+    r = rules(question)
+    assert r.use_previous_table and r.by == "rule" and r.resolved_question == expected
+
+
+def test_a_relative_year_keeps_the_previous_month():
+    r = rules("재작년은?", previous="2025년 3월 전국 혼인 건수는?")
+    assert r.by == "rule" and r.resolved_question == "2023년 3월 전국 혼인 건수는?"
+
+
+def test_a_relative_year_without_a_single_previous_year_is_not_guessed():
+    assert rules("작년은?", previous="2015년부터 2020년까지 합계출산율은?").by == "none"  # 직전이 기간 범위
+    assert rules("전년 대비는?").by == "none"  # 비교 표현: 연도를 바꾸지 않는다
+
+
+@pytest.mark.parametrize("question", ["남자는?"])
 def test_rules_do_not_guess(question):
     """규칙이 판단하지 못하면 원문으로 새 검색(rules) — hybrid에서는 이 턴만 LLM에 묻는다."""
     r = rules(question)

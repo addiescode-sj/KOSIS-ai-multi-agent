@@ -2,13 +2,16 @@
 
     python -m evals.builders.multiturn            # writes the three files below into evals/datasets/
 
-Every golden table has two or more calculation_golden items, so items of one table chain into conversations whose
-turns have a graded answer. Six kinds (plans/T3-27.md):
+R, S, C and M come from the retrieval golden set: their table turns are retrieval checks, so a turn may end on any
+table of the question's L1 gold slot (alt_table_keys), and numbers are graded where the question is also a calculation
+item (phase1_id). E and X come from one-fact calculation items, because their answers are read from the Parquet
+file by code (T3-27 scope 2: retrieval is measured against the retrieval golden set, not the calculation one).
+Six kinds (plans/T3-27.md):
 
-    R  reference     turn 2 = "그 표에서 " + another golden question of the same table   -> no search, same table
+    R  reference     turn 2 = "그 표에서 " + another question its tables also answer       -> no search, same table
     E  ellipsis      turn 2 = "{region}은?" after a one-fact value question             -> same table, new region
     X  correction    turn 2 = "아니 {year}년으로" after a one-fact value question        -> same table, new period
-    S  topic switch  turn 2 = a golden question of another table, verbatim               -> new search, no carry-over
+    S  topic switch  turn 2 = a question about other tables, verbatim                    -> new search, no carry-over
     C  chart         turn 2 = "그 표로 막대그래프 그려줘" after a trend / compare question -> make_chart only
     M  multi-request turn 1 = a golden question + " 꺾은선 그래프로도 보여줘"            -> search, stat, make_chart
 
@@ -22,6 +25,7 @@ the numbers, so every graded turn would fail wrong_numbers and hide the structur
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import random
 from collections import defaultdict
@@ -64,6 +68,7 @@ PARAPHRASE = {
 }
 OUT_PARAPHRASE = DATASETS / "agent_scenarios_multiturn_paraphrase_structure.jsonl"
 CAP = 15  # C and M scenarios each, so chart kinds do not outweigh the carry-over kinds in the overall rates
+MAX_ROWS = 10_000_000  # gold tables larger than this are left out of scenario turns (l1_items)
 
 
 def eun(word: str) -> str:
@@ -141,6 +146,30 @@ def alternates(retrieval_path: Path = RETRIEVAL) -> dict[str, set[str]]:
     return {i.phase1_id: i.gold_keys for i in items if i.phase1_id and i.answerable}
 
 
+def l1_items(retrieval_path: Path = RETRIEVAL) -> list[RetrievalItem]:
+    """Answerable one-slot retrieval golden items (multi-table questions need several tables in one turn)."""
+    if not retrieval_path.is_file():
+        return []
+    items = [RetrievalItem.model_validate_json(line) for line in retrieval_path.read_text(encoding="utf-8").splitlines()
+             if line.strip()]
+    # Gold tables without a Parquet file cannot be answered by phase 1 (101_DT_1IN1503 in 6 items, plans/T3-27.md);
+    # an agent turn is graded on the tables it can answer from, so they are dropped from the slot here.
+    # Tables over MAX_ROWS are dropped too: phase 1 loads a whole table into pandas per turn, and 101_DT_1B04005N
+    # (47M rows) / 101_DT_1B04006 (21M) pushed one scenario run into swap for 30+ minutes (2026-11-09).
+    # ponytail: row cap instead of a phase 1 table cache; lift it once phase 1 reads filtered columns.
+    with (ROOT / "data" / "tables.csv").open(encoding="utf-8-sig", newline="") as f:
+        has_data = {r["key"] for r in csv.DictReader(f)
+                    if (ROOT / "data" / r["parquet"]).is_file() and int(r["rows"] or 0) <= MAX_ROWS}
+    out = []
+    for i in items:
+        if not i.answerable or len(i.required) != 1:
+            continue
+        slot = [k for k in i.required[0] if k in has_data]
+        if slot:
+            out.append(i.model_copy(update={"required": [slot]}))
+    return out
+
+
 def add_alternates(scenario: dict, alt: dict[str, set[str]], source: dict[str, str]) -> dict:
     """Fill each turn's alt_table_keys from the golden question it was made from (source: turn calc qid -> golden qid)."""
     for turn in scenario["turns"]:
@@ -165,17 +194,10 @@ def build(calc_path: Path = CALC, seed: int = 0) -> tuple[list[AgentScenario], l
     scenarios: list[dict] = []
     made: list[CalcItem] = []
 
-    def add(kind: str, turns: list[dict]) -> None:
+    def add(kind: str, turns: list[dict], split: str = "dev") -> None:
         n = sum(s["notes"] == kind for s in scenarios) + 1
-        scenarios.append(add_alternates({"sid": f"MT-{kind}-{n:03d}", "split": "dev", "source": "synthetic",
+        scenarios.append(add_alternates({"sid": f"MT-{kind}-{n:03d}", "split": split, "source": "synthetic",
                                          "notes": kind, "turns": turns}, alt, source))
-
-    # R: two golden questions of one table, the second behind a reference phrase
-    for key, group in sorted(by_table.items()):
-        for a, b in list(zip(group, group[1:]))[:2]:
-            q = rng.choice(REFERENCE) + b.question
-            add("R", [first_turn(a), {"question": q, "expect": {"tools": [stat_call(key)], "table_key": key,
-                                                                "calc_qid": b.qid}}])
 
     # E / X: one-fact value questions with a region or the year swapped, answers read from the Parquet file
     values = [i for i in answerable if i.type == "value" and len(i.required_facts) == 1 and i.qid not in EXCLUDE]
@@ -222,26 +244,62 @@ def build(calc_path: Path = CALC, seed: int = 0) -> tuple[list[AgentScenario], l
                 if done == 2:
                     break
 
-    # S: a golden question of another table after the first one; the second turn must not carry its conditions
-    keys = sorted(by_table)
-    for n, key in enumerate(keys):
-        other = keys[(n + 1) % len(keys)]
-        for a, c in list(zip(by_table[key], by_table[other]))[:2]:
-            add("S", [first_turn(a), {"question": c.question, "expect": {
-                "tools": [{"name": "search_tables"}, stat_call(other)], "table_key": other, "calc_qid": c.qid}}])
+    # R · S · C · M come from the retrieval golden set (T3-27 scope 2): their table turns are retrieval checks, so the
+    # expected table is the question's whole L1 gold slot, not the one table a calculation item was written against.
+    # Numbers are graded only where the question is also a calculation item (phase1_id).
+    l1 = l1_items()
+    calc_ids = {i.qid for i in answerable}
+
+    def l1_turn(item: RetrievalItem, question: str | None = None, keys: set[str] | None = None,
+                tools: list[dict] | None = None) -> dict:
+        gold = keys if keys is not None else item.gold_keys
+        primary = next(iter(item.primary_keys & gold), None) or sorted(gold)[0]
+        e = {"tools": tools or [{"name": "search_tables"}, stat_call(primary)], "table_key": primary,
+             "alt_table_keys": sorted(gold - {primary})}
+        if item.phase1_id in calc_ids:
+            e["calc_qid"] = item.phase1_id
+        return {"question": question or item.question, "expect": e}
+
+    def split_of(*xs: RetrievalItem) -> str:
+        return "test" if any(x.split == "test" for x in xs) else "dev"
+
+    # R: a second question that the first question's tables also answer, behind a reference phrase
+    pairs = [(a, b) for a in l1 for b in l1 if a.qid != b.qid and a.gold_keys & b.gold_keys]
+    rng.shuffle(pairs)
+    used: set[str] = set()
+    for a, b in pairs:
+        if a.qid in used or b.qid in used:
+            continue
+        used |= {a.qid, b.qid}
+        shared = a.gold_keys & b.gold_keys
+        turn2 = l1_turn(b, rng.choice(REFERENCE) + b.question, keys=shared)
+        turn2["expect"]["tools"] = [stat_call(turn2["expect"]["table_key"])]
+        add("R", [l1_turn(a), turn2], split_of(a, b))
+        if sum(x["notes"] == "R" for x in scenarios) == CAP:
+            break
+
+    # S: a question about other tables after the first one; the second turn must not carry its conditions
+    disjoint = [(a, b) for a in l1 for b in l1 if a.qid != b.qid and not a.gold_keys & b.gold_keys]
+    rng.shuffle(disjoint)
+    for a, b in disjoint[:CAP]:
+        add("S", [l1_turn(a), l1_turn(b)], split_of(a, b))
 
     # C: a chart of the previous answer; M: a chart asked in the same turn
-    charted = [i for i in answerable if i.type in ("trend", "compare")]
-    rng.shuffle(charted)
-    for item in charted[:CAP]:
+    chartable = l1[:]
+    rng.shuffle(chartable)
+    for item in chartable[:CAP]:
         q, kind = rng.choice(CHART)
-        add("C", [first_turn(item), {"question": q, "expect": {
-            "tools": [{"name": "make_chart", "args": {"table_key": item.table_key, "chart_type": kind}}],
-            "table_key": item.table_key, "origin": item.qid}}])
-    for item in charted[CAP:2 * CAP] or charted[:CAP]:
+        first = l1_turn(item)
+        second = {"question": q, "expect": {"tools": [{"name": "make_chart", "args": {
+            "table_key": first["expect"]["table_key"], "chart_type": kind}}], "table_key": first["expect"]["table_key"],
+            "alt_table_keys": first["expect"]["alt_table_keys"]}}
+        add("C", [first, second], split_of(item))
+    for item in chartable[CAP:2 * CAP]:
         tail, kind = rng.choice(MULTI)
-        chart = {"name": "make_chart", "args": {"table_key": item.table_key, "chart_type": kind}}
-        add("M", [first_turn(item, item.question + tail, extra=[chart])])
+        first = l1_turn(item, item.question + tail)
+        first["expect"]["tools"].append({"name": "make_chart", "args": {"table_key": first["expect"]["table_key"],
+                                                                         "chart_type": kind}})
+        add("M", [first], split_of(item))
 
     return [AgentScenario.model_validate(s) for s in scenarios], made
 
