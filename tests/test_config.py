@@ -60,3 +60,14 @@ def test_phase1_mock_needs_no_key(env):
     llm = config.stat_llm()
     assert llm.provider == "mock" and llm.api_key is None and llm.require_key() is None
     assert llm.model == "HCX-DASH-002"  # as the mock baseline run recorded it
+
+
+def test_multiturn_and_multiquery_llm_step_defaults_to_gpt_4o_mini(env, monkeypatch):
+    """T3-27 follow-up reader and T3-28 multi-query splitter share INTERPRETER_MODEL; phase 1 stays on HCX."""
+    monkeypatch.delenv("INTERPRETER_MODEL", raising=False)
+    monkeypatch.delenv("INTERPRETER", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-key")
+    cfg = config.agent_config()
+    assert cfg.interpreter_model == "gpt-4o-mini" and cfg.stat_llm.provider == "hcx"
+    assert config.interpreter_chat_model(cfg).model_name == "gpt-4o-mini"
+    assert config.splitter_llm(cfg) is not None

@@ -54,6 +54,12 @@ class AgentState(MessagesState):
     chart: dict | None  # stat.chart를 Vega-Lite로 바꾼 것
     outcome: Outcome | None
     degraded: bool  # 2차 리랭커가 실패해 실전 2가 1차 순서로 대신 답함 (plans/agent-graph-refactor.md P4)
+    # 멀티쿼리 (T3-28, 이번 턴 상태)
+    sub_questions: list[str]  # 하위 질문 (둘 이상일 때만, 아니면 [])
+    combine_op: str | None  # 하위 답 두 개를 합칠 계산 diff | sum | ratio
+    split_by: str | None  # 누가 나눴나 rule | llm
+    sub_results: list[dict] | None  # 하위 질문마다 {"question", "table_key", "outcome", "reason", "text", "answer"}
+    combined: dict | None  # combine_values 툴 결과 {"op", "value", "unit", "inputs", "reason"}
 
 
 # 체크포인트에서 다시 읽어도 되는 타입 목록. AgentState에 넣는 Pydantic 모델을 여기에 적는다.
@@ -84,7 +90,7 @@ class ChatResult(BaseModel):
     no_answer: bool  # outcome이 answered가 아니면 True
     no_answer_reason: str | None = None  # 검색 refusal_reason, 또는 실전 1 refusal.reason
     answer: str
-    answer_origin: str  # "refusal" (코드 거절 문장: 실전 2 gate 또는 failed) | "stat" (실전 1 StatAnswer.text) | "chart" (차트만 다시 그린 턴의 코드 문장)
+    answer_origin: str  # "refusal" (코드 거절 문장: 실전 2 gate 또는 failed) | "stat" (실전 1 StatAnswer.text) | "chart" (차트만 다시 그린 턴의 코드 문장) | "multi" (멀티쿼리 하위 답을 이은 문장)
     table_key: str | None = None  # 답을 만든 tables.csv 키 ("<org_id>_<tbl_id>", tbl_id 아님)
     stat_answer: StatAnswer | None = None
     chart: dict[str, Any] | None = None  # Vega-Lite v5, 차트가 없으면 None
@@ -96,6 +102,8 @@ class ChatResult(BaseModel):
     interpreted_by: str | None = None  # rule | llm | none
     chart_type: str | None = None  # 사용자가 요청한 차트 종류
     chart_note: str | None = None  # 요청대로 못 그렸을 때의 안내
+    sub_results: list[dict] | None = None  # 멀티쿼리 턴의 하위 답 (T3-28, graph AgentState.sub_results)
+    combined: dict | None = None  # 하위 답 두 개를 코드가 합친 결과 (combine_values)
 
 
 def chat_result(state: dict) -> ChatResult:
@@ -107,7 +115,12 @@ def chat_result(state: dict) -> ChatResult:
             "attempted_keys": [a["key"] for a in state.get("attempts") or []],
             "reused_table": bool(state.get("reused_table")), "degraded": bool(state.get("degraded")),
             "resolved_question": state.get("resolved_question"), "interpreted_by": state.get("interpreted_by"),
-            "chart_type": state.get("chart_type"), "chart_note": state.get("chart_note")}
+            "chart_type": state.get("chart_type"), "chart_note": state.get("chart_note"),
+            "sub_results": state.get("sub_results"), "combined": state.get("combined")}
+    if state.get("sub_results") is not None:  # 멀티쿼리 턴: 답 = 하위 답을 이은 문장, 표·답 = 마지막으로 답한 하위 질문
+        answered = stat is not None
+        return ChatResult(**base, no_answer=not answered, answer=state["messages"][-1].content, answer_origin="multi",
+                          table_key=state.get("table_key"), stat_answer=stat.answer if stat else None)
     if state.get("chart_only"):  # 차트만 다시 그린 턴: 숫자는 직전 답 그대로, 답 문장은 코드 고정 문장
         return ChatResult(**base, no_answer=state.get("outcome") != "answered", answer=state["messages"][-1].content,
                           answer_origin="chart", table_key=state.get("active_table"), chart=state.get("chart"))
