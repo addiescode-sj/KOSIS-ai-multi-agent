@@ -3,7 +3,8 @@
 Input is architecture-free: per turn, the tool calls in order ({name, args, result, status}), the final answer text
 and the error, as runners.agent reads them from the turn's OTel spans (or a past run's results.jsonl).
 
-Per turn:
+Per turn (on final_calls: a summarize_stat that refused or failed and was retried right away on another table is an
+alternate-table attempt, set aside and counted in alt_attempts; T3-23):
 - tools: the called names must equal the expected names in order (tools_ok). missing / extra calls are counted
   per tool (multiset difference), and order_ok says whether the expected calls appear in order (extra calls allowed).
 - args: each graded field of an expected call vs the same tool's k-th call, with the L2 slot rule
@@ -50,6 +51,31 @@ def _norm(value: Any) -> Any:
     if value is None:
         return None
     return [str(v) for v in value] if isinstance(value, (list, tuple, set)) else str(value)
+
+
+def _gave_up(call: dict) -> bool:
+    """A summarize_stat call that did not answer from its table: refused, or the tool failed."""
+    result = call.get("result")
+    return call.get("status") == "error" or (isinstance(result, dict) and result.get("outcome") == "refused")
+
+
+def final_calls(calls: list[dict]) -> list[dict]:
+    """The calls a turn is graded on (T3-23): an alternate-table attempt is not a call of its own.
+
+    A summarize_stat that refused (or failed) and is followed right away by a summarize_stat on another table_key is
+    an attempt the agent moved on from; the later call stands for it (A refused -> B refused -> C answered leaves C).
+    So a turn that answers from an alternate table is graded only on its final table and answer: lost_state when that
+    table is not the expected one, wrong_numbers when the answer is wrong, never extra_call / false_refusal for the
+    attempts. A repeated summarize_stat on the same table is not an attempt and still counts as a call."""
+    out: list[dict] = []
+    for call in calls:
+        prev = out[-1] if out else None
+        if (prev is not None and prev["name"] == call["name"] == "summarize_stat" and _gave_up(prev)
+                and (prev.get("args") or {}).get("table_key") != (call.get("args") or {}).get("table_key")):
+            out[-1] = call
+        else:
+            out.append(call)
+    return out
 
 
 def first_key(result: Any) -> str | None:
@@ -117,11 +143,28 @@ def unsupported_final_numbers(answer: str, grounded: set[str], facts: list[Fact]
     return out
 
 
+def same_values(item: CalcItem, answer: StatAnswer | None) -> bool:
+    """Every required fact's value is among the answer's facts (rounded as the golden fact says)."""
+    if answer is None or answer.outcome != "answered":
+        return False
+    got = [f.value for f in answer.result.facts if f.value is not None]
+    for fact in item.required_facts:
+        if fact.value is None:
+            return False
+        digits = fact.round if fact.round is not None else (len(str(fact.value).split(".")[1].rstrip("0"))
+                                                            if "." in str(fact.value) else 0)
+        if not any(calculation.close(fact.value, v, digits) for v in got):
+            return False
+    return True
+
+
 def grade_turn(expect: TurnExpect, record: dict, calc: dict[str, CalcItem], cells_of: Callable[[str], dict],
                grounded: set[str], facts: list[Fact]) -> dict:
     """One turn's metrics and errors. grounded / facts = numbers and facts of the conversation so far (this turn's
-    question and tool results included)."""
-    calls = record.get("calls") or []
+    question and tool results included). Graded on final_calls: alternate-table attempts are set aside and counted
+    in alt_attempts, not as errors."""
+    every = record.get("calls") or []
+    calls = final_calls(every)
     want, got = [c.name for c in expect.tools], [c["name"] for c in calls]
     missing, extra = Counter(want) - Counter(got), Counter(got) - Counter(want)
     seen: Counter = Counter()
@@ -132,7 +175,8 @@ def grade_turn(expect: TurnExpect, record: dict, calc: dict[str, CalcItem], cell
         seen[call.name] += 1
         for field, gold in call.args.items():
             value = _norm((pred.get("args") or {}).get(field)) if pred else None
-            ok = pred is not None and field_correct(field, gold, value)
+            ok = pred is not None and (field_correct(field, gold, value)
+                                       or (field == "table_key" and value in expect.alt_table_keys))
             args.append({"tool": call.name, "field": field, "ok": ok})
     key = state_key(calls)
     did_refuse = refused(calls)
@@ -147,7 +191,7 @@ def grade_turn(expect: TurnExpect, record: dict, calc: dict[str, CalcItem], cell
         errors.append("wrong_order")
     if any(not a["ok"] for a in args):
         errors.append("wrong_args")
-    state_ok = None if expect.table_key is None else key == expect.table_key
+    state_ok = None if expect.table_key is None else (key == expect.table_key or key in expect.alt_table_keys)
     if state_ok is False:
         errors.append("lost_state")
     if expect.refuse and not did_refuse:
@@ -157,15 +201,22 @@ def grade_turn(expect: TurnExpect, record: dict, calc: dict[str, CalcItem], cell
     calc_grade = None
     if expect.calc_qid:
         item = calc[expect.calc_qid]
-        g = calculation.grade(item, stat_answer(calls), cells_of(item.table_key), record.get("error"))
+        answer = stat_answer(calls)
+        g = calculation.grade(item, answer, cells_of(item.table_key), record.get("error"))
         calc_grade = {"verdict": g.verdict, "errors": g.errors}
-        if g.verdict != "PASS":
+        if g.verdict != "PASS" and key in expect.alt_table_keys and same_values(item, answer):
+            # an alternate gold table: the L3 grader checks cells of the golden table only, so the same numbers read
+            # from another table fail on dims / support. Equal values pass, counted apart (T3-27).
+            calc_grade = {"verdict": "PASS", "errors": [], "via_alternate": True, "l3": g.verdict}
+        if calc_grade["verdict"] != "PASS":
             errors.append("wrong_numbers")
     unsupported = unsupported_final_numbers(record.get("answer") or "", grounded, facts)
     if unsupported:
         errors.append("unsupported_final_number")
     return {"tools_ok": want == got, "order_ok": _subsequence(want, got), "missing": dict(missing), "extra": dict(extra),
             "args": args, "state_key": key, "state_ok": state_ok, "refused": did_refuse, "calc": calc_grade,
+            "expected_table": expect.table_key,
+            "alt_attempts": len(every) - len(calls),
             "unsupported_numbers": unsupported, "errors": errors, "passed": not errors}
 
 
@@ -225,11 +276,16 @@ def aggregate(rows: list[dict]) -> dict:
         "tool_order": rate([r["order_ok"] for r in rows]),
         "missing_calls": dict(sum((Counter(r["missing"]) for r in rows), Counter())),
         "extra_calls": dict(sum((Counter(r["extra"]) for r in rows), Counter())),
+        "alt_attempts": sum(r.get("alt_attempts", 0) for r in rows),  # alternate-table attempts set aside (T3-23)
+        "alt_attempt_turns": sum(bool(r.get("alt_attempts")) for r in rows),
         "param_accuracy": rate([ok for v in fields.values() for ok in v]),
         "param_by_field": {f: {"acc": rate(v), "n": len(v)} for f, v in sorted(fields.items())},
         "state_accuracy": rate([r["state_ok"] for r in rows if r["state_ok"] is not None]),
         "n_state": sum(r["state_ok"] is not None for r in rows),
         "numeric_accuracy": rate([v == "PASS" for v in calc]), "n_numeric": len(calc),
+        "numeric_pass_via_alternate": sum(bool(r["calc"] and r["calc"].get("via_alternate")) for r in rows),
+        "state_via_alternate": sum(bool(r["state_ok"] and r["state_key"] != r.get("expected_table")) for r in rows
+                                   if r.get("expected_table")),
         "unsupported_final_number_turns": sum(bool(r["unsupported_numbers"]) for r in rows),
         "errors": dict(Counter(e for r in rows for e in r["errors"])),
         "first_failed_turn": {str(k): v for k, v in sorted(first_fail.items())},

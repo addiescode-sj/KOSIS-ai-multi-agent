@@ -3,6 +3,21 @@
 > A new session starts here. Keep this short and current — it is the handoff
 > packet between sessions.
 
+## T3-27 멀티턴 조건 이월 · 멀티쿼리 (2026-11-09, 브랜치 T3-27-multiturn-context, PR #9 위, 진행 중)
+
+- 해석기: `src/kosis_agent/graph/context.py` `read_turn` — 규칙(남는 내용 낱말 · 슬롯 바꿔 끼우기 · 차트어) 우선, 판단 못 한 턴만 LLM(`INTERPRETER`=hybrid, `INTERPRETER_MODEL` 있을 때). LLM 독립 질문은 숫자·시도·낱말이 두 질문 안에 있을 때만 쓴다.
+- 차트: `make_chart(table_key, chart, chart_type)` 툴, 차트만 요청하면 `active_chart`를 다시 그림.
+- 측정: `python -m evals.builders.multiturn` → `run_eval --layer agent --agent evals.runners.multiturn_dev:build --scenarios evals/datasets/agent_scenarios_multiturn_dev_structure.jsonl` (`STAT_PROVIDER=mock`). 대화 성공률 0.340 → 0.915. 상세 `plans/T3-27.md` Result.
+- HCX 측정: 해석기는 JSON 한 줄 방식(HCX가 langchain-naver 구조화 출력을 400으로 거절). 실전 1 HCX 수치 정확도 0.867, 툴·인자·상태 1.000. LLM 단독 모드는 규칙보다 낮아 hybrid + HCX-005 권장.
+- 남은 것: 사용자 검증용 표현, 실시간 검색(이 PC에 `data/models/unseen-e1.pt`·`e2.pt` 없음, Docker 꺼짐), 실전 1 오답 4문항(S-EDG-09·16·17·21) → 실전 1 레포.
+
+## T3-23 워크플로 그래프 + 6장 폴더 구조 (2026-11-09, 브랜치 T3-23-workflow-graph, 진행 중)
+
+- 폴더: `src/kosis_agent/{graph,retrieval,services,observability}` + `runtime.py`(연구 문서 6장 구조). `src/kosis_data/fetch.py` → `services/parquet_repository.py`. 지도는 `src/kosis_agent/retrieval/README.md`. 주석은 한국어(CLAUDE.md §4 예외).
+- 그래프(옵션 A, supervisor 없음): context → search(`search_tables` 툴) → statistics(`summarize_stat` 툴, 대체 표 재시도 `ALT_TABLE_BUDGET` 기본 0) → chart → finalize(outcome 4종). 진입점 `backend.app.main:build_agent`(checkpointer, `/chat/stream`의 `thread_id`).
+- 툴 계약: content = 채점 대상 JSON(SearchOutput / StatAnswer), artifact = 노드용 객체. `tracing.to_json`은 ToolMessage의 content를 기록.
+- 확인한 것: 옛 그래프 대비 패리티 90/90, pytest 145. agent 채점은 대체 표 시도를 빼고 최종 호출로만 채점(`evals/evaluators/agent.py` `final_calls`), summarize_stat 인자 = question·table_key + L2 조건 4개(실전 2 parse_query). 남은 것: Chroma·HCX로 agent 계층 실측(시나리오는 T3-05). 상세는 `plans/T3-23.md` Result.
+
 ## 실전 1·2 리팩터 모듈 연결 (2026-11-06, 브랜치 T3-01-connect-modules)
 
 - 핀: `vendor/phase1` = `907b703`(T1-28 머지), `vendor/phase2` = `56b4252`(T2-41 머지). 두 모듈 모두 `.env`·환경변수를 읽지 않는다.

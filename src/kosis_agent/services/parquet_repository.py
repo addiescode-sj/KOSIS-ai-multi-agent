@@ -1,16 +1,18 @@
-"""fetch_table(table_id) -> TidyTable: read one provided table into a tidy DataFrame (T3-17, docs/data-contract.md).
+"""fetch_table(table_id) -> TidyTable: 제공된 표 하나를 tidy DataFrame으로 읽는다 (T3-17, docs/data-contract.md).
 
-Rules (plans/T3-17.md):
-- cell_key = tbl|prd_se|item|codes|period. prd_se is in the key: monthly and quarterly rows share period strings such
-  as "197001" (1970-01 vs 1970 Q1).
-- Exact duplicates (every source column equal, labels and value_raw included) keep one row. Rows that share a
-  cell_key but differ in value_raw are flagged "ambiguous" with value None: the provided zip merged same-named items
-  under different parents, and the Parquet file cannot tell which number belongs where. No number is picked.
-- prd_se is kept as it is (F stays F, not Y).
-- Units, symbol cells and totals reuse the phase 1 rules: loader.infer_unit, preprocessing.KIND_FLAGS / parse_value,
-  judge.question.is_total. Symbol cells are never turned into 0 or an estimate.
-- Only the needed columns and rows are read (pyarrow dataset filters). More rows than row_limit after the filters
-  raises TableTooLarge before anything is loaded.
+T3-23에서 src/kosis_data/fetch.py → src/kosis_agent/services/parquet_repository.py로 옮겼다(연구 문서 6장의
+services/parquet_repository.py 자리). 코드는 바꾸지 않았다.
+
+규칙 (plans/T3-17.md):
+- cell_key = tbl|prd_se|item|codes|period. prd_se를 키에 넣는다. 월별과 분기별 행이 "197001" 같은 같은 기간
+  문자열을 쓰기 때문이다(1970-01 vs 1970년 1분기).
+- 완전 중복(라벨·value_raw를 포함해 모든 원본 열이 같음)은 한 행만 남긴다. cell_key는 같은데 value_raw가 다른
+  행은 "ambiguous"로 표시하고 value를 None으로 둔다. 제공 zip이 다른 상위 항목 아래의 같은 이름 항목을 합쳐서,
+  Parquet만으로는 어느 숫자가 어디 것인지 알 수 없기 때문이다. 숫자를 임의로 고르지 않는다.
+- prd_se는 그대로 둔다(F는 Y로 바꾸지 않고 F).
+- 단위·기호 셀·합계는 실전 1 규칙을 재사용한다: loader.infer_unit, preprocessing.KIND_FLAGS / parse_value,
+  judge.question.is_total. 기호 셀을 0이나 추정값으로 바꾸지 않는다.
+- 필요한 열과 행만 읽는다(pyarrow dataset 필터). 필터 뒤에도 row_limit보다 행이 많으면, 읽기 전에 TableTooLarge를 낸다.
 """
 
 from __future__ import annotations
@@ -32,14 +34,14 @@ LEVELS = range(1, 9)
 DIM_PARTS = ("name", "code", "label")
 SOURCE_COLUMNS = ["prd_se", "period", "item_id", "item_name", "unit"] + [
     f"dim{i}_{p}" for i in LEVELS for p in DIM_PARTS] + ["value_raw", "value", "value_kind"]
-# Rows read into the tidy frame after filters. 11/05 sample (plans/T3-17.md Result): tables up to 4.7M rows read with
-# a peak of 2.5 GB in one process; 6.3M rows and up ran out of memory in the phase 1 loader.
+# 필터 뒤 tidy frame에 읽어 들이는 최대 행 수. 11/05 표본(plans/T3-17.md Result): 470만 행까지는 한 프로세스에서
+# 최대 2.5 GB로 읽혔고, 630만 행 이상은 실전 1 loader에서 메모리가 부족했다.
 ROW_LIMIT = 5_000_000
 AMBIGUOUS = "ambiguous"
 
 
 class TableTooLarge(ValueError):
-    """The filtered table still has more rows than row_limit; pass items / periods / dims to narrow it."""
+    """필터를 적용해도 row_limit보다 행이 많다. items / periods / dims로 더 좁혀서 다시 부른다."""
 
     def __init__(self, table_id: str, rows: int, limit: int) -> None:
         self.table_id, self.rows, self.limit = table_id, rows, limit
@@ -53,13 +55,13 @@ class TidyTableMeta(BaseModel):
     survey_name: str
     organization: str
     source_url: str
-    prd_se: list[str]  # cycle codes in the rows read, unchanged (Y, F, M, Q, H, IR ...)
+    prd_se: list[str]  # 읽은 행의 주기 코드, 바꾸지 않음 (Y, F, M, Q, H, IR ...)
     file_sha256: str
     rows_in_file: int
 
 
 class TidyTable(BaseModel):
-    """meta + frame (columns in docs/data-contract.md) + issues (rule counts for this read)."""
+    """meta + frame (열 목록은 docs/data-contract.md) + issues (이번 읽기에서 규칙별로 센 수)."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -106,11 +108,11 @@ def _filter(items, periods, prd_se, dims) -> pc.Expression | None:
 
 
 def _flags(frame: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
-    """(value, value_flag) per row, as phase 1 preprocessing.clean_cell decides them."""
+    """행마다 (value, value_flag). 실전 1 preprocessing.clean_cell과 같은 규칙으로 정한다."""
     flag = frame["value_kind"].map(KIND_FLAGS)
     value = frame["value"].where(flag == "ok")
     other = flag.isna()
-    if other.any():  # other_text and unknown kinds: parse value_raw (e.g. "560p" -> provisional)
+    if other.any():  # other_text와 모르는 종류: value_raw를 파싱한다 (예: "560p" -> 잠정치)
         parsed = frame.loc[other, "value_raw"].fillna("").map(parse_value)
         value.loc[other] = parsed.map(lambda p: p[0]).astype("float64")  # None -> NaN
         flag.loc[other] = parsed.map(lambda p: p[1])
@@ -118,7 +120,7 @@ def _flags(frame: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
 
 
 def _units(frame: pd.DataFrame, levels: list[int]) -> tuple[pd.Series, pd.Series]:
-    """(unit, unit_source) with loader.infer_unit, computed once per distinct (unit, item, labels)."""
+    """loader.infer_unit으로 (unit, unit_source)를 구한다. 서로 다른 (unit, item, labels) 조합마다 한 번만 계산한다."""
     cols = ["unit", "item_name"] + [f"dim{i}_label" for i in levels]
     keys = frame[cols].fillna("").astype(str)
     uniq = keys.drop_duplicates()
@@ -130,9 +132,8 @@ def _units(frame: pd.DataFrame, levels: list[int]) -> tuple[pd.Series, pd.Series
 
 def fetch_table(table_id: str, *, items=None, periods=None, prd_se=None, dims: dict[int, list[str]] | None = None,
                 data_dir: Path | None = None, row_limit: int = ROW_LIMIT) -> TidyTable:
-    """Read table `table_id` (a tables.csv key such as "101_DT_1B8000F"), optionally narrowed by item ids, period
-    strings, cycle codes and per-level category codes. Raises LookupError for an unknown table, TableTooLarge when
-    the filtered rows exceed row_limit."""
+    """표 `table_id`(tables.csv 키, 예: "101_DT_1B8000F")를 읽는다. 항목 ID·기간 문자열·주기 코드·단계별 분류 코드로
+    좁힐 수 있다. 모르는 표면 LookupError, 필터 뒤 행이 row_limit을 넘으면 TableTooLarge를 낸다."""
     data_dir = Path(data_dir) if data_dir else paths.data_dir()
     row = _catalog_row(data_dir, table_id)
     path = data_dir / row["parquet"]
@@ -150,7 +151,7 @@ def fetch_table(table_id: str, *, items=None, periods=None, prd_se=None, dims: d
     frame = frame[["prd_se", "period", "item_id", "item_name", "unit"]
                   + [f"dim{i}_{p}" for i in levels for p in DIM_PARTS] + ["value_raw", "value", "value_kind"]]
     n_read = len(frame)
-    frame = frame.drop_duplicates(ignore_index=True)  # exact duplicates: every source column equal
+    frame = frame.drop_duplicates(ignore_index=True)  # 완전 중복: 모든 원본 열이 같음
     exact_dropped = n_read - len(frame)
 
     codes = [frame[f"dim{i}_code"].fillna("").astype(str) for i in levels]
@@ -159,10 +160,10 @@ def fetch_table(table_id: str, *, items=None, periods=None, prd_se=None, dims: d
                          + code_part + "|" + frame["period"].astype(str))
 
     value, flag = _flags(frame)
-    # After exact duplicates, a cell_key with several value_raw strings has no single number.
+    # 완전 중복을 지운 뒤에도 cell_key 하나에 value_raw가 여러 개면, 그 셀에는 하나로 정할 숫자가 없다.
     pairs = frame[["cell_key", "value_raw"]].fillna({"value_raw": ""}).drop_duplicates()
     shared = frame["cell_key"].map(pairs["cell_key"].value_counts()) > 1
-    same_value = frame.duplicated("cell_key", keep=False) & ~shared  # same number, other text (e.g. a label spelling)
+    same_value = frame.duplicated("cell_key", keep=False) & ~shared  # 숫자는 같고 다른 텍스트만 다름 (예: 라벨 철자)
     flag = flag.where(~shared, AMBIGUOUS)
     value = value.where(~shared)
     frame["value"], frame["value_flag"] = value, flag

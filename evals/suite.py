@@ -2,7 +2,7 @@
 
     python -m evals.suite --stage T3-07-react --llm mock                       # path check at no cost
     python -m evals.suite --stage T3-07-react --baseline T3-06-parity          # HCX, compared with matching runs
-    python -m evals.suite --stage T3-07-react --only l1-graph e2e --agent kosis_agent.graph:build_agent --scenarios <file>
+    python -m evals.suite --stage T3-07-react --only l1-graph e2e --agent backend.app.main:build_agent --scenarios <file>
 
 Each run is `python -m evals.run_eval` with stage `<prefix>-<run name>` (its own folder, report.html and ops_history
 line). A run whose needs are not met (no Chroma, no checkpoint, no key, ...) is skipped with the reason; a run that

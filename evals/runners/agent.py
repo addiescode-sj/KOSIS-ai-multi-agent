@@ -2,7 +2,7 @@
 
 Any compiled LangGraph graph works (ReAct, Plan-and-Execute, multi-agent: T3-07~10): each turn is
 graph.invoke({"messages": [("user", question)]}) under thread_id "<sid>#<run>", so the graph's own checkpointer
-carries the conversation. kosis_agent.tracing.LiveSpans opens the OTel spans while it runs; the turn record (tool calls,
+carries the conversation. kosis_agent.observability.tracing.LiveSpans opens the OTel spans while it runs; the turn record (tool calls,
 args, results, latency, LLM calls, tokens) is read back from those spans, the same ones Jaeger receives when
 OTEL_EXPORTER_OTLP_ENDPOINT is set. After grading, link_verdicts adds one `eval.scenario` span per run that links
 to the turns' root spans and carries the verdict (KOS-114: tie live traces to scores known only afterwards).
@@ -21,7 +21,7 @@ from opentelemetry.sdk.trace.export import BatchSpanProcessor, SimpleSpanProcess
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from opentelemetry.trace import Link, SpanContext, StatusCode, TraceFlags
 
-from kosis_agent.tracing import CHAT_PREFIX, ROOT_SPAN, TOOL_PREFIX, agent_turn
+from kosis_agent.observability.tracing import CHAT_PREFIX, ROOT_SPAN, TOOL_PREFIX, agent_turn
 
 from evals.schemas import AgentScenario
 
@@ -29,7 +29,7 @@ SERVICE = "kosis-agent-evals"
 
 
 def load_graph(spec: str):
-    """`module:function` -> function() (a compiled graph), e.g. kosis_agent.graph:build_agent once T3-03 has it."""
+    """`module:function` -> function() (a compiled graph), e.g. backend.app.main:build_agent (T3-23)."""
     module, _, name = spec.partition(":")
     return getattr(importlib.import_module(module), name)()
 

@@ -108,6 +108,51 @@ def test_numbers_use_the_l3_grader_and_the_final_text_must_be_grounded():
     assert later["passed"]  # a number from an earlier turn's tool result is grounded
 
 
+def _attempt(key: str, status: str = "ok") -> dict:
+    """A summarize_stat call on `key` that refused (or failed): what an alternate-table retry moves on from."""
+    return {"name": "summarize_stat", "args": {"table_key": key, "regions": ["서울특별시"]},
+            "result": {"outcome": "refused", "refusal": {"reason": "no_period", "message": "없음"}}, "status": status}
+
+
+def test_an_answer_from_an_alternate_table_is_graded_on_the_final_call_only():
+    """T3-23: refused on 101_DT_W, then answered on the expected 101_DT_X -> no extra_call, no false_refusal."""
+    search, stat = agent.oracle_records(CHAT, CALC)[0]["calls"]
+    row = grade(CHAT, _oracle_with(0, calls=[search, _attempt("101_DT_W"), stat]))[0]
+    assert row["passed"], row["errors"]
+    assert row["alt_attempts"] == 1 and row["extra"] == {} and not row["refused"] and row["calc"]["verdict"] == "PASS"
+    chain = grade(CHAT, _oracle_with(0, calls=[search, _attempt("101_DT_V"), _attempt("101_DT_W"), stat]))[0]
+    assert chain["passed"] and chain["alt_attempts"] == 2
+
+
+def test_an_alternate_table_still_fails_when_the_final_table_is_wrong():
+    search, stat = agent.oracle_records(CHAT, CALC)[0]["calls"]
+    elsewhere = {**stat, "args": {**stat["args"], "table_key": "101_DT_W"}}
+    row = grade(CHAT, _oracle_with(0, calls=[search, _attempt("101_DT_X"), elsewhere]))[0]
+    assert row["state_key"] == "101_DT_W" and "lost_state" in row["errors"]
+    assert "extra_call" not in row["errors"] and "false_refusal" not in row["errors"]
+
+
+def test_a_failed_tool_call_retried_on_another_table_is_an_attempt():
+    search, stat = agent.oracle_records(CHAT, CALC)[0]["calls"]
+    row = grade(CHAT, _oracle_with(0, calls=[search, _attempt("101_DT_W", status="error"), stat]))[0]
+    assert row["passed"] and row["alt_attempts"] == 1
+
+
+def test_a_repeated_call_on_the_same_table_or_a_final_refusal_is_not_set_aside():
+    search, stat = agent.oracle_records(CHAT, CALC)[0]["calls"]
+    same = grade(CHAT, _oracle_with(0, calls=[search, _attempt("101_DT_X"), stat]))[0]
+    assert same["alt_attempts"] == 0 and "extra_call" in same["errors"]  # same table again: a call of its own
+    gave_up = grade(CHAT, _oracle_with(0, calls=[search, stat, _attempt("101_DT_W")]))[0]
+    assert gave_up["alt_attempts"] == 0 and "extra_call" in gave_up["errors"]  # an answer is never set aside
+
+
+def test_alternate_attempts_are_counted_in_the_summary():
+    search, stat = agent.oracle_records(CHAT, CALC)[0]["calls"]
+    rows = grade(CHAT, _oracle_with(0, calls=[search, _attempt("101_DT_W"), stat]))
+    s = agent.aggregate(rows)
+    assert s["alt_attempts"] == 1 and s["alt_attempt_turns"] == 1 and s["turn_pass"] == 1.0
+
+
 # Live run: a real LangGraph graph with a checkpointer, tools and a chat model, read back from the spans
 
 
@@ -191,3 +236,35 @@ def test_layer_agent_oracle_and_from_run(tmp_path):
     (tmp_path / "results.jsonl").write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows), encoding="utf-8")
     _, summary, report = run_agent(Namespace(**base, oracle=False, from_run=tmp_path))
     assert summary["missing_calls"] == {"make_chart": 1} and summary["conversation_success"] == 0.0 and "s2#0 | 0 |" in report
+
+
+def _alt_scenario():
+    return AgentScenario.model_validate({"sid": "s1", "turns": [{"question": "2024년 서울 출생아 수", "expect": {
+        "tools": [SEARCH, {"name": "summarize_stat", "args": {"table_key": "101_DT_X"}}], "table_key": "101_DT_X",
+        "alt_table_keys": ["101_DT_ALT"], "calc_qid": "c1"}}]})
+
+
+def _answer_from(key: str, value: float) -> dict:
+    """A summarize_stat call on `key` whose answer holds one fact with `value` (another table's cell)."""
+    return {"name": "summarize_stat", "args": {"table_key": key}, "status": "ok", "result": {
+        "outcome": "answered", "text": f"{value:g}명", "result": {"facts": [
+            {"id": "f1", "value": value, "source_ref": f"{key.split('_', 1)[1]}|T9|11|2024", "unit": "명",
+             "period": "2024"}]}, "parts": [{"kind": "fact", "fact_id": "f1"}],
+        "source": {"org_id": "101", "tbl_id": key.split("_", 1)[1], "survey_nm": "조사", "tbl_nm": "표"}}}
+
+
+def test_an_alternate_gold_table_with_the_same_values_passes_and_is_counted_apart():
+    """T3-27: live search ends on another L1 gold table; the same numbers pass (via_alternate), other numbers fail."""
+    s = _alt_scenario()
+    search = {"name": "search_tables", "args": {}, "result": {"route": "found", "picked": [{"key": "101_DT_ALT"}]}}
+    (same,) = agent.grade_conversation(s, [{"calls": [search, _answer_from("101_DT_ALT", 100.0)],
+                                            "answer": "100명", "error": None}], CALC, cells_of)
+    assert same["passed"], same["errors"]
+    assert same["state_ok"] and same["calc"]["via_alternate"] and same["calc"]["l3"] != "PASS"
+    assert agent.aggregate([same])["numeric_pass_via_alternate"] == 1
+    (other,) = agent.grade_conversation(s, [{"calls": [search, _answer_from("101_DT_ALT", 90.0)],
+                                             "answer": "90명", "error": None}], CALC, cells_of)
+    assert other["state_ok"] and "wrong_numbers" in other["errors"]
+    (outside,) = agent.grade_conversation(s, [{"calls": [search, _answer_from("101_DT_ZZZ", 100.0)],
+                                               "answer": "100명", "error": None}], CALC, cells_of)
+    assert "lost_state" in outside["errors"] and "wrong_args" in outside["errors"]

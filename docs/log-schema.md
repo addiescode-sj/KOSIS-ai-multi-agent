@@ -1,4 +1,4 @@
-# 사용자 로그 스키마 (T3-27, Linear KOS-169)
+# 사용자 로그 스키마 (T3-29, Linear KOS-169)
 
 질문 1건이 한 행인 `request_logs` 테이블과, 그 주변(화면 행동, 피드백, 수신 탈락)이 지켜야 할 규칙을 정한다.
 모델은 `src/kosis_store/log_models.py`, 지표 SQL은 `src/kosis_store/log_metrics.py`, 테스트는 `tests/test_log_schema.py`.

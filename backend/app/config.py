@@ -1,5 +1,6 @@
 """The agent's settings from the shell environment: phase 2 search (IndexSpec, SearchOptions, stage 2 LLMConfig) and
-phase 1 stat (its own LLMConfig). Both modules read no .env and no environment; this is where the app declares them.
+phase 1 stat (its own LLMConfig), and the follow-up reader's LLM (interpreter_llm). The phase 1 and 2 modules read
+no .env and no environment; this is where the app declares them.
 
 Phase 3 reads its .env: the entry points (backend/app/main.py, evals, scripts) call kosis_agent.envfile.load_env_file()
 first, which puts <repo>/.env into os.environ without overriding the shell (so `set X=...` still wins). This module
@@ -13,6 +14,10 @@ then reads os.environ. In the container compose passes the same file as `env_fil
     HCX_API_KEY HCX_THINKING OPENAI_API_KEY         stage 2 keys (clova / hcx: HCX_API_KEY, gpt: OPENAI_API_KEY)
     STAT_PROVIDER STAT_MODEL STAT_RETRY_INTERVAL    phase 1 model (hcx | mock, HCX-DASH-002), seconds before a retry
     HCX_API_KEY                                     phase 1 key too (None: LLMKeyMissing when a phase 1 LLM step runs)
+    ALT_TABLE_BUDGET                                candidate tables tried after a table-mismatch refusal (default 0 = off, T3-23)
+    INTERPRETER INTERPRETER_MODEL                   follow-up reading rules | hybrid | llm (default hybrid, T3-27) and its
+                                                    model (default gpt-4o-mini with OPENAI_API_KEY; HCX-* on ChatClovaX, *gemma* at Gemma_BASE_URL;
+                                                    no key = no LLM step: hybrid reads by rules)
 
 The search names and defaults are phase 2's backend/app/config.py search_config_from_shell @56b4252 (which this repo
 cannot import: its backend.app shadows phase 2's), so an unset variable means the phase 2 default. The phase 1 model
@@ -45,6 +50,9 @@ class AgentConfig(NamedTuple):
     stage2_llm: SearchLLMConfig | None  # None when stage 2 is off
     stat_llm: StatLLMConfig
     stat_retry_interval: float
+    alt_table_budget: int  # T3-23: tables tried after the first one refuses for a table mismatch
+    interpreter: str  # T3-27: rules | hybrid | llm (src/kosis_agent/graph/context.py)
+    interpreter_model: str  # T3-27: the LLM step's model (default gpt-4o-mini, interpreter_llm below)
 
 
 def _env(name: str) -> str | None:
@@ -71,6 +79,30 @@ def stat_llm() -> StatLLMConfig:
     provider = (_env("STAT_PROVIDER") or "hcx").strip().lower()
     return StatLLMConfig(api_key=SecretStr(key) if key and provider != "mock" else None,
                          model=_env("STAT_MODEL") or STAT_MODEL, provider=provider)
+
+
+def interpreter_llm(cfg):
+    """The follow-up reader's LLM step (T3-27): INTERPRETER_MODEL (default gpt-4o-mini) on ChatOpenAI with
+    OPENAI_API_KEY for gpt-*, on ChatOpenAI at Gemma_BASE_URL with Gemma_API_KEY for *gemma*, else ChatClovaX with
+    HCX_API_KEY; None (rules only) when the interpreter is "rules".
+    A missing key is not an error here: the hybrid reader then reads by rules, as with no model set."""
+    model = cfg.interpreter_model or ""
+    gpt = model.lower().startswith("gpt")
+    gemma = "gemma" in model.lower()  # self-hosted OpenAI-compatible server: Gemma_BASE_URL + Gemma_API_KEY
+    key = _env("OPENAI_API_KEY" if gpt else "Gemma_API_KEY" if gemma else "HCX_API_KEY")
+    if not model or not key or cfg.interpreter == "rules":
+        return None
+    from kosis_agent.graph.context import make_llm_reader
+
+    if gpt or gemma:
+        from langchain_openai import ChatOpenAI
+
+        base_url = _env("Gemma_BASE_URL") if gemma else None
+        return make_llm_reader(ChatOpenAI(model=model, api_key=key, base_url=base_url, temperature=0, timeout=30,
+                                          max_retries=2))
+    from langchain_naver import ChatClovaX
+
+    return make_llm_reader(ChatClovaX(model=model, api_key=key, temperature=0, timeout=30, max_retries=2))
 
 
 def agent_config() -> AgentConfig:
@@ -103,4 +135,8 @@ def agent_config() -> AgentConfig:
         hq_build=(_env("HQ_BUILD") or "").strip() or None,
     )
     return AgentConfig(spec=spec, options=options, stage2_llm=stage2_llm(options.stage2), stat_llm=stat_llm(),
-                       stat_retry_interval=float(_env("STAT_RETRY_INTERVAL") or 0.0))
+                       stat_retry_interval=float(_env("STAT_RETRY_INTERVAL") or 0.0),
+                       alt_table_budget=int(_env("ALT_TABLE_BUDGET") or 0),
+                       interpreter=(_env("INTERPRETER") or "hybrid").strip().lower(),
+                       # T3-27: gpt-4o-mini beat HCX-005 on the LLM-only reading (dev 0.798 vs 0.723) at ~1/5 of Gemma's latency
+                       interpreter_model=_env("INTERPRETER_MODEL") or "gpt-4o-mini")

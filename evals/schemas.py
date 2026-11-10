@@ -161,6 +161,9 @@ class TurnExpect(BaseModel):
 
     tools: list[ExpectedCall] = Field(default_factory=list)  # in call order; [] = answer without a tool
     table_key: str | None = None  # the table the turn ends on (conversation state); None = not graded
+    # T3-27: other tables that answer this turn too (the L1 gold slot of the same question). Ending on one of them is
+    # not lost_state; its numbers pass when its facts carry the expected values (counted apart as via_alternate).
+    alt_table_keys: list[str] = Field(default_factory=list)
     refuse: bool = False  # out of scope / no data: search_tables or summarize_stat must refuse (or no tool runs)
     calc_qid: str | None = None  # L3 item graded on this turn's summarize_stat answer (evaluators.calculation)
 
