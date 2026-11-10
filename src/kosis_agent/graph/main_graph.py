@@ -1,6 +1,8 @@
 """메인 그래프 (T3-23 결정적 워크플로 + T3-27 이월·차트 요청). 다음에 무엇을 할지는 아래 조건부 경로(코드)가 정한다.
 
     START → context ─(차트만 다시: "그 표로 막대그래프")──────────────────────────────┐
+                ├─(하위 질문 둘 이상: "출생아 수와 외국인주민 수")→ multi ─(같은 표)→ chart ─→ finalize
+                │                                                       └─(표가 다름)→ finalize
                 ├─(직전 표 재사용: 지시어 "그 표에서…", 이월 "부산은?"·"아니 2023년으로")─┐   │
                 └─(새 질문)→ search ─(refuse · 넘길 표 없음)→ finalize                 │   │
                                 └─(found)→ statistics ←───────────────────────────────┘   │
@@ -16,6 +18,8 @@
              규칙이 먼저 판단하고, 규칙이 판단하지 못한 턴만 LLM 한 번(interpreter="hybrid", LLM이 있을 때).
 - search     search_tables 툴(실전 2 검색 그래프 전체)을 사용자 원문으로 부른다.
 - statistics summarize_stat 툴(실전 1)을 표 하나로 부른다. 표 불일치로 거절되면 다음 후보 표로 다시 들어온다.
+- multi      멀티쿼리 턴(T3-28): 하위 질문마다 search_tables → summarize_stat을 부른다. 모두 같은 표를 찾으면 원문
+             한 번으로 실전 1에 묻는다(같은 표 비교는 실전 1 compare가 답함). 계산 요청이면 combine_values 툴(코드 계산).
 - chart      사용자가 차트를 요청했으면 make_chart 툴로 요청한 종류를 그리고, 아니면 실전 1이 준 ChartSpec을
              그대로 Vega-Lite로 바꾼다(툴 아님: 요청하지 않은 툴 호출은 하네스가 extra_call로 감점).
 - finalize   outcome과 답 메시지를 정한다. 답 문장은 실전 1·2가 만든 것이나 코드 고정 문장만 쓴다(LLM 문장 생성 없음).
@@ -37,9 +41,11 @@ from langchain_core.tools import BaseTool
 from langgraph.graph import END, START, StateGraph
 
 from kosis_agent.graph.context import LLMReader, Mode, chart_request, read_turn
+from kosis_agent.graph.multiquery import SplitReader, split_question
 from kosis_agent.graph.state import AgentState
 from kosis_agent.retrieval.search import make_search_tables_tool
 from kosis_agent.services.chart import CHART_NAMES, make_chart_tool, to_vega_lite
+from kosis_agent.services.combine import combine_text, make_combine_values_tool
 from kosis_agent.services.statistics import make_summarize_stat_tool
 from kosis_chat.api import summarize_stat_run
 from kosis_chat.schemas.io import StatOutput
@@ -95,7 +101,7 @@ def default_parser(search: Any) -> Callable[[str], ParsedQuery]:
 def build_graph(search: Any, stat_llm: StatLLMConfig, *, retry_interval: float = 0.0,
                 summarize: Callable[..., StatOutput] = summarize_stat_run, checkpointer: Any = None,
                 alt_table_budget: int = 0, parse: Callable[[str], ParsedQuery] | None = None,
-                interpreter: Mode = "hybrid", llm: LLMReader | None = None):
+                interpreter: Mode = "hybrid", llm: LLMReader | None = None, splitter: SplitReader | None = None):
     """메인 그래프를 compile한다.
 
     In: search = kosis_rag.api.SearchModule (테스트·stat_oracle에서는 .stream(SearchInput)만 있는 가짜);
@@ -109,6 +115,8 @@ def build_graph(search: Any, stat_llm: StatLLMConfig, *, retry_interval: float =
         parse = 질문 → ParsedQuery (None이면 default_parser(search)). summarize_stat의 조건 인자를 채운다.
         interpreter = 이월 해석 방식 rules | hybrid | llm (graph/context.py). llm = LLMReader(make_llm_reader로 만듦).
             llm이 None이면 hybrid는 rules와 같다(LLM 단계 없음).
+        splitter = 멀티쿼리 분해의 LLM 단계(graph/multiquery.py make_llm_splitter). 규칙이 판단 보류한 턴만 부른다.
+            None이면 규칙으로만 나눈다.
     Out: AgentState 위의 compiled graph. stream_mode "custom"으로 돌리면 실전 2 노드마다 (노드 이름, trace 항목),
         그다음 실전 1 시도마다 ("stat", {"seconds", "key", "spans"})가 온다.
     Errors: 실전 1의 LLMKeyMissing·RuntimeError와 실전 2의 예외는 그대로 올라간다(SSE `error`). 실전 1의
@@ -119,6 +127,7 @@ def build_graph(search: Any, stat_llm: StatLLMConfig, *, retry_interval: float =
     search_tables = make_search_tables_tool(search)
     summarize_stat = make_summarize_stat_tool(stat_llm, retry_interval=retry_interval, summarize=summarize)
     make_chart = make_chart_tool()
+    combine_values = make_combine_values_tool()
     parse = parse or default_parser(search)
 
     def context_node(state: AgentState) -> dict:
@@ -132,15 +141,22 @@ def build_graph(search: Any, stat_llm: StatLLMConfig, *, retry_interval: float =
         # 원문을 그대로 쓰므로 여기에 들지 않는다. 이월 턴만 "직전 표가 못 답하면 다시 쓴 문장으로 검색"을 한다.
         carried = (reading.use_previous_table and not reading.chart_only
                    and reading.resolved_question != question)
+        # 멀티쿼리 분해는 새 질문 턴에서만 한다(이월·지시어·차트 턴은 직전 표 하나로 답함)
+        split = None if reading.use_previous_table else split_question(question, parse, splitter)
+        subs = split.sub_questions if split and len(split.sub_questions) > 1 else []
         return {"question": question, "resolved_question": reading.resolved_question, "interpreted_by": reading.by,
                 "reused_table": reading.use_previous_table, "carried_over": carried, "fallback_searched": False,
                 "chart_requested": wants_chart,
                 "chart_type": reading.chart_type, "chart_only": reading.chart_only, "chart_note": None,
-                "attempts": [], "stat": None, "table_key": None, "chart": None, "outcome": None, "degraded": False}
+                "attempts": [], "stat": None, "table_key": None, "chart": None, "outcome": None, "degraded": False,
+                "sub_questions": subs, "combine_op": split.op if subs else None,
+                "split_by": split.by if subs else None, "sub_results": None, "combined": None}
 
     def after_context(state: AgentState) -> str:
         if state["chart_only"]:
             return "chart"
+        if state.get("sub_questions"):
+            return "multi"
         return "statistics" if state["reused_table"] else "search"
 
     def search_node(state: AgentState, config: RunnableConfig) -> dict:
@@ -172,6 +188,60 @@ def build_graph(search: Any, stat_llm: StatLLMConfig, *, retry_interval: float =
             return None if tried else state["active_table"]
         return next((k for k in candidate_keys(state["search"]) if k not in tried), None)
 
+    def ask(question: str, key: str, config: RunnableConfig) -> StatOutput:
+        """summarize_stat 툴 한 번: 질문 + 표 키 + 그 질문을 실전 2 규칙으로 읽은 조건 4개."""
+        parsed = parse(question)
+        args = {"question": question, "table_key": key,
+                **{field: getattr(parsed, field) for field in CONDITION_FIELDS}}
+        return call_tool(summarize_stat, args, config).artifact
+
+    def multi_node(state: AgentState, config: RunnableConfig) -> dict:
+        """멀티쿼리 턴: 하위 질문마다 검색하고, 표가 다르면 하위 질문마다 실전 1에 묻는다.
+
+        - 같은 표 되돌림: 하위 질문이 모두 같은 표를 찾으면 나누지 않은 것으로 보고 원문 한 번으로 묻는다.
+        - 하위 질문 하나가 검색 거절·실전 1 거절이면 나머지는 답하고, 그 하위 질문에는 거절 문장을 붙인다(지어내지 않음).
+        - 대체 표 재시도·이월 다시 검색은 하지 않는다(하위 질문마다 첫 표 하나).
+        """
+        subs = state["sub_questions"]
+        searches: list[SearchOutput] = [call_tool(search_tables, {"question": q}, config).artifact for q in subs]
+        keys = [(candidate_keys(o) or [None])[0] if o.route == "found" else None for o in searches]
+        degraded = any(s.get("node") == "rerank2" and s.get("stage2_error") for o in searches for s in o.spans)
+        base = {"search": searches[-1], "degraded": degraded}
+        if keys[0] is not None and len(set(keys)) == 1:  # 같은 표: 원문 한 번
+            stat = ask(state["question"], keys[0], config)
+            answer = stat.answer
+            return {**base, "sub_questions": [], "stat": stat, "table_key": keys[0],
+                    "attempts": [{"key": keys[0], "outcome": answer.outcome,
+                                  "reason": answer.refusal.reason if answer.refusal else None}]}
+        results, attempts, last = [], [], None
+        for question, out, key in zip(subs, searches, keys):
+            if key is None:
+                text = (out.refusal_text or NO_TABLE_TEXT) if out.route == "refuse" else NO_TABLE_TEXT
+                results.append({"question": question, "table_key": None, "outcome": "refused",
+                                "reason": out.refusal_reason, "text": text, "answer": None})
+                continue
+            stat = ask(question, key, config)
+            answer = stat.answer
+            reason = answer.refusal.reason if answer.refusal else None
+            attempts.append({"key": key, "outcome": answer.outcome, "reason": reason})
+            results.append({"question": question, "table_key": key, "outcome": answer.outcome, "reason": reason,
+                            "text": answer.text, "answer": answer.model_dump(mode="json")})
+            if answer.outcome == "answered":
+                last = (stat, key, question)
+        combined = None
+        if state.get("combine_op") and len(results) == 2 and all(r["outcome"] == "answered" for r in results):
+            args = {"op": state["combine_op"], "answers": [r["answer"] for r in results]}
+            combined = call_tool(combine_values, args, config).artifact
+        update = {**base, "sub_results": results, "combined": combined, "attempts": attempts}
+        if last is not None:  # 다음 턴의 "그 표"는 마지막으로 답한 하위 질문의 표 (plans/T3-28.md 한계)
+            update.update(stat=last[0], table_key=last[1], resolved_question=last[2])
+        return update
+
+    def after_multi(state: AgentState) -> str:
+        if state.get("sub_results") is None:  # 같은 표로 되돌린 턴 = 한 턴 질문과 같은 경로
+            return "chart" if state["attempts"][-1]["outcome"] == "answered" else "finalize"
+        return "finalize"  # ponytail: 멀티쿼리 답에는 차트를 그리지 않는다. 하위 답마다 차트가 필요해지면 추가
+
     def statistics_node(state: AgentState, config: RunnableConfig) -> dict:
         """표 하나로 실전 1에 답을 받는다. 숫자는 실전 1의 코드가 계산한다.
 
@@ -181,10 +251,7 @@ def build_graph(search: Any, stat_llm: StatLLMConfig, *, retry_interval: float =
         """
         key = next_table(state)
         question = state.get("resolved_question") or state["question"]
-        parsed = parse(question)
-        args = {"question": question, "table_key": key,
-                **{field: getattr(parsed, field) for field in CONDITION_FIELDS}}
-        stat: StatOutput = call_tool(summarize_stat, args, config).artifact
+        stat = ask(question, key, config)
         answer = stat.answer
         attempts = [*state["attempts"], {"key": key, "outcome": answer.outcome,
                                          "reason": answer.refusal.reason if answer.refusal else None}]
@@ -220,6 +287,17 @@ def build_graph(search: Any, stat_llm: StatLLMConfig, *, retry_interval: float =
         """outcome과 답 메시지를 정한다. 답한 표는 다음 턴의 "그 표"(active_table)가 되고, 해석된 질문과 차트 데이터는
         다음 턴의 이월·차트 요청에 쓰인다(active_question · active_chart)."""
         stat: StatOutput | None = state.get("stat")
+        if (results := state.get("sub_results")) is not None:  # 멀티쿼리 턴: 하위 답을 순서대로 잇는다
+            parts = [r["text"] for r in results]
+            if (combined := state.get("combined")) is not None:
+                parts.append(combine_text(combined))
+            answered = [r for r in results if r["outcome"] == "answered"]
+            outcome = "answered" if answered else results[0]["outcome"]
+            update = {"outcome": outcome, "messages": [AIMessage("\n\n".join(parts))]}
+            if stat is not None:
+                update.update(active_table=state["table_key"], active_question=state["resolved_question"],
+                              active_chart=stat.chart)
+            return update
         if state["chart_only"]:  # 차트만 다시 그린 턴: 대화 상태(표·질문·차트)는 그대로 둔다
             if state.get("chart") is None:
                 return {"outcome": "failed", "messages": [AIMessage(state.get("chart_note") or "")]}
@@ -240,10 +318,12 @@ def build_graph(search: Any, stat_llm: StatLLMConfig, *, retry_interval: float =
     graph.add_node("context", context_node)
     graph.add_node("search", search_node)
     graph.add_node("statistics", statistics_node)
+    graph.add_node("multi", multi_node)
     graph.add_node("chart", chart_node)
     graph.add_node("finalize", finalize_node)
     graph.add_edge(START, "context")
-    graph.add_conditional_edges("context", after_context, ["search", "statistics", "chart"])
+    graph.add_conditional_edges("context", after_context, ["search", "statistics", "chart", "multi"])
+    graph.add_conditional_edges("multi", after_multi, ["chart", "finalize"])
     graph.add_conditional_edges("search", after_search, ["statistics", "finalize"])
     graph.add_conditional_edges("statistics", after_statistics, ["statistics", "search", "chart", "finalize"])
     graph.add_edge("chart", "finalize")

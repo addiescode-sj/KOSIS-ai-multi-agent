@@ -111,14 +111,33 @@ def refused(calls: list[dict]) -> bool:
     return False
 
 
+def _as_answer(call: dict) -> StatAnswer | None:
+    if call.get("status", "ok") != "ok":
+        return None
+    try:
+        return StatAnswer.model_validate(call.get("result"))
+    except ValueError:
+        return None
+
+
 def stat_answer(calls: list[dict]) -> StatAnswer | None:
     """The last successful summarize_stat result as a StatAnswer; None when there is none or it does not validate."""
     for call in reversed(calls):
         if call["name"] == "summarize_stat" and call.get("status", "ok") == "ok":
-            try:
-                return StatAnswer.model_validate(call.get("result"))
-            except ValueError:
-                return None
+            return _as_answer(call)
+    return None
+
+
+def stat_answers(calls: list[dict]) -> list[StatAnswer | None]:
+    """Every summarize_stat result in call order (None where it failed or does not validate). T3-28 calc_qids."""
+    return [_as_answer(c) for c in calls if c["name"] == "summarize_stat"]
+
+
+def combined_value(calls: list[dict]) -> float | None:
+    """The value of the last combine_values call (T3-28), None when it did not compute one."""
+    for call in reversed(calls):
+        if call["name"] == "combine_values" and isinstance(call.get("result"), dict):
+            return call["result"].get("value")
     return None
 
 
@@ -210,11 +229,31 @@ def grade_turn(expect: TurnExpect, record: dict, calc: dict[str, CalcItem], cell
             calc_grade = {"verdict": "PASS", "errors": [], "via_alternate": True, "l3": g.verdict}
         if calc_grade["verdict"] != "PASS":
             errors.append("wrong_numbers")
+    sub_grades = []
+    if expect.calc_qids:  # T3-28: one L3 grade per sub-question, in summarize_stat call order
+        answers = stat_answers(calls)
+        for i, qid in enumerate(expect.calc_qids):
+            item = calc[qid]
+            answer = answers[i] if i < len(answers) else None
+            g = calculation.grade(item, answer, cells_of(item.table_key), record.get("error"))
+            verdict = g.verdict
+            if verdict != "PASS" and same_values(item, answer):  # alternate table holding the same numbers
+                verdict = "PASS"
+            sub_grades.append({"qid": qid, "verdict": verdict, "errors": g.errors})
+        if any(g["verdict"] != "PASS" for g in sub_grades):
+            errors.append("wrong_numbers")
+    combine_ok = None
+    if expect.combine_value is not None:
+        got_value = combined_value(calls)
+        combine_ok = got_value is not None and calculation.close(expect.combine_value, got_value, 1)
+        if not combine_ok:
+            errors.append("wrong_numbers")
     unsupported = unsupported_final_numbers(record.get("answer") or "", grounded, facts)
     if unsupported:
         errors.append("unsupported_final_number")
     return {"tools_ok": want == got, "order_ok": _subsequence(want, got), "missing": dict(missing), "extra": dict(extra),
             "args": args, "state_key": key, "state_ok": state_ok, "refused": did_refuse, "calc": calc_grade,
+            "sub_calc": sub_grades, "combine_ok": combine_ok,
             "expected_table": expect.table_key,
             "alt_attempts": len(every) - len(calls),
             "unsupported_numbers": unsupported, "errors": errors, "passed": not errors}
@@ -227,8 +266,9 @@ def _grounding(question: str, calls: list[dict]) -> tuple[set[str], list[Fact]]:
         result = call.get("result")
         numbers |= set(_numbers(result if isinstance(result, str) else json.dumps(result, ensure_ascii=False)))
         numbers |= {n for v in (call.get("args") or {}).values() for n in _numbers(json.dumps(v, ensure_ascii=False))}
-    if (answer := stat_answer(calls)) is not None:
-        facts = list(answer.result.facts)
+    for answer in stat_answers(calls):  # every sub-question's facts (T3-28); one call = the last answer as before
+        if answer is not None:
+            facts += answer.result.facts
     return numbers, facts
 
 
@@ -265,6 +305,8 @@ def aggregate(rows: list[dict]) -> dict:
         for a in r["args"]:
             fields[a["field"]].append(a["ok"])
     calc = [r["calc"]["verdict"] for r in rows if r["calc"]]
+    calc += [g["verdict"] for r in rows for g in r.get("sub_calc") or []]  # T3-28: each sub-question's L3 grade
+    combine = [r["combine_ok"] for r in rows if r.get("combine_ok") is not None]
     first_fail = Counter(next(t["turn"] for t in v if not t["passed"]) for k, v in convs.items() if not success[k])
     return {
         "n_turns": n, "n_conversations": len(convs), "n_scenarios": len(by_sid),
@@ -286,6 +328,7 @@ def aggregate(rows: list[dict]) -> dict:
         "numeric_pass_via_alternate": sum(bool(r["calc"] and r["calc"].get("via_alternate")) for r in rows),
         "state_via_alternate": sum(bool(r["state_ok"] and r["state_key"] != r.get("expected_table")) for r in rows
                                    if r.get("expected_table")),
+        "combine_accuracy": rate(combine), "n_combine": len(combine),
         "unsupported_final_number_turns": sum(bool(r["unsupported_numbers"]) for r in rows),
         "errors": dict(Counter(e for r in rows for e in r["errors"])),
         "first_failed_turn": {str(k): v for k, v in sorted(first_fail.items())},
@@ -313,15 +356,22 @@ def oracle_records(scenario: AgentScenario, calc: dict[str, CalcItem]) -> list[d
     for turn in scenario.turns:
         e = turn.expect
         calls = []
+        sub_qids = iter(e.calc_qids)  # T3-28: one L3 item per summarize_stat, in call order
+        stat_keys = iter([c.args.get("table_key") for c in e.tools if c.name == "summarize_stat"])
+        next_key = None
         for call in e.tools:
             args = dict(call.args)
             if call.name in STATE_TOOLS and e.table_key and "table_key" not in args:
                 args["table_key"] = e.table_key
             if call.name == "search_tables":
-                key = e.table_key or args.get("table_key")
+                next_key = next(stat_keys, None)  # the table of the summarize_stat this search leads to
+                key = (next_key if e.calc_qids else None) or e.table_key or args.get("table_key")
                 result: Any = {"route": "refuse", "picked": []} if e.refuse else {"route": "found", "picked": [{"key": key}]}
             elif call.name == "summarize_stat":
-                result = oracle_stat(calc[e.calc_qid]) if e.calc_qid else {"outcome": "answered"}
+                qid = e.calc_qid or next(sub_qids, None)
+                result = oracle_stat(calc[qid]) if qid else {"outcome": "answered"}
+            elif call.name == "combine_values":
+                result = {"op": args.get("op"), "value": e.combine_value}
             else:
                 result = {"chart_type": args.get("chart_type")}
             calls.append({"name": call.name, "args": args, "result": result, "status": "ok"})

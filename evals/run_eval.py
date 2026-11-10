@@ -514,7 +514,7 @@ def run_agent(args) -> tuple[list[dict], dict, str]:
 
     scenarios: list[AgentScenario] = [s for s in load_jsonl(args.scenarios, AgentScenario)
                                       if args.split == "all" or s.split == args.split]
-    needed = {t.expect.calc_qid for s in scenarios for t in s.turns if t.expect.calc_qid}
+    needed = {q for s in scenarios for t in s.turns for q in [t.expect.calc_qid, *t.expect.calc_qids] if q}
     calc = {i.qid: i for i in calc_items(args.calc_golden)} if needed else {}
     if missing := needed - set(calc):
         raise SystemExit(f"calc_qid not in {[str(p) for p in args.calc_golden]}: {sorted(missing)[:5]}")
