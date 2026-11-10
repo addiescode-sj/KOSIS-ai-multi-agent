@@ -13,6 +13,7 @@ then reads os.environ. In the container compose passes the same file as `env_fil
     HCX_API_KEY HCX_THINKING OPENAI_API_KEY         stage 2 keys (clova / hcx: HCX_API_KEY, gpt: OPENAI_API_KEY)
     STAT_PROVIDER STAT_MODEL STAT_RETRY_INTERVAL    phase 1 model (hcx | mock, HCX-DASH-002), seconds before a retry
     HCX_API_KEY                                     phase 1 key too (None: LLMKeyMissing when a phase 1 LLM step runs)
+    ALT_TABLE_BUDGET                                candidate tables tried after a table-mismatch refusal (default 0 = off, T3-23)
 
 The search names and defaults are phase 2's backend/app/config.py search_config_from_shell @56b4252 (which this repo
 cannot import: its backend.app shadows phase 2's), so an unset variable means the phase 2 default. The phase 1 model
@@ -45,6 +46,7 @@ class AgentConfig(NamedTuple):
     stage2_llm: SearchLLMConfig | None  # None when stage 2 is off
     stat_llm: StatLLMConfig
     stat_retry_interval: float
+    alt_table_budget: int  # T3-23: tables tried after the first one refuses for a table mismatch
 
 
 def _env(name: str) -> str | None:
@@ -103,4 +105,5 @@ def agent_config() -> AgentConfig:
         hq_build=(_env("HQ_BUILD") or "").strip() or None,
     )
     return AgentConfig(spec=spec, options=options, stage2_llm=stage2_llm(options.stage2), stat_llm=stat_llm(),
-                       stat_retry_interval=float(_env("STAT_RETRY_INTERVAL") or 0.0))
+                       stat_retry_interval=float(_env("STAT_RETRY_INTERVAL") or 0.0),
+                       alt_table_budget=int(_env("ALT_TABLE_BUDGET") or 0))

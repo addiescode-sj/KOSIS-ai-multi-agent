@@ -1,7 +1,7 @@
 # 데이터 계약: Fetch & Normalize (T3-17, KOS-143)
 
 통계표 하나를 tidy DataFrame으로 읽는 입출력 계약이다. 계산·차트 툴과 KOS-119(2,364표 확장)가 이 계약을 쓴다.
-구현은 `src/kosis_data/fetch.py`, 규칙 검증은 `tests/test_fetch.py`(합성 Parquet, 제공 데이터 없이 돈다)에 있다.
+구현은 `src/kosis_agent/services/parquet_repository.py`, 규칙 검증은 `tests/test_fetch.py`(합성 Parquet, 제공 데이터 없이 돈다)에 있다.
 
 ## 입력
 

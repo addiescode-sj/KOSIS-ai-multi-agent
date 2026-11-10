@@ -9,7 +9,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from kosis_data.fetch import AMBIGUOUS, SOURCE_COLUMNS, TableTooLarge, fetch_table
+from kosis_agent.services.parquet_repository import AMBIGUOUS, SOURCE_COLUMNS, TableTooLarge, fetch_table
 
 pytestmark = pytest.mark.offline
 
