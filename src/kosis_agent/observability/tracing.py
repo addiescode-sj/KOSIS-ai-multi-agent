@@ -122,7 +122,33 @@ class LiveSpans(BaseCallbackHandler):
             "gen_ai.tool.call.arguments": to_json(inputs) if inputs is not None else input_str})
 
     def on_tool_end(self, output, *, run_id: UUID, **kwargs: Any) -> None:
+        span = self._spans.get(run_id)
+        if span is not None:
+            self._step_spans(span, getattr(getattr(output, "artifact", None), "spans", None))
         self._end(run_id, **{"gen_ai.tool.call.result": to_json(output)})
+
+    def _step_spans(self, tool_span: Span, steps: list[dict] | None) -> None:
+        """툴 안쪽 단계 기록(실전 1 StatOutput.spans: name·start_ms·duration_ms·status·attributes)을 툴 span의 자식으로 남긴다.
+
+        실전 1 HCX 호출은 LangChain 모델이 아니라서(urllib) on_chat_model_start가 불리지 않는다. 그래서 실전 1이 이미
+        재 둔 단계 시간을 끝난 뒤에 옮긴다(T3-30). start_ms·duration_ms가 없는 기록(실전 2 trace 항목 등)은 건너뛴다.
+        이름은 실전 1 단계 이름 그대로라 평가의 llm_calls·토큰 집계(chat span만 셈)는 바뀌지 않는다.
+        """
+        started = getattr(tool_span, "start_time", None)
+        if not steps or started is None:  # 기록하지 않는 span(NoOp)에는 시작 시각이 없다
+            return
+        context = trace.set_span_in_context(tool_span)
+        for step in steps:
+            if not isinstance(step, dict) or "start_ms" not in step or "duration_ms" not in step:
+                continue
+            begin = started + int(float(step["start_ms"]) * 1e6)
+            attributes = {k: v for k, v in (step.get("attributes") or {}).items()
+                          if isinstance(v, (str, bool, int, float))}
+            span = self.tracer.start_span(str(step.get("name", "step")), context=context, start_time=begin,
+                                          attributes=attributes)
+            if step.get("status") == "error":
+                span.set_status(Status(StatusCode.ERROR))
+            span.end(end_time=begin + int(float(step["duration_ms"]) * 1e6))
 
     def on_tool_error(self, error: BaseException, *, run_id: UUID, **kwargs: Any) -> None:
         self._end(run_id, error)
@@ -143,10 +169,27 @@ class LiveSpans(BaseCallbackHandler):
         self._end(run_id, error)
 
 
+def start_turn(tracer: Tracer, conversation_id: str, index: int) -> tuple[Span, LiveSpans]:
+    """턴의 루트 span(아직 열린 상태)과 콜백. 현재 context에 붙이지 않으므로 호출한 쪽이 직접 root.end()한다.
+
+    서비스(/chat/stream)가 이것을 쓴다(T3-30): sync generator는 Starlette가 next()마다 다른 threadpool 작업에서
+    돌리므로, contextvar에 span을 붙였다 떼면 yield 사이에 Context가 달라져 detach가 실패한다. LiveSpans는 부모를
+    명시적으로 받으므로 current context가 필요 없다.
+    """
+    root = tracer.start_span(ROOT_SPAN, attributes={
+        "gen_ai.operation.name": "invoke_agent", "gen_ai.conversation.id": conversation_id,
+        "kosis.turn.index": index})
+    return root, LiveSpans(tracer, root)
+
+
 @contextmanager
 def agent_turn(tracer: Tracer, conversation_id: str, index: int) -> Iterator[tuple[Span, LiveSpans]]:
     """턴의 루트 span과, 실행 config에 넣을 콜백. 블록 안에서 예외가 나면 루트 span을 error로 표시한다."""
-    with tracer.start_as_current_span(ROOT_SPAN, attributes={
-            "gen_ai.operation.name": "invoke_agent", "gen_ai.conversation.id": conversation_id,
-            "kosis.turn.index": index}) as root:
-        yield root, LiveSpans(tracer, root)
+    root, spans = start_turn(tracer, conversation_id, index)
+    with trace.use_span(root, end_on_exit=True):
+        yield root, spans
+
+
+def trace_id(span: Span) -> str:
+    """span의 trace ID (32자리 hex, Jaeger 검색에 그대로 넣는 값)."""
+    return format(span.get_span_context().trace_id, "032x")
