@@ -117,7 +117,8 @@ def test_graph_streams_search_nodes_then_stat():
 def test_chat_stream_sends_node_events_then_the_result():
     res, events, data = _sse(build_graph(FakeSearch("found"), STAT_LLM, summarize=FakeSummarize()), "2030년 출생아 수")
     assert res.status_code == 200
-    assert events == ["parse", "gate", "stat", "result"]
+    # T3-30: meta first, then the answer as tokens before the result
+    assert [e for e in events if e != "token"] == ["meta", "parse", "gate", "stat", "result"]
     result = ChatResult.model_validate(data[-1])
     assert result.answer == "이 표에는 2030년 자료가 없어요." and result.picked[0].key == "101_DT_1B8000H"
 
@@ -128,7 +129,7 @@ def test_a_key_missing_from_tables_csv_is_a_refusal_not_an_error():
         raise LookupError(f"{table_id} is not in tables.csv")
 
     _, events, data = _sse(build_graph(FakeSearch("found"), STAT_LLM, summarize=missing), "q")
-    assert events == ["parse", "gate", "stat", "result"]
+    assert [e for e in events if e != "token"] == ["meta", "parse", "gate", "stat", "result"]
     result = ChatResult.model_validate(data[-1])
     assert result.no_answer and result.no_answer_reason == "out_of_scope" and result.answer == NOT_IN_CATALOG_TEXT
 
