@@ -10,6 +10,8 @@ then reads os.environ. In the container compose passes the same file as `env_fil
     CHROMA_HOST CHROMA_PORT CHROMA_COLLECTION      Chroma server and the dense collection (default localhost:8001)
     TEXT_FORMAT EMBED_CKPT RERANK_CKPT RERANK_MODE  table text check, query embedder, stage 1 cross-encoder
     STAGE2 COND_FILTER ANSWER_K                     stage 2 LLM (clova | hcx | gpt | none), conditions, k default
+    STAGE2_MODEL                                    stage 2 model name (default phase 2's per STAGE2); a *gemma* name runs
+                                                    on the self-hosted server Gemma_BASE_URL with Gemma_API_KEY (STAGE2=gpt, T3-33)
     HQ_BUILD HQ_WEIGHT HQ_BM25                      reverse HyDE question index (empty HQ_BUILD = off)
     HCX_API_KEY HCX_THINKING OPENAI_API_KEY         stage 2 keys (clova / hcx: HCX_API_KEY, gpt: OPENAI_API_KEY)
     STAT_PROVIDER STAT_MODEL STAT_RETRY_INTERVAL    phase 1 model (hcx = HCX-DASH-002 default | openai | gemma | mock), seconds before a retry
@@ -65,11 +67,18 @@ def workspace() -> Path:
 
 
 def stage2_llm(name: str) -> SearchLLMConfig | None:
-    """The stage 2 LLM: phase 2's default config for the name with its key and HCX_THINKING; None when off."""
+    """The stage 2 LLM: phase 2's default config for the name with its key and HCX_THINKING; None when off.
+
+    STAGE2_MODEL swaps the model (phase 2 PR #48, T3-33). A *gemma* model is the self-hosted OpenAI-compatible server,
+    as for phase 1 (STAT_PROVIDER=gemma) and the interpreter: Gemma_BASE_URL with Gemma_API_KEY instead of OpenAI's
+    key. Phase 2 uses base_url only on its openai provider, i.e. STAGE2=gpt. evals.config calls this too."""
     if name in OFF or name not in selectors.LLM_RERANKERS:
         return None
-    return selectors.default_config(name, api_key=_env(STAGE2_KEY_ENV[name]),
-                                    thinking=(_env("HCX_THINKING") or "none").strip().lower())
+    model = _env("STAGE2_MODEL")
+    gemma = bool(model) and "gemma" in model.lower()
+    return selectors.default_config(name, api_key=_env("Gemma_API_KEY" if gemma else STAGE2_KEY_ENV[name]),
+                                    thinking=(_env("HCX_THINKING") or "none").strip().lower(),
+                                    model=model, base_url=_env("Gemma_BASE_URL") if gemma else None)
 
 
 # STAT_PROVIDER=openai | gemma (T3-28): phase 1 on an OpenAI-compatible chat model through the provider this repo
