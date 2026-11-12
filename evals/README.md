@@ -75,7 +75,7 @@ uv run python -m evals.suite --stage T3-07-react --baseline evals/reports/202611
 | 옵션 | 뜻 |
 |---|---|
 | `--stage` | 모든 run stage의 접두어 (필수) |
-| `--llm hcx\|mock` | L3·e2e 모델. mock이면 e2e 검색은 2차 LLM 없는 `graph:staged`, 실측은 `graph:staged-hcx` |
+| `--llm hcx\|mock` | L3·e2e 모델. mock이면 모든 모델을 끄고(2차 LLM 포함), 실측은 `.env`의 검색 설정 그대로(T3-32) |
 | `--baseline` | 비교할 기준: stage 접두어(여럿 가능) 또는 run 폴더 |
 | `--only` | 돌릴 run 이름만 (0.1 표의 이름) |
 | `--interval` | L3·e2e 문항 사이 대기(초). 기본 hcx 5, mock 0 |
@@ -105,7 +105,7 @@ uv run python -m evals.run_eval --layer e2e --interval 5 --stage $S-e2e         
 uv run python -m evals.run_eval --layer agent --oracle --scenarios <시나리오.jsonl> --split all --stage $S-agent-oracle   # 채점기 자기검증
 ```
 
-L1 프리셋(`retrieval.STAGED`): `hybrid` · `hybrid+cond` · `staged` · `clova-only` · `staged-clova` · `hybrid+cond-hcx` · `staged-hcx` · `hybrid+cond-gpt`. `graph:`를 앞에 붙이면 같은 설정을 LangGraph 검색 그래프로 돌린다.
+L1 프리셋(`retrieval.STAGED`): `hybrid` · `hybrid+cond` · `staged` · `clova-only` · `staged-clova` · `hybrid+cond-hcx` · `staged-hcx` · `hybrid+cond-gpt` · `staged-gpt`(1차 + OpenAI 호환 2차: `STAGE2_MODEL`·`STAGE2_BASE_URL`·`STAGE2_API_KEY`가 있으면 그 서버, T3-33). `graph:`를 앞에 붙이면 같은 설정을 LangGraph 검색 그래프로 돌린다.
 골든 v2는 `--golden evals/datasets/retrieval_golden_v2.jsonl --pool evals/datasets/retrieval_pool_v2.csv` / `--query-golden evals/datasets/query_golden_v2.jsonl`.
 
 ### 0.6 결과 읽기
@@ -233,10 +233,18 @@ L2·ablation(`--slot-source pred`)은 `data/sigungu.json`을 `parse_query(sigung
 
 ### Jaeger로 보기 (선택)
 
+실시간 계층(l1·l3·e2e·agent)은 `scripts/dev.sh`로 돌린다(T3-33). API 서버와 같은 준비를 한다: Docker Desktop이 꺼져 있으면 켜고,
+Chroma·Jaeger를 띄우고(`--wait`), `OTEL_EXPORTER_OTLP_ENDPOINT`를 맞추고, 출력을 버퍼 없이 화면과 `evals/reports/logs/<시각>-eval.log`에 같이 쓴다.
+문항(턴)마다 `[번호/전체] qid 초` 진행 줄이 나온다.
+
 ```bash
-docker compose --profile obs up -d jaeger
-OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317 uv run python -m evals.run_eval --layer l3 --stage <이름> --from-run evals/reports/T1-27-run
+bash scripts/dev.sh eval --layer l1 --retriever graph:staged-gpt --stage <이름>   # run_eval 인자 그대로
+bash scripts/dev.sh eval --layer e2e --interval 5 --stage <이름>
+bash scripts/dev.sh suite --stage <이름> --only l1-graph e2e                       # evals.suite 인자 그대로
 ```
+
+`uv run python -m evals.run_eval`로 직접 돌리면 Docker·Jaeger가 꺼져 있어도 그대로 시작한다: 검색 계층은 Chroma 연결에서 실패하고,
+`.env`에 OTLP 주소가 있으면 trace 전송 실패 로그만 쌓인다(리포트의 trace 카드는 메모리 span이라 그대로 나온다).
 
 http://localhost:16686 에서 서비스 `kosis-agent`를 고르고 Tags에 `deployment.environment.name=eval kosis.eval.layer=l3`처럼 넣는다(§8.1).
 리포트의 Jaeger 링크는 이 필터가 걸린 검색이다. 문항 1개가 trace 1개이고, 판정은 채점 뒤 `eval.question` span이 링크로 붙인다.
