@@ -20,7 +20,7 @@ from urllib.parse import quote
 
 from evals.evaluators.calculation import ERROR_INFO
 from evals.ops import read_history
-from evals.trace import STAGES
+from evals.trace import SEARCH_TOOL, STAGES, STAT_TOOL
 
 QTYPE_ORDER = ["all", "exact_name", "concept", "sibling", "multi_condition", "period_cycle", "multi_table", "ambiguous"]
 VERDICTS = [("PASS", "good", "✓"), ("PARTIAL", "warning", "△"), ("FAIL", "critical", "✕")]
@@ -326,13 +326,13 @@ def timeline(r: dict) -> str:
     if nodes := r.get("search_spans"):  # LangGraph search (T2-36): one chip per node
         chips = [(s["name"], s["status"], s["duration_ms"]) for s in nodes]
     else:
-        chips = [("retrieve", "ok" if r.get("right_table", True) else "error", None)] if "right_table" in r else []
+        chips = [(SEARCH_TOOL, "ok" if r.get("right_table", True) else "error", None)] if "right_table" in r else []
     if "verdict" in r:  # L3 / e2e: the tool and its Phase 1 spans
-        chips.append(("summarize_stat", "error" if blamed == "tool.summarize_stat" else "ok", None))
+        chips.append((STAT_TOOL, "error" if blamed == STAT_TOOL else "ok", None))
         chips += [(s["name"], s["status"], s["duration_ms"]) for s in r.get("spans") or []]
     out = []
     for name, status, ms in chips:
-        cls = "chip" + (" err" if status == "error" else "") + (" blame" if name in (blamed, f"tool.{name}") else "")
+        cls = "chip" + (" err" if status == "error" else "") + (" blame" if name == blamed else "")
         out.append(f'<span class="{cls}" title="{esc(name)} · {esc(status)}{"" if ms is None else f" · {ms:.0f} ms"}">'
                    f'{"✕ " if status == "error" else ""}{esc(name)}</span>')
     return "".join(out)
@@ -424,11 +424,13 @@ GUIDE = {  # layer -> how to read this page, one line per item
                  "후보 중앙값: 필터 뒤 남은 표 수. 작을수록 검색이 쉬워지지만 recall이 떨어지면 안 된다.", NO_TRACE],
     "l012": ["L0(메타데이터) → L1 필터(정답 슬롯 / 파서 슬롯) → L2(질의 이해) 순서로 한 페이지에 모았다. 각 섹션 아래에 그 계층의 운영 지표가 있다.", NO_TRACE],
     "l1": ["Hit@k: 정답 표가 상위 k개 안에 든 문항 비율. MRR: 첫 정답 순위의 역수 평균. 둘 다 높을수록 좋다.",
-           "LangGraph 검색이면 '실패 노드' 표에서 정답 표를 어느 노드가 밀어냈는지와 노드 경로를 본다."],
-    "l3": ["정답 표를 준 채로 summarize_stat의 숫자를 원본 Parquet 셀과 대조한다. PASS 비율이 높을수록 좋다.",
-           "'실패 문항별 원인'의 span 경로에서 굵은 테두리가 실패로 판정한 단계다."],
-    "e2e": ["검색 1위 표로 summarize_stat까지 돌린다. 실패를 검색 실패(1위가 다른 표)와 답 실패로 나눠 본다.",
-            "span 경로와 Jaeger 링크로 문항별 실행을 따라간다."],
+           "LangGraph 검색이면 '실패 노드' 표에서 정답 표를 어느 노드가 밀어냈는지와 노드 경로를 본다.",
+           "trace: 문항마다 execute_tool search_tables 아래 검색 노드의 실제 지연(워터폴)과 노드별 지연 표."],
+    "l3": ["에이전트 그래프 한 턴에 정답 표를 준 채로(oracle 검색) summarize_stat의 숫자를 원본 Parquet 셀과 대조한다. PASS 비율이 높을수록 좋다.",
+           "'실패 문항별 원인'의 span 경로에서 굵은 테두리가 실패로 판정한 단계다.",
+           "trace: span 이름별 지연 표로 시간이 쓰인 곳을, 문항별 워터폴로 한 문항의 실행을 본다(실시간 계측, 서비스와 같은 모양)."],
+    "e2e": ["서비스 에이전트 그래프 한 턴(검색 → summarize_stat)을 돌린다. 실패를 검색 실패(실전 1에 넘긴 표가 다른 표)와 답 실패로 나눠 본다.",
+            "span 경로와 trace 워터폴, Jaeger 링크로 문항별 실행을 따라간다."],
     "agent": ["대화 성공률: 모든 턴이 통과한 대화 비율(가장 중요한 지표). pass^k: k번 반복 실행이 모두 성공한 시나리오 비율(안정성).",
               "툴 선택: 툴 이름·순서가 정답과 정확히 같은 턴 비율. 빠진·불필요 호출은 툴별로 따로 센다.",
               "대화별 화면: 실패한 대화가 위에 펼쳐져 있다. 툴 칩에 마우스를 올리면 인자와 결과가 보인다.",
@@ -539,6 +541,54 @@ def waterfall(spans: list[dict]) -> str:
     return f'<div class="wf">{rows}</div>'
 
 
+TRACE_CAP = 60  # question waterfalls shown; problem rows first, every trace stays in results.jsonl and Jaeger
+
+
+def _p(values: list[float], q: float) -> float:
+    ordered = sorted(values)
+    return ordered[min(len(ordered) - 1, int(q * len(ordered)))] if ordered else 0.0
+
+
+def traces_body(m: dict, rows: list[dict]) -> str:
+    """l1 / l3 / e2e (T3-32): the live trace of each question, read back from the run's rows (trace_spans).
+
+    1) where the time goes: per span name, how many, p50 / p95 and its share of all span time below the root;
+    2) one waterfall per question (problem rows first), the same view as the agent layer's turns."""
+    traced = [r for r in rows if r.get("trace_spans")]
+    if not traced:
+        return ('<div class="card"><h2>trace</h2><p class="note">이 run에는 trace가 없다 (재채점 run, 또는 T3-32 이전 run).</p></div>')
+    ui = (m.get("jaeger") or {}).get("ui")
+    by_name: dict[str, list[float]] = {}
+    kinds: dict[str, str] = {}
+    for r in traced:
+        for sp in r["trace_spans"]:
+            if sp.get("depth", 0) == 0 and sp.get("kind") == "turn":
+                continue  # the root is the question itself
+            by_name.setdefault(sp["name"], []).append(sp["duration_ms"])
+            kinds[sp["name"]] = sp.get("kind", "node")
+    total = sum(sum(v) for v in by_name.values()) or 1
+    top = sorted(by_name.items(), key=lambda kv: -sum(kv[1]))[:20]
+    summary = "".join(
+        f'<tr><td>{esc(name)}</td><td>{esc(kinds[name])}</td><td class="num">{len(v)}</td>'
+        f'<td class="num">{_p(v, 0.5):.0f}</td><td class="num">{_p(v, 0.95):.0f}</td><td class="num">{sum(v) / total:.0%}</td></tr>'
+        for name, v in top)
+    shown = sorted(traced, key=lambda r: not _problem(r))[:TRACE_CAP]
+    falls = "".join(
+        f'<div class="turn"><div class="tools"><b>{esc(r["qid"])}</b> · {esc(r.get("verdict") or ("놓침" if r.get("failure") else "-"))}'
+        f' · {r.get("latency_ms", 0):.0f} ms · LLM {r.get("llm_calls", 0)}회 · {trace_link(ui, r.get("trace_id"))}'
+        f'{" · " + esc(r.get("question", "")) if r.get("question") else ""}</div>{waterfall(r["trace_spans"])}</div>'
+        for r in shown)
+    return "".join([
+        '<div class="card"><h2>trace — 시간이 어디서 쓰였나</h2>',
+        f'<p class="note">문항 {len(traced)}개의 실시간 trace(서비스와 같은 콜백, T3-32). span 이름별 횟수·지연 p50·p95(ms)와 '
+        '루트 아래 span 시간 합에서 차지하는 비중(중첩 span은 겹쳐 셈). 상위 20개.</p>',
+        '<table><tr><th>span</th><th>종류</th><th>횟수</th><th>p50</th><th>p95</th><th>비중</th></tr>', summary, "</table></div>",
+        f'<div class="card"><h2>trace — 문항별 워터폴 ({len(shown)}/{len(traced)}건, 문제 문항 먼저)</h2>',
+        '<p class="note">노드(파랑)·툴(초록)·LLM 호출(주황)의 시작과 길이. 빨간 테두리 = error span. 나머지는 results.jsonl의 trace_spans와 Jaeger 링크.</p>',
+        falls, "</div>",
+    ])
+
+
 def agent_body(m: dict, rows: list[dict]) -> str:
     from evals.evaluators.agent import ERRORS
 
@@ -626,7 +676,9 @@ def render(run: Path, questions: dict[str, str] | None = None) -> str:
     layer = m["layer"]
     models = sorted({x for o in (m["ops"].values() if layer == "l012" else [m["ops"]]) for x in o.get("models", [])})
     model = ", ".join(models) or ("summarize_stat" if layer in ("l3", "e2e") else "LLM 호출 없음")
-    target = {"e2e": f'검색기 {m["retriever"]} · 모델 {model}', "l1": f'검색기 {m["retriever"]}',
+    target = {"e2e": f'그래프 {m.get("agent") or "backend.app.main:build_agent"} · 모델 {model}',
+              "l3": f'그래프 {m.get("agent") or "evals.runners.multiturn_dev:build (oracle 검색)"} · 모델 {model}',
+              "l1": f'검색기 {m["retriever"]}',
               "agent": f'에이전트 {m.get("agent") or m.get("source") or "-"} · 모델 {model}'}.get(layer, f"모델 {model}")
     meta = (f'{esc(m["run_id"])} · {esc(target)} · {"split " + esc(m["split"]) + " · " if m.get("split") else ""}'
             f'{golden_label(m)} · tables.jsonl {esc(m["source_snapshot"]["tables.jsonl"][:12])} · '
@@ -637,6 +689,8 @@ def render(run: Path, questions: dict[str, str] | None = None) -> str:
         dedicated = {"l1": l1_body, "l3": l3_body, "e2e": e2e_body, "agent": agent_body}
         body = (dedicated[layer](m, rows) if layer in dedicated else summary_tiles(layer, m["summary"]) + md_html(report))
         body += failures_body(m, rows) + search_failures_body(m, rows)
+        if layer in ("l1", "l3", "e2e"):
+            body += traces_body(m, rows)
         ops = ops_body(m["ops"], rows, history_of(layer))
         table = rows_table(layer, rows) if layer in ("l1", "l3", "e2e") else "" if layer == "agent" else generic_rows_table(rows)
     title = LAYER_TITLES.get(layer, layer)

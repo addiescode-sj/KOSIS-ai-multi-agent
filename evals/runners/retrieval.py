@@ -22,6 +22,7 @@ from kosis_rag.shared.catalog import to_document
 from kosis_agent.observability.tracing import LiveSpans
 
 from evals.ops import UsageCallback, stage2_usage
+from evals.runners.agent import span_rows
 from evals.schemas import TABLES, RetrievalItem
 from evals.trace import NodeSpans
 
@@ -159,7 +160,9 @@ def run(retriever: BaseRetriever, items: list[RetrievalItem], k: int, telemetry=
                 root.set_status(StatusCode.ERROR, error)
             root.end()
             ctx = root.get_span_context()
-            ids = {"trace_id": format(ctx.trace_id, "032x"), "span_id": format(ctx.span_id, "016x")}
+            mine = [s for s in telemetry[1].get_finished_spans() if s.context.trace_id == ctx.trace_id]
+            ids = {"trace_id": format(ctx.trace_id, "032x"), "span_id": format(ctx.span_id, "016x"),
+                   "trace_spans": span_rows(root, mine)}  # the live trace, for report.html
         meta = docs[0].metadata if docs else {}
         s2_calls, s2_in, s2_out, s2_retried = stage2_usage(meta)
         rows.append({

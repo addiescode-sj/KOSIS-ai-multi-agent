@@ -227,7 +227,7 @@ def single_turns(graph, questions: list[tuple[str, str]], telemetry: tuple[Trace
         rows.append({"qid": qid, "answer": answer, "error": error, "keys": keys,
                      "used_table": state.get("table_key") or (keys[0] if keys else None),
                      "spans": list(stat.spans) if stat is not None else [], "search_spans": nodes.spans,
-                     "retrieve_ms": search_ms,
+                     "retrieve_ms": search_ms, "trace_spans": record["spans"],  # the live trace, for report.html
                      **{k: record[k] for k in ("latency_ms", "llm_calls", "input_tokens", "output_tokens", "model",
                                                "retried", "trace_id", "span_id")},
                      "failed": error is not None})

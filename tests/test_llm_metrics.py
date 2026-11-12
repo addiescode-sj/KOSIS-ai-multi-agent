@@ -162,3 +162,32 @@ def test_the_turn_root_says_how_the_turn_ended():
     counts = {(a["kosis.outcome"], a.get("kosis.no_answer_reason") or a.get("error.type")): v
               for a, v in _metric_points(reader, "kosis.agent.turns")}
     assert counts == {("refused", "out_of_scope"): 1, ("error", "ConnectionError"): 1}
+
+
+def test_a_phase1_step_already_live_as_a_node_is_not_drawn_twice():
+    """T3-32: phase 1's own graph nodes open live under the tool; the step record of the same name is skipped,
+    while an LLM step (tokens only in the record) stays."""
+    from langgraph.graph import END, START, StateGraph
+    from typing_extensions import TypedDict
+
+    class S(TypedDict, total=False):
+        n: int
+
+    inner = StateGraph(S)
+    inner.add_node("compute", lambda s: {"n": 1})
+    inner.add_edge(START, "compute")
+    inner.add_edge("compute", END)
+    inner = inner.compile()
+
+    def live(question, table_id, **kw):
+        inner.invoke({"n": 0})  # phase 1 runs its graph inside the tool, as the real module does
+        return summarize(question, table_id)
+
+    provider, memory = TracerProvider(), InMemorySpanExporter()
+    provider.add_span_processor(SimpleSpanProcessor(memory))
+    with agent_turn(provider.get_tracer("t"), "t1", 0) as (_, spans):
+        make_summarize_stat_tool(STAT_LLM, summarize=live).invoke(
+            {"name": "summarize_stat", "args": {"question": "q", "table_key": "k"}, "id": "2", "type": "tool_call"},
+            config={"callbacks": [spans]})
+    names = [s.name for s in memory.get_finished_spans()]
+    assert names.count("compute") == 1 and "analyze.llm_plan" in names and "compose" in names

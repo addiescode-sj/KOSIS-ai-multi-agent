@@ -113,6 +113,7 @@ class LiveSpans(BaseCallbackHandler):
         self._started: dict[UUID, tuple[str, float]] = {}  # chat model run -> (model, perf_counter) (메트릭)
         self._models: dict[UUID, str] = {}  # tool run -> stage 2 model (search_tables metadata)
         self._top: UUID | None = None  # 그래프 최상위 실행 (부모 없는 첫 chain) = 이 턴
+        self._tool_nodes: dict[UUID, set[str]] = {}  # tool run -> 그 안에서 실시간으로 연 노드 이름 (단계 기록 중복 방지)
         meter = meter or metrics.NoOpMeter("kosis-agent")
         self._token_usage = meter.create_histogram(
             "gen_ai.client.token.usage", unit="{token}", description="Number of input and output tokens used")
@@ -184,6 +185,11 @@ class LiveSpans(BaseCallbackHandler):
             return
         self._nodes.add(run_id)
         self._open(node, run_id, parent_run_id)
+        up = parent_run_id  # 이 노드를 품은 툴 (실전 1·2 그래프는 툴 안에서 돈다)
+        while up is not None and up not in self._tool_nodes:
+            up = self._parents.get(up)
+        if up is not None:
+            self._tool_nodes[up].add(node)
 
     def on_chain_end(self, outputs, *, run_id: UUID, **kwargs: Any) -> None:
         if run_id == self._top:
@@ -201,6 +207,7 @@ class LiveSpans(BaseCallbackHandler):
         name = kwargs.get("name") or (serialized or {}).get("name") or "tool"
         if (model := (kwargs.get("metadata") or {}).get(STAGE2_MODEL)) is not None:
             self._models[run_id] = model
+        self._tool_nodes[run_id] = set()
         self._open(TOOL_PREFIX + name, run_id, parent_run_id, **{
             "gen_ai.operation.name": "execute_tool", "gen_ai.tool.name": name,
             "gen_ai.tool.call.id": kwargs.get("tool_call_id"),
@@ -210,12 +217,17 @@ class LiveSpans(BaseCallbackHandler):
         span = self._spans.get(run_id)
         if span is not None:
             steps = getattr(getattr(output, "artifact", None), "spans", None)
-            self._step_spans(span, steps)
+            self._step_spans(span, steps, self._tool_nodes.get(run_id, set()))
             self._stage2_span(span, steps, self._models.pop(run_id, None))
+        self._tool_nodes.pop(run_id, None)
         self._end(run_id, **{"gen_ai.tool.call.result": to_json(output)})
 
-    def _step_spans(self, tool_span: Span, steps: list[dict] | None) -> None:
+    def _step_spans(self, tool_span: Span, steps: list[dict] | None, live: set[str] = frozenset()) -> None:
         """툴 안쪽 단계 기록(실전 1 StatOutput.spans: name·start_ms·duration_ms·status·attributes)을 툴 span의 자식으로 남긴다.
+
+        live = 이 툴 안에서 콜백으로 이미 연 노드 이름. 실전 1 그래프 노드(judge·compute 등)는 실시간 node span으로 열리므로
+        같은 이름의 단계 기록은 다시 만들지 않는다(T3-32에서 발견: judge가 두 번 찍힘). LLM 단계는 토큰 속성이 기록에만
+        있으므로 이름이 겹쳐도 남긴다.
 
         실전 1 HCX 호출은 LangChain 모델이 아니라서(urllib) on_chat_model_start가 불리지 않는다. 그래서 실전 1이 이미
         재 둔 단계 시간을 끝난 뒤에 옮긴다(T3-30). start_ms·duration_ms가 없는 기록(실전 2 trace 항목 등)은 건너뛴다.
@@ -240,6 +252,8 @@ class LiveSpans(BaseCallbackHandler):
                 self._llm_done(str(model), attributes.get("gen_ai.usage.input_tokens"),
                                attributes.get("gen_ai.usage.output_tokens"), float(step["duration_ms"]) / 1000,
                                attributes.get("error.type"))  # 메트릭은 span을 기록하지 않아도 남긴다
+            elif step.get("name") in live:
+                continue  # 같은 단계가 이미 실시간 node span으로 있다
             if started is None:
                 continue
             begin = started + int(float(step["start_ms"]) * 1e6)

@@ -112,7 +112,7 @@ L1 프리셋(`retrieval.STAGED`): `hybrid` · `hybrid+cond` · `staged` · `clov
 
 - run 폴더: `report.html`(맨 위 읽는 법 → 결과 → 실패 단계·trace → 운영 지표·추이 → 행별 결과), `report.md`, `results.jsonl`(질문 원문 포함, git에 안 올림), `manifest.json`(조건·해시), `ops.json`.
 - 운영 지표: 지연 p50·p95, 입력·출력 토큰, 비용(`evals/pricing.json` 단가), 실패율. 실행 간 추이는 `ops_history.jsonl`(집계만, 커밋함).
-- trace: l1(그래프)·l3·e2e는 문항별 span 경로, agent는 턴별 span 워터폴. `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317`과 `docker compose --profile obs up -d jaeger`면 Jaeger 링크가 생긴다(아래 "Jaeger로 보기").
+- trace: l1·l3·e2e는 문항별 span 경로 + **trace 카드**(span 이름별 횟수·지연 p50·p95·비중 표, 문항별 워터폴 60건까지·문제 문항 먼저, T3-32), agent는 턴별 span 워터폴. `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317`과 `docker compose --profile obs up -d jaeger`면 Jaeger 링크가 생긴다(아래 "Jaeger로 보기").
 - 스위트: `suite.html`의 비교 표에서 차이(이번 − 기준)를 본다. "무엇을 바꿔서 몇 → 몇"은 이 표에서 뽑는다.
 
 ### 0.7 코드를 고친 뒤 결과가 같은지 확인하기 (패리티)

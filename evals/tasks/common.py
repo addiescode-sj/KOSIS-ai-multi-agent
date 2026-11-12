@@ -12,7 +12,7 @@ from evals.schemas import ROOT, CalcItem, load_jsonl
 
 MOCK_NOTE = " · **llm mock: 경로 확인용, 점수 아님** (모델 대신 코드 템플릿이 답함)"
 OPS_FIELDS = ("latency_ms", "llm_calls", "input_tokens", "output_tokens", "model", "failed", "retried")
-TRACE_FIELDS = ("spans", "retrieve_ms", "search_spans", "trace_id", "span_id")
+TRACE_FIELDS = ("spans", "retrieve_ms", "search_spans", "trace_id", "span_id", "trace_spans")
 
 
 def load_sigungu() -> dict[str, list[str]]:
