@@ -2,6 +2,7 @@
 
 실전 2부터 쓰는 평가 모듈이다. 계층마다 골든셋과 채점기를 따로 두고, 채점은 LLM 없이 코드가 한다.
 여기서는 **실패한 문항이 어느 단계에서 왜 실패했는지**(T2-15, `trace.py`)를 읽고 고치는 방법을 정리한다.
+서비스·에이전트 trace와 토큰·종료 이유 메트릭(T3-30·T3-31)을 읽는 법은 §8.
 설계 배경과 옵션 비교는 [plans/T2-15.md](../plans/T2-15.md)에 있다.
 
 ## 0. 테스트 방법 — 준비부터 종단 간까지 (T3-21)
@@ -367,7 +368,7 @@ uv run python -m evals.run_eval --layer agent --stage <이름> --split dev --age
   한 턴에 여러 요청("찾아서, 계산해서, 그려줘")은 `tools`에 여러 개를 적고, "이거"·"그 표"는 다음 턴의 `table_key`로 채점된다.
   `summarize_stat`의 인자는 `question`·`table_key`와 조건 4개(`period_start`·`period_end`·`regions`·`dimensions`)다. 조건 이름은 L2 라벨(`QueryItem`)·실전 2 `ParsedQuery`와 같으므로, 시나리오 `args`에는 L2 라벨 값을 그대로 적으면 된다. 지금 워크플로 그래프는 실전 2 `parse_query`로 조건을 채운다(`src/kosis_agent/graph/main_graph.py`).
 - 실행 기록: 턴마다 그래프를 `thread_id = <sid>#<run>`으로 `invoke`하고, 실행 중 열린 OTel span(`kosis_agent.observability.tracing.LiveSpans`)에서 툴 이름·인자·결과·지연·LLM 호출·토큰을 읽는다.
-  span 이름·속성은 OTel GenAI 규약 그대로다: `invoke_agent`(`gen_ai.conversation.id`, `kosis.turn.index`) · `execute_tool <name>`(`gen_ai.tool.name`, `gen_ai.tool.call.arguments`·`.result`) · `chat <model>`(`gen_ai.request.model`, `gen_ai.usage.input_tokens`·`output_tokens`).
+  span 이름·속성은 OTel GenAI 규약 그대로다: `invoke_agent`(`gen_ai.conversation.id`, `kosis.turn.index`, 턴 종료 이유 `kosis.outcome` 등) · `execute_tool <name>`(`gen_ai.tool.name`, `gen_ai.tool.call.arguments`·`.result`) · LLM 호출(`gen_ai.operation.name=chat`, `gen_ai.request.model`, `gen_ai.usage.input_tokens`·`output_tokens`). 읽는 법은 §8.
   `OTEL_EXPORTER_OTLP_ENDPOINT`가 있으면 같은 span이 Jaeger로 가고, 채점 뒤 `eval.scenario` span이 턴 root span들에 링크로 판정(`kosis.verdict`, `kosis.failure.turn`)을 붙인다.
 
 | 지표 | 정의 | 채점 |
@@ -388,7 +389,7 @@ uv run python -m evals.run_eval --layer agent --stage <이름> --split dev --age
 턴 오류: `run_failure` 실행 실패 · `missing_call` · `extra_call` · `wrong_order` · `wrong_args` · `lost_state`(지시어·조건 이월 실패 포함) · `missed_refusal` · `false_refusal`
 (거절 = 검색 `route` `refuse` 또는 `summarize_stat` `outcome` `refused`, 또는 툴을 하나도 안 부름) · `wrong_numbers` · `unsupported_final_number`. 예외가 난 실행은 거기서 멈추고 남은 턴은 `run_failure`다.
 
-- 지금 한계: 실전 1 `summarize_stat` 안의 LLM 호출은 LangChain 콜백 밖이라 토큰에 잡히지 않는다(툴 span 지연에는 포함). `summarize_stat` 툴(T3-01)이 실전 1 span·토큰을 결과에 담으면 그때 툴 span 아래 재생을 붙인다(KOS-115).
+- LLM 호출·토큰 (T3-31부터): 해석기·멀티쿼리(LangChain), 실전 1 HCX 단계, 실전 2 rerank2를 모두 센다(§8.3). T3-31 이전 agent run은 해석기 호출만 세었으므로 `ops_history.jsonl`에서 그 전후의 토큰·비용을 비교하지 않는다.
 - 테스트: `tests/test_evals_agent.py` (oracle 1.000, 빠진·불필요 호출, 인자 불일치, 멀티턴 중간 실패와 pass^k, 거절, L3 연결·근거 없는 숫자, 실제 LangGraph 그래프 → span → 기록 왕복).
 
 ## 7. 규칙을 바꿀 때
@@ -403,3 +404,101 @@ uv run python -m evals.run_eval --layer agent --stage <이름> --split dev --age
 - 오류 유형: `evaluators/calculation.py`의 `grade()`·`fact_errors()`. 새 오류를 만들면 `ERROR_INFO`와 이 문서 4절에 설명을 추가한다.
 - 테스트: `tests/test_evals_trace.py`에 규칙마다 합성 행이 하나씩 있다. 규칙을 바꾸면 해당 케이스를 고치거나 추가한다.
 - `unknown`이 생기면 그 문항의 `errors`와 `spans`(results.jsonl)를 보고, 맞는 규칙을 넣거나 기존 규칙의 조건을 넓힌다.
+
+## 8. 계측 읽는 법 — trace·메트릭 (T3-30 · T3-31, KOS-114 · KOS-115)
+
+채점(§3~6)은 "맞았나"를, 계측은 "어디서 얼마나 걸리고 얼마 들었고 왜 끝났나"를 본다. 숫자 판정은 언제나 채점기가 하고, trace는 원인을 찾는 데 쓴다.
+
+### 8.1 trace가 어디서 오나 — 서비스 이름 셋
+
+| Jaeger 서비스 | 누가 만드나 | 단위 | 시각 |
+|---|---|---|---|
+| `kosis-agent` | API 서버(`backend/app/telemetry.py`). `/chat`·`/chat/stream`·`/tools/*` 요청마다 | 요청 1건 = trace 1개, 응답의 `trace_id`로 찾음 | 실시간 |
+| `kosis-agent-evals` | `--layer agent` (`evals/runners/agent.py`) | 턴 1개 = trace 1개, 채점 뒤 `eval.scenario` span이 링크로 판정을 붙임 | 실시간 |
+| `kosis-evals` | `l3`·`e2e` (`evals/trace.py`) | 문항 1개 = trace 1개 | 끝난 뒤 재생 (길이·순서만 실제, §1 "Jaeger로 보기") |
+
+서비스와 agent 평가는 같은 콜백(`kosis_agent.observability.tracing.LiveSpans`)을 쓰지만 provider가 따로라 서로 섞이지 않는다. 그래서 같은 질문이면 두 trace의 모양이 같다.
+`l0`·`l1`·`l2`·`ablation`은 trace를 남기지 않는다(l1-graph는 리포트 안 span 경로만).
+
+### 8.2 에이전트 trace 한 턴의 모양
+
+```
+invoke_agent                       gen_ai.conversation.id (= thread_id), kosis.turn.index
+│                                  kosis.outcome, kosis.no_answer_reason, error.type   ← 이 턴이 어떻게 끝났나
+├─ context / search / statistics / chart / finalize      ← 그래프 노드 (이름 = LangGraph 노드 이름)
+│  └─ chat <model>                 해석기·멀티쿼리 LLM (LangChain). gen_ai.response.finish_reasons
+├─ execute_tool search_tables      gen_ai.tool.call.arguments / .result (SearchOutput JSON)
+│  └─ chat <stage2 모델>           실전 2 rerank2 (CLOVA reranker / HCX 직접 호출). llm.attempts = stage2_calls
+└─ execute_tool summarize_stat     gen_ai.tool.call.result (StatAnswer JSON)
+   ├─ analyze.llm_plan …           실전 1 LLM 단계 (gen_ai.operation.name=chat, 이름은 실전 1 단계 이름)
+   ├─ compute                      LLM 아님 (pandas)
+   └─ compose / verify …
+```
+
+- 노드 span은 툴 span의 부모가 아니라 형제처럼 보일 수 있다. 부모는 "span을 가진 가장 가까운 상위 실행"이라서, 아키텍처가 중간에 무엇을 끼워도 트리가 깨지지 않게 했다.
+- 실전 1 단계와 rerank2 span은 툴이 끝난 뒤 툴 결과의 기록으로 만든다(실전 1·2는 urllib로 LLM을 불러 LangChain 콜백이 오지 않음). 길이는 실제 값이다. 시작 시각은 실전 1은 실제 오프셋이고, rerank2는 "툴 끝 − 뒤 노드(gate) 시간"에서 거꾸로 잡은 근사다(ms 단위).
+- span 상태 `error`가 곧 턴 실패는 아니다(§2와 같음). 실전 1 형식 재시도, rerank2 실패 후 1차 순서로 답함(`degraded`)은 정상 흐름이다. 턴의 결과는 루트의 `kosis.outcome`으로 본다.
+
+### 8.3 LLM 호출·토큰을 세는 규칙
+
+LLM 호출 = `gen_ai.operation.name == "chat"`인 span 하나. agent 리포트의 `llm_calls`·토큰·비용은 이 span들의 합이다.
+
+| 경로 | 호출 1회 | 토큰 출처 | 모를 때 |
+|---|---|---|---|
+| 해석기·멀티쿼리 | LangChain chat model 호출 1회 | 응답 `usage_metadata` (없으면 `llm_output.token_usage`) | 0 |
+| 실전 1 HCX | 실전 1 LLM 단계 1개 (`analyze.llm_plan_retry` 같은 형식 재시도도 각각 1회) | 단계 속성 `gen_ai.usage.*` (HCX `promptTokens`·`completionTokens`) | 속성 없음 |
+| 실전 2 rerank2 | rerank2 1회 | `SearchOutput.spans`의 `stage2_input_tokens`·`stage2_output_tokens` | 속성 없음 (CLOVA reranker는 usage를 안 줄 수 있음) |
+
+- HTTP 재시도(429·5xx)는 호출 수에 넣지 않고 `llm.attempts` 속성으로만 남긴다. 그래서 `llm_calls`는 "논리 호출 수"다.
+- **모든 계층이 같은 규칙으로 센다** (T3-31에서 맞춤). 같은 질문이면 계층이 달라도 같은 호출은 같은 수로 잡힌다.
+  - `l1`(stage 2 프리셋): LangChain 호출 + rerank2 1회. rerank2 HTTP 재시도는 `retried`로만 남는다.
+  - `l3`: 실전 1 LLM 클라이언트를 감싼 `UsageClient`(`evals/ops.py`)가 `generate` 호출마다 1회(HCX HTTP 재시도는 `generate` 안이라 세지 않음).
+  - `e2e`: l3와 같은 실전 1 + 검색의 rerank2 1회·토큰.
+  - `agent`: 위 표. 해석기 + 실전 1 + rerank2.
+  - rerank2 규칙은 한 곳(`evals.ops.stage2_usage`)에 있고 agent 계층(`LiveSpans._stage2_span`)과 같은 값을 읽는다.
+  - 비교 기준이 끊기는 run: T3-31 이전의 `l1` stage 2 run(재시도가 있으면 `llm_calls`가 HTTP 시도 수였음), `e2e` stage 2 run(rerank2 토큰이 빠져 있었음), `agent` run(해석기만 셈). 이 run들과 `ops_history.jsonl`에서 호출 수·토큰·비용을 비교하지 않는다.
+- agent 리포트 첫머리의 **"토큰 대조 (span 합 / 메트릭 합)"** 줄이 `불일치`면 계측 버그다. 둘은 같은 콜백에서 나오므로 항상 같아야 한다.
+
+### 8.4 턴이 어떻게 끝났나 — 종료 이유
+
+에이전트는 결정적 워크플로라서 턴이 끝나는 이유를 LLM이 아니라 `finalize` 코드가 정한다. 그 결과를 루트 span `invoke_agent`에 남긴다.
+
+| `kosis.outcome` | 뜻 | 함께 보는 속성 |
+|---|---|---|
+| `answered` | 실전 1이 숫자를 검증해 답함 | — |
+| `refused` | 자료 없음으로 거절 (검색 gate 또는 실전 1) | `kosis.no_answer_reason` (예: `out_of_scope`, 기간·주기 불일치 사유) |
+| `clarify` | 되물음 | `kosis.no_answer_reason` |
+| `failed` | 검색은 찾았는데 넘길 표가 없음 등 코드 경로의 실패 | `kosis.no_answer_reason` |
+| `error` | 그래프가 예외로 멈춤 (Chroma 연결, 키 없음 등) | `error.type` (예외 클래스 이름), 루트 span 상태 ERROR·exception 이벤트 |
+
+- `kosis.no_answer_reason`은 API 응답 `ChatResult.no_answer_reason`과 같은 값이다. 사용자 제보의 `trace_id`로 찾은 trace와 화면 답의 사유가 일치한다.
+- Jaeger 검색: Tags에 `kosis.outcome=error` 또는 `kosis.no_answer_reason=out_of_scope`를 넣으면 그런 턴만 모인다.
+- `gen_ai.response.finish_reasons`는 턴이 아니라 **LLM 응답 한 번**의 종료 이유다(`stop`, `length`, `content_filter` …). LangChain 모델 응답에 있을 때만 chat span에 붙는다. `length`가 보이면 해석기 JSON이 잘린 것이다.
+  실전 1·rerank2는 기록에 종료 이유가 없어서 지어내지 않고, 실패만 `error.type`으로 남긴다(실전 1은 `llm.status`: `timeout`·`format_error`·`api_error`·`input_too_long`, rerank2는 예외 이름).
+
+### 8.5 메트릭 (OTel meter)
+
+| 메트릭 | 종류 | 속성 | 읽는 법 |
+|---|---|---|---|
+| `gen_ai.client.token.usage` | Histogram, `{token}` | `gen_ai.operation.name`, `gen_ai.request.model`, `gen_ai.token.type`(input·output) | 모델별 토큰 합 = 비용. `evals/pricing.json` 단가를 곱한다 |
+| `gen_ai.client.operation.duration` | Histogram, `s` | 위 + 실패면 `error.type` | 모델별 LLM 지연 p50·p95, 실패율 |
+| `kosis.agent.turns` | Counter, `{turn}` | `kosis.outcome`, `kosis.no_answer_reason`, `error.type` | 거절·실패·예외 비율. 예외 종류별 건수 |
+
+- 서비스: Jaeger는 메트릭을 받지 않는다. `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT`(OTel Collector나 Prometheus OTLP 수신기)를 둘 때만 내보내고, 없으면 계측은 no-op이다.
+- 평가: agent 실행은 메트릭을 메모리에만 모아 8.3의 토큰 대조에 쓴다.
+- 토큰·비용의 기준 숫자는 계속 run 폴더의 `ops.json`과 `ops_history.jsonl`이다. 메트릭은 서비스 운영(실사용 트래픽) 쪽 집계용이다.
+
+### 8.6 문제별로 어디를 보나
+
+| 궁금한 것 | 먼저 볼 곳 | 다음 |
+|---|---|---|
+| 이 답이 왜 틀렸나 | 리포트 실패 턴 표의 오류(§6) | 그 턴 trace에서 `execute_tool`의 arguments·result |
+| 왜 거절했나 | 루트 `kosis.no_answer_reason` | `search_tables` result의 `route`·`refusal_reason`, 또는 `summarize_stat`의 `refusal` |
+| 왜 느린가 | 리포트 span 워터폴 / Jaeger 타임라인 | 가장 긴 노드 → 그 아래 `chat` span의 길이와 `llm.attempts`(재시도 대기) |
+| 왜 비싼가 | `ops.json` 토큰·비용 | 모델별 `gen_ai.client.token.usage`, 턴당 chat span 수 |
+| 예외가 얼마나 나나 | `kosis.agent.turns{kosis.outcome=error}` | `error.type`별 건수 → Jaeger에서 `kosis.outcome=error` trace의 exception 이벤트 |
+| 해석기 출력이 잘리나 | chat span `gen_ai.response.finish_reasons=length` | `INTERPRETER_MODEL`·max tokens |
+| rerank2가 실패했나 | `chat <stage2 모델>` span 상태·`error.type` | `ChatResult.degraded=true`면 1차 순서로 답한 것 |
+
+- 테스트: `tests/test_llm_metrics.py`(세 LLM 경로의 chat span, 메트릭 합 = 원본 usage, 종료 이유·예외), `tests/test_api.py`(서비스 trace, 평가 provider와 분리).
+

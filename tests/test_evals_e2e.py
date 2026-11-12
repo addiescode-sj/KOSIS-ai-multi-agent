@@ -112,3 +112,27 @@ def test_golden_sources_prefer_split_files(tmp_path):
         (tmp_path / name).write_text("", encoding="utf-8")
     assert [f.name for f in sources(tmp_path)] == ["stat_golden.jsonl", "stat_golden_edge.jsonl"]
     assert sources(tmp_path / "golden.jsonl") == [tmp_path / "golden.jsonl"]
+
+
+class Reranked(BaseRetriever):
+    """A retriever whose stage 2 ran: two HTTP attempts, usage on the top document (as phase 2 rerank2 records it)."""
+
+    meta: dict
+
+    def _get_relevant_documents(self, query: str, *, run_manager) -> list[Document]:
+        return [Document(page_content="", metadata={"key": "101_DT_GOLD", **self.meta})]
+
+
+def test_rerank2_is_one_llm_call_in_l1_and_e2e_like_the_agent_layer(monkeypatch):
+    """T3-31: the same rerank2 record counts the same in every layer (one logical call, HTTP attempts only retry)."""
+    from evals.runners import retrieval
+
+    stub_pipeline(monkeypatch, [])
+    meta = {"stage2": "clova", "stage2_calls": 2, "stage2_input_tokens": 900, "stage2_output_tokens": 40}
+    l1 = retrieval.run(Reranked(meta=meta), [RetrievalItem(qid="r1", split="test", qtype="exact_name", source="v2",
+                                                         question="q", required=[["101_DT_GOLD"]])], k=10)[0]
+    assert (l1["llm_calls"], l1["input_tokens"], l1["output_tokens"], l1["retried"]) == (1, 900, 40, True)
+    [row] = e2e.run(Reranked(meta=meta), [item()], k=10)  # + the stub phase 1 call: 1 call, 10 / 2 tokens
+    assert (row["llm_calls"], row["input_tokens"], row["output_tokens"], row["retried"]) == (2, 910, 42, True)
+    [plain] = e2e.run(Fixed(keys=["101_DT_GOLD"]), [item()], k=10)  # no stage 2: phase 1 only, as before
+    assert (plain["llm_calls"], plain["input_tokens"], plain["retried"]) == (1, 10, False)

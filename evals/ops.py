@@ -31,6 +31,19 @@ def tokens_of(usage: dict | None) -> tuple[int, int]:
     return (pick("promptTokens", "input_tokens", "prompt_tokens"), pick("completionTokens", "output_tokens", "completion_tokens"))
 
 
+def stage2_usage(meta: dict | None) -> tuple[int, int, int, bool]:
+    """(calls, input, output, retried) of the phase 2 rerank2 call recorded on the top document's metadata.
+
+    Same rule as the agent layer (kosis_agent.observability.tracing, T3-31): one rerank2 run is one logical LLM call;
+    stage2_calls counts HTTP attempts (429/5xx retries), so it only sets `retried`. Unknown tokens (CLOVA reranker
+    may give no usage) count as 0.
+    """
+    meta = meta or {}
+    attempts = int(meta.get("stage2_calls") or 0)
+    return (1 if attempts else 0, int(meta.get("stage2_input_tokens") or 0), int(meta.get("stage2_output_tokens") or 0),
+            attempts > 1)
+
+
 class UsageCallback(BaseCallbackHandler):
     """Counts LLM calls and tokens made inside one retriever.invoke."""
 

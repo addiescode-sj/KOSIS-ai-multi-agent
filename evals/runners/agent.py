@@ -6,6 +6,9 @@ carries the conversation. kosis_agent.observability.tracing.LiveSpans opens the 
 args, results, latency, LLM calls, tokens) is read back from those spans, the same ones Jaeger receives when
 OTEL_EXPORTER_OTLP_ENDPOINT is set. After grading, link_verdicts adds one `eval.scenario` span per run that links
 to the turns' root spans and carries the verdict (KOS-114: tie live traces to scores known only afterwards).
+LLM calls (T3-31) are the spans with gen_ai.operation.name == "chat": LangChain chat models, phase 1 HCX steps and the
+phase 2 rerank2 call. The same callback records gen_ai.client.token.usage; metering() + metric_tokens() read it back
+so a run can check the metric totals against the span totals.
 """
 
 from __future__ import annotations
@@ -15,13 +18,15 @@ import json
 import os
 from typing import Any
 
+from opentelemetry.sdk.metrics import MeterProvider
+from opentelemetry.sdk.metrics.export import InMemoryMetricReader
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import ReadableSpan, TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor, SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from opentelemetry.trace import Link, SpanContext, StatusCode, TraceFlags
 
-from kosis_agent.observability.tracing import CHAT_PREFIX, ROOT_SPAN, TOOL_PREFIX, agent_turn
+from kosis_agent.observability.tracing import CHAT, ROOT_SPAN, TOOL_PREFIX, agent_turn
 
 from evals.schemas import AgentScenario
 
@@ -46,6 +51,32 @@ def tracing() -> tuple[TracerProvider, InMemorySpanExporter]:
     return provider, memory
 
 
+def metering() -> tuple[MeterProvider, InMemoryMetricReader]:
+    """A meter provider of its own (no global state) whose metrics stay in memory."""
+    reader = InMemoryMetricReader()
+    return MeterProvider(resource=Resource.create({"service.name": SERVICE}), metric_readers=[reader]), reader
+
+
+def metric_tokens(reader: InMemoryMetricReader) -> dict[str, int]:
+    """{"input": n, "output": n}: the gen_ai.client.token.usage histogram sums so far (cumulative)."""
+    out = {"input": 0, "output": 0}
+    data = reader.get_metrics_data()
+    for rm in data.resource_metrics if data else []:
+        for sm in rm.scope_metrics:
+            for metric in sm.metrics:
+                if metric.name != "gen_ai.client.token.usage":
+                    continue
+                for point in metric.data.data_points:
+                    kind = point.attributes.get("gen_ai.token.type")
+                    if kind in out:
+                        out[kind] += int(point.sum)
+    return out
+
+
+def _is_llm(span: ReadableSpan) -> bool:
+    return (span.attributes or {}).get("gen_ai.operation.name") == CHAT
+
+
 def _loads(text: Any) -> Any:
     if not isinstance(text, str):
         return text
@@ -60,7 +91,7 @@ def turn_record(spans: list[ReadableSpan], answer: str, error: str | None) -> di
     root = next(s for s in spans if s.name == ROOT_SPAN)
     mine = [s for s in spans if s.context.trace_id == root.context.trace_id]
     tools = sorted((s for s in mine if s.name.startswith(TOOL_PREFIX)), key=lambda s: s.start_time)
-    chats = [s for s in mine if s.name.startswith(CHAT_PREFIX)]
+    chats = [s for s in mine if _is_llm(s)]
     models = sorted({s.attributes.get("gen_ai.request.model") for s in chats} - {None})
     return {
         "calls": [{"name": s.attributes.get("gen_ai.tool.name"),
@@ -89,9 +120,9 @@ def span_rows(root: ReadableSpan, spans: list[ReadableSpan]) -> list[dict]:
             n += 1
         return n
 
-    kind = lambda name: ("turn" if name == ROOT_SPAN else "tool" if name.startswith(TOOL_PREFIX)  # noqa: E731
-                         else "llm" if name.startswith(CHAT_PREFIX) else "node")
-    return [{"name": s.name, "kind": kind(s.name), "start_ms": (s.start_time - root.start_time) / 1e6,
+    kind = lambda s: ("turn" if s.name == ROOT_SPAN else "tool" if s.name.startswith(TOOL_PREFIX)  # noqa: E731
+                      else "llm" if _is_llm(s) else "node")
+    return [{"name": s.name, "kind": kind(s), "start_ms": (s.start_time - root.start_time) / 1e6,
              "duration_ms": (s.end_time - s.start_time) / 1e6, "depth": depth(s.context.span_id),
              "status": "error" if s.status.status_code == StatusCode.ERROR else "ok"}
             for s in sorted(spans, key=lambda s: s.start_time)]
@@ -103,10 +134,12 @@ def _answer(state: Any) -> str:
 
 
 def run(graph, scenarios: list[AgentScenario], repeat: int = 1,
-        telemetry: tuple[TracerProvider, InMemorySpanExporter] | None = None) -> dict[tuple[str, int], list[dict]]:
+        telemetry: tuple[TracerProvider, InMemorySpanExporter] | None = None,
+        meters: MeterProvider | None = None) -> dict[tuple[str, int], list[dict]]:
     """{(sid, run): turn records in order}. An exception ends that run (later turns are graded as not run)."""
     provider, memory = telemetry or tracing()
     tracer = provider.get_tracer("kosis-agent")
+    meter = meters.get_meter("kosis-agent") if meters is not None else None
     out: dict[tuple[str, int], list[dict]] = {}
     for scenario in scenarios:
         for r in range(repeat):
@@ -115,7 +148,7 @@ def run(graph, scenarios: list[AgentScenario], repeat: int = 1,
             for i, turn in enumerate(scenario.turns):
                 memory.clear()
                 answer, error = "", None
-                with agent_turn(tracer, thread, i) as (root, spans):
+                with agent_turn(tracer, thread, i, meter) as (root, spans):
                     try:
                         state = graph.invoke({"messages": [("user", turn.question)]},
                                              config={"configurable": {"thread_id": thread}, "callbacks": [spans]})

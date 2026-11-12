@@ -23,7 +23,7 @@ OFFICIAL = {name: name for name in SIDO_ORDER} | {alias: name for name, aliases 
 
 def run(retriever: BaseRetriever, items: list[CalcItem], k: int, interval: float = 0.0, llm: str = "hcx") -> list[dict]:
     """Rows shaped like the L3 runner's, plus the ranked keys and the table used; failures are recorded, not raised."""
-    from evals.ops import usage_client
+    from evals.ops import stage2_usage, usage_client
     from evals.trace import NodeSpans, summarize  # loads the pipeline: offline commands never import it
 
     client = usage_client(llm=llm)
@@ -34,10 +34,12 @@ def run(retriever: BaseRetriever, items: list[CalcItem], k: int, interval: float
         client.reset()
         started = time.perf_counter()
         keys: list[str] = []
+        top: dict = {}  # the top document's metadata: phase 2 rerank2 usage (stage2_*), when stage 2 ran
         answer, spans, error, retrieve_ms = None, [], None, 0.0
         nodes = NodeSpans()  # graph search nodes (T2-36), kept apart from the Phase 1 spans
         try:
-            keys = [d.metadata["key"] for d in retriever.invoke(item.question, config={"callbacks": [nodes]})[:k]]
+            docs = retriever.invoke(item.question, config={"callbacks": [nodes]})[:k]
+            keys, top = [d.metadata["key"] for d in docs], (docs[0].metadata if docs else {})
             retrieve_ms = (time.perf_counter() - started) * 1000
             if keys:
                 answer, spans, error = summarize(item.question, keys[0], client, interval)
@@ -45,13 +47,15 @@ def run(retriever: BaseRetriever, items: list[CalcItem], k: int, interval: float
                 error = "no table retrieved"
         except Exception as exc:  # a failing question is recorded, the run goes on
             error = f"{type(exc).__name__}: {exc}"
+        s2 = stage2_usage(top)
         rows.append({"qid": item.qid, "answer": answer, "error": error, "keys": keys, "spans": spans, "retrieve_ms": retrieve_ms,
                      "search_spans": nodes.spans,
                      "used_table": keys[0] if keys else None,
                      "latency_ms": (time.perf_counter() - started) * 1000,
-                     "llm_calls": client.calls, "input_tokens": client.input_tokens,
-                     "output_tokens": client.output_tokens, "model": client.model,
-                     "failed": error is not None, "retried": client.failures > 0})
+                     # phase 1 calls (UsageClient) + the search's rerank2 call, counted like the agent layer (T3-31)
+                     "llm_calls": client.calls + s2[0], "input_tokens": client.input_tokens + s2[1],
+                     "output_tokens": client.output_tokens + s2[2], "model": client.model,
+                     "failed": error is not None, "retried": client.failures > 0 or s2[3]})
     return rows
 
 

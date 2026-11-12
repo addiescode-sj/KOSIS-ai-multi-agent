@@ -55,7 +55,7 @@ def run(args) -> tuple[list[dict], dict, str]:
         raise SystemExit(f"calc_qid not in {[str(p) for p in args.calc_golden]}: {sorted(missing)[:5]}")
     cache: dict[str, dict] = {}
     cells_of = lambda key: cache.setdefault(key, calculation.read_cells(ROOT / "data" / "values" / f"{key}.parquet"))  # noqa: E731
-    telemetry = None
+    telemetry = metric_reader = None
     if args.oracle:
         records = {(s.sid, 0): grader.oracle_records(s, calc) for s in scenarios}
         source = "oracle (정답 호출을 그대로 낸 기록, 자기검증: 모든 비율 1.000이어야 함)"
@@ -68,7 +68,8 @@ def run(args) -> tuple[list[dict], dict, str]:
         source = f"과거 실행 재채점 {args.from_run}"
     elif args.agent:
         telemetry = runner.tracing()
-        records = runner.run(runner.load_graph(args.agent), scenarios, args.repeat, telemetry)
+        meters, metric_reader = runner.metering()
+        records = runner.run(runner.load_graph(args.agent), scenarios, args.repeat, telemetry, meters)
         source = f"`{args.agent}` 실행 ×{args.repeat} (턴 기록 = 실행 중 OTel span)"
     else:
         raise SystemExit("--layer agent needs --oracle, --from-run <run folder> or --agent module:function")
@@ -81,6 +82,13 @@ def run(args) -> tuple[list[dict], dict, str]:
     if telemetry:
         runner.link_verdicts(telemetry[0], rows)
     s = grader.aggregate(rows)
+    tokens_note = []
+    if metric_reader is not None:  # T3-31: the token metric must equal the span totals the ops read
+        m = runner.metric_tokens(metric_reader)
+        span_in = sum(r.get("input_tokens", 0) for recs in records.values() for r in recs)
+        span_out = sum(r.get("output_tokens", 0) for recs in records.values() for r in recs)
+        tokens_note = [f"- 토큰 대조 (span 합 / 메트릭 gen_ai.client.token.usage 합): 입력 {span_in} / {m['input']}, "
+                       f"출력 {span_out} / {m['output']} → {'일치' if (span_in, span_out) == (m['input'], m['output']) else '불일치'}", ""]
     fmt = lambda v: "—" if v is None else f"{v:.3f}"  # noqa: E731
     count = lambda d: ", ".join(f"{k} {v}" for k, v in sorted(d.items())) or "0"  # noqa: E731
     failed = [r for r in rows if not r["passed"]]
@@ -88,6 +96,7 @@ def run(args) -> tuple[list[dict], dict, str]:
         f"# Agent (multi-turn · multi-query) — {args.stage}", "",
         f"- 기록: {source} · 시나리오 `{' + '.join(os.path.relpath(p.resolve(), ROOT) for p in paths(args.scenarios))}` split `{args.split}` · "
         f"시나리오 {s['n_scenarios']}, 대화 {s['n_conversations']}, 턴 {s['n_turns']}", "",
+        *tokens_note,
         "| 지표 | 값 |", "| --- | --- |",
         f"| 대화 성공률 (모든 턴 통과) | {fmt(s['conversation_success'])} |",
         f"| pass^{s['repeats']} (반복 실행 모두 성공한 시나리오) | {fmt(s['pass^k'])} |",

@@ -198,7 +198,7 @@ def _run_tool(tracer: Tracer, name: str, tools: dict[str, BaseTool], args: dict)
     """One tool call as its own trace: `POST /tools/<name>` root, `execute_tool <name>` under it (the callback)."""
     root = tracer.start_span(f"POST /tools/{name}", attributes={"http.route": f"/tools/{name}"})
     try:
-        return call_tool(tools[name], args, {"callbacks": [LiveSpans(tracer, root)]}).artifact
+        return call_tool(tools[name], args, {"callbacks": [LiveSpans(tracer, root, telemetry.get_meter())]}).artifact
     except Exception as e:
         _fail(root, e)
         raise
@@ -227,7 +227,7 @@ def chat_stream(req: ChatRequest, graph=Depends(get_graph),
 
     실행 중 예외는 `error` (`{type, detail}`)로 끝난다(상태 줄은 이미 200으로 나감)."""
     thread = req.thread_id or uuid.uuid4().hex  # no thread_id: a new conversation
-    root, spans = start_turn(tracer, thread, _turn_index(graph, thread))
+    root, spans = start_turn(tracer, thread, _turn_index(graph, thread), telemetry.get_meter())
     final: dict = {}
     try:
         yield ServerSentEvent(event="meta", data={"thread_id": thread, "trace_id": trace_id(root)})
@@ -255,7 +255,7 @@ def chat_stream(req: ChatRequest, graph=Depends(get_graph),
 def chat(req: ChatRequest, graph=Depends(get_graph), tracer: Tracer = Depends(telemetry.get_tracer)) -> ChatResponse:
     """`/chat/stream`과 같은 그래프·같은 답. 스트림 없이 끝난 뒤 `ChatResult`를 돌려준다."""
     thread = req.thread_id or uuid.uuid4().hex
-    root, spans = start_turn(tracer, thread, _turn_index(graph, thread))
+    root, spans = start_turn(tracer, thread, _turn_index(graph, thread), telemetry.get_meter())
     try:
         state = graph.invoke({"messages": [("user", req.question)]},
                              {"configurable": {"thread_id": thread}, "callbacks": [spans]})

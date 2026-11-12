@@ -18,7 +18,7 @@ from kosis_rag.legacy.retrievers import BM25TableRetriever, ChromaTableRetriever
 from kosis_rag.schemas.catalog import TableRecord
 from kosis_rag.shared.catalog import to_document
 
-from evals.ops import UsageCallback
+from evals.ops import UsageCallback, stage2_usage
 from evals.schemas import TABLES, RetrievalItem
 from evals.trace import NodeSpans
 
@@ -138,6 +138,7 @@ def run(retriever: BaseRetriever, items: list[RetrievalItem], k: int) -> list[di
         except Exception as exc:  # a failing question is recorded, the run goes on
             docs, error = [], f"{type(exc).__name__}: {exc}"
         meta = docs[0].metadata if docs else {}
+        s2_calls, s2_in, s2_out, s2_retried = stage2_usage(meta)
         rows.append({
             "qid": item.qid, "split": item.split, "qtype": item.qtype, "answerable": item.answerable,
             "no_answer_reason": item.no_answer_reason,
@@ -146,13 +147,14 @@ def run(retriever: BaseRetriever, items: list[RetrievalItem], k: int) -> list[di
             "top_score": meta.get("stage2_input_top_score", meta.get("score")),
             **{f: meta.get(f) for f in STAGE2_FIELDS},
             "latency_ms": (time.perf_counter() - started) * 1000,
-            # stage 2 calls its API directly (no LangChain callback): add what it recorded on the documents
-            "llm_calls": counter.calls + (meta.get("stage2_calls") or 0),
-            "input_tokens": counter.input_tokens + (meta.get("stage2_input_tokens") or 0),
-            "output_tokens": counter.output_tokens + (meta.get("stage2_output_tokens") or 0),
+            # stage 2 calls its API directly (no LangChain callback): add what it recorded on the documents,
+            # one logical call per rerank2 run like the agent layer (T3-31; HTTP attempts only set `retried`)
+            "llm_calls": counter.calls + s2_calls,
+            "input_tokens": counter.input_tokens + s2_in,
+            "output_tokens": counter.output_tokens + s2_out,
             "model": ",".join(sorted(counter.models | ({meta["stage2"]} if meta.get("stage2_calls") else set()))) or None,
             "failed": error is not None,
-            "retried": False,  # retrievers here do not retry; a retrying one reports it through its own metadata
+            "retried": s2_retried,  # the stage 2 API retried (429/5xx); the retrievers themselves do not retry
             "error": error,
             "search_spans": nodes.spans,  # graph nodes (T2-36); empty for a retriever that is not a graph
         })
