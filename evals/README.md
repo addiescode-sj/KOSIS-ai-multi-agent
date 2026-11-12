@@ -351,7 +351,16 @@ STAT_PROVIDER=hcx uv run python -m evals.run_eval --layer agent --stage <이름>
   --calc-golden evals/datasets/calculation_golden.jsonl evals/datasets/calculation_golden_multiturn.jsonl
 ```
 
-`INTERPRETER`는 rules | hybrid | llm이다. 유형별 비율은 리포트에 따로 나오지 않으므로 `results.jsonl`의 `sid`(`MT-<유형>-<번호>`)로 나눠 본다.
+`INTERPRETER`는 rules | hybrid | llm이다. 유형(R·E·X…)별 비율은 `results.jsonl`의 `sid`(`MT-<유형>-<번호>`)로 나눠 본다.
+
+**평가 태스크별 성공률 (T3-29)**: `--scenarios`는 파일을 여러 개 받는다(sid 중복 금지). 멀티턴·멀티쿼리 파일을 한 실행에 넣으면
+리포트의 "평가 태스크" 표와 `summary.by_task`에 태스크마다(`multiturn` = `MT-*`, `multiquery` = `MQ-*`, 그 밖 `other`) 대화 성공률·턴 통과율·툴 선택·상태·
+최종 수치·합산·근거 없는 숫자 턴(답변 품질)이 따로 나온다. 파일 하나만 주면 표에 한 줄이다.
+
+```bash
+uv run python -m evals.run_eval --layer agent --stage <이름> --split dev --agent evals.runners.multiturn_dev:build \
+  --scenarios evals/datasets/agent_scenarios_multiturn_dev_structure.jsonl evals/datasets/agent_scenarios_multiquery_dev_structure.jsonl
+```
 
 - 시나리오: `evals/datasets/agent_scenarios.jsonl` (T3-05, `--scenarios`로 바꿈). 계약은 `evals/schemas.py`의 `AgentScenario`.
   턴마다 `expect`에 부를 툴(순서대로, 채점할 인자 필드만), 턴이 끝날 표(`table_key`), 거절 여부(`refuse`), L3 문항(`calc_qid`)을 적는다.
@@ -383,6 +392,12 @@ STAT_PROVIDER=hcx uv run python -m evals.run_eval --layer agent --stage <이름>
 - 테스트: `tests/test_evals_agent.py` (oracle 1.000, 빠진·불필요 호출, 인자 불일치, 멀티턴 중간 실패와 pass^k, 거절, L3 연결·근거 없는 숫자, 실제 LangGraph 그래프 → span → 기록 왕복).
 
 ## 7. 규칙을 바꿀 때
+
+- 코드 위치 (T3-29): `run_eval.py`는 CLI와 결과 폴더 기록만 한다. 계층마다 `evals/tasks/<계층>.py`가 `run(args) -> (rows, summary, report)`,
+  `owners()`(고칠 담당), `target()`(ops_history 대상)을 갖는다 — `l0_metadata` · `l1_retrieval` · `l2_query` · `ablation` · `l012` · `l3_calculation` · `l4_e2e` · `agent`, 공용 조각은 `common`.
+  새 계층은 파일 하나를 만들고 `run_eval.TASKS`에 한 줄 넣는다(헤드라인 지표는 `suite.metrics`, HTML 본문은 `report_html`).
+- 에이전트 채점기 `evaluators/agent/`: `tools.py`(툴 선택·순서·인자) · `state.py`(멀티턴 상태·거절) · `numbers.py`(L3 수치·멀티쿼리 하위 답·합산) ·
+  `answer.py`(답변 품질: 근거 없는 숫자). `__init__.py`의 `grade_turn`이 이 순서로 오류를 이어 붙이고 `aggregate`가 `by_task`를 더한다.
 
 - 판정 규칙: `trace.py`의 `blame()`. 단계를 추가하면 `STAGES`에도 넣는다. 리포트 표기와 판정 순서 표시가 여기서 나온다.
 - 오류 유형: `evaluators/calculation.py`의 `grade()`·`fact_errors()`. 새 오류를 만들면 `ERROR_INFO`와 이 문서 4절에 설명을 추가한다.

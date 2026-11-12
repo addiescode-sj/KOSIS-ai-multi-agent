@@ -55,7 +55,7 @@ src/kosis_agent/   에이전트 (docs/research/KOSIS-RAG-Retrieval-Agent-Archite
   services/        statistics.py(summarize_stat 툴 = 실전 1) · chart.py(ChartSpec → Vega-Lite, make_chart 툴) · parquet_repository.py(T3-17)
   observability/   tracing.py(노드·툴·LLM OTel span 콜백, 서비스·평가 공용)
   runtime.py       툴이 노드 안에서 돌 때의 규칙(stream writer, 안쪽 그래프 checkpointer 분리)
-evals/             계층별 평가 모듈 (실전 2에서 복사해 이어감, T3-00): datasets/(gitignored) · evaluators/ · runners/ · reports/. 에이전트 지표는 T3-06에서 여기에 추가
+evals/             계층별 평가 모듈 (실전 2에서 복사해 이어감, T3-00): tasks/(계층마다 실행·리포트, T3-29) · datasets/(gitignored) · evaluators/(agent/ = 툴·상태·수치·답변 품질) · runners/ · reports/. 에이전트 지표는 T3-06에서 여기에 추가
 frontend/          Next.js 16 (App Router) + TypeScript + Tailwind + shadcn/ui + Vercel AI SDK. 실전 2 UI에서 시작 (T3-11)
 vendor/phase1/     실전 1 submodule — kosis_ai(src/), kosis_chat/, eval/, configs/model.yaml. 직접 수정 금지
 vendor/phase2/     실전 2 submodule — kosis_rag(src/)만 import한다 (evals/는 이 레포 사본을 쓴다). 직접 수정 금지
