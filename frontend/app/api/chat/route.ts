@@ -28,6 +28,7 @@ export async function POST(request: Request) {
       let draft = "";
       for await (const { event, data } of parseSSE(res.body)) {
         const payload = JSON.parse(data);
+        if (event === "meta") continue; // {thread_id, trace_id} (T3-30); multi-turn wiring is T3-11
         if (event === "token") {
           draft += payload.delta;
           writer.write({ type: "data-draft", id: "draft", data: { text: draft } }); // same id: the part is updated
