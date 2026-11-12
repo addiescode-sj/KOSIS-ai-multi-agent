@@ -1,7 +1,7 @@
 # REST API 초안 (KOS-155)
 
-> 상태: **초안 · 팀 리뷰 대기** (2026-11-12)
-> 기준: Manyfast `KOSIS_통계프로젝트` v12 기능 명세, Linear 종합 프로젝트 11/08 결정, 코드 `04319f7`
+> 상태: **초안 · 팀 리뷰 대기** (2026-11-12, 11/12 팀 결정 반영)
+> 기준: Manyfast `KOSIS_통계프로젝트` v15 기능 명세, Linear 종합 프로젝트 11/08 결정, 11/12 기능 명세 협의, 코드 `04319f7`
 > 경로: Web (Next.js) → REST API (FastAPI) → AI 파이프라인(LangGraph) · PostgreSQL
 
 이 문서는 중반 이슈(KOS-159 AI 파이프라인 · KOS-160 FE · KOS-161 DB query · KOS-162 인프라)가 같은 계약을 보고 일하도록 엔드포인트와 요청·응답 형식을 정한다.
@@ -45,7 +45,7 @@
 | 1차 | `POST /chat/stream` **[현재 + 확장]** | 질문 → 진행·답 SSE | F-OMBGQM, F-JJWJTZ, F-ZTUGMI, F-GSBTLX, F-IKACRA |
 | 1차 | `POST /feedback` **[신규]** | 👍/👎 · 선택지 · 이유 저장 | F-RPMLSR, F-WFJGDJ |
 | 1차 | `GET /suggestions` **[신규]** | 추천 질문 카드 | F-VWIMTN |
-| 1차 | `GET /faq` **[신규]** | FAQ 목록 | F-RTZMZZ |
+| 1차 | `GET /faqs` **[신규]** | FAQ 목록 | F-RTZMZZ |
 | 1차 | `DELETE /threads/{thread_id}` **[신규]** | 비회원 대화 삭제(서버 상태) | F-EULYHK |
 | 1차 | `POST /events` **[신규]** | 화면 이벤트 로그 일괄 전송 | F-TTIAJU |
 | 1차 | `GET /admin/metrics` **[신규]** | 운영자 메트릭(팀 전용) | F-PVOWFN, F-CGNPEM 외 |
@@ -92,7 +92,7 @@ event: result      ← [현재] 마지막 1번 (정상 종료)
 event: error       ← [현재] 장애 종료 시 result 대신
 ```
 
-**[결정 필요]** 문장 토큰 스트리밍(`event: token`)은 지금 코드에 없다. 검증기를 통과한 문장만 보내야 하므로(PL-QYJPEQ) 토큰 단위로 흘리면 검증 전 숫자가 보일 수 있다. 제안: **1차는 `result`에서 문장을 한 번에 보내고, 진행 이벤트로 기다림을 메운다.**
+**[결정 필요 · 제안값 사용]** 문장 토큰 스트리밍(`event: token`)은 지금 코드에 없다. 검증기를 통과한 문장만 보내야 하므로(PL-QYJPEQ) 토큰 단위로 흘리면 검증 전 숫자가 보일 수 있다. 제안: **1차는 `result`에서 문장을 한 번에 보내고, 진행 이벤트로 기다림을 메운다.**
 
 #### `meta` [신규]
 
@@ -118,17 +118,24 @@ data: {"step": "search", "status": "done", "seconds": 3.2}
 | `retry` | 다시 연결하는 중 / 다시 찾는 중 (재검색·재연결, 일반 진행과 구분) |
 
 `status`: `running` | `done`. 첫 `progress`는 질문 후 2초 안에 보낸다(F-OMBGQM 표시 규칙).
+화면은 **단계 이름 목록 + 끝난 단계에 완료 체크**로 보여 준다(11/12 결정, F-JJWJTZ).
 
 #### `result` [현재 `ChatResult`]
 
-판정은 `outcome` 4종으로 나뉜다. FE는 이 값으로 답 카드 종류를 고른다.
+판정은 `outcome` 6종으로 나뉜다(11/12 결정: `partial`·`general` 추가). FE는 이 값으로 답 카드 종류를 고른다.
 
-| `outcome` | 화면 | 숫자 | 피드백 |
-| -- | -- | -- | -- |
-| `answered` | 숫자 답 카드(문장 + 차트 + 출처) | 있음 | 받음 |
-| `refused` | 거절·안내 카드(`no_answer_reason`별 문구) | **없음** | 받음 |
-| `clarify` | 되묻기 카드(선택지) 또는 조건 보완 요청 | 없음 | 받음 |
-| `failed` | 오류·다시 시도 카드 | 없음 | 받지 않음 **[결정 필요]** |
+| `outcome` | 화면 | 숫자 | 차트 | 피드백 |
+| -- | -- | -- | -- | -- |
+| `answered` | 숫자 답 카드(문장 + 차트 + 출처) | 있음 | 값 2개 이상일 때 | 받음 |
+| `partial` **[신규]** | 부분 답 카드("일부만 답변했어요" + 답한 부분 + `limits` 목록) | 답한 부분만(검증 통과) | 답한 부분에서 | 받음 |
+| `general` **[신규]** | 일반 답변 카드(역할 시스템 프롬프트 문장 + 추천 질문) | **없음** | 없음 | 받음 |
+| `refused` | 거절·안내 카드(코드 고정 문구) | **없음** | 없음 | 받음 |
+| `clarify` | 되묻기 카드(문장 + 후보가 있으면 선택지 버튼) 또는 조건 보완 요청 | 없음 | 없음 | 받음 |
+| `failed` | 오류·다시 시도 카드 | 없음 | 없음 | 받지 않음 **[결정 필요 · 제안값]** |
+
+- 차트가 없는 답은 차트 영역을 숨긴다(`chart: null`). 멀티쿼리 답은 마지막으로 답한 하위 질문의 차트만 보낸다(11/12 결정).
+- 거절 문구는 LLM이 쓰지 않고 코드에 미리 작성한 고정 문구를 쓴다(실전 2 `gate/texts.py`, 종합 `NO_TABLE_TEXT`, 실전 1 refusal).
+- `general` 답에 숫자가 들어 있으면 그 문장 대신 코드 고정 안내 문구를 보낸다.
 
 ```json
 {
@@ -163,7 +170,9 @@ data: {"step": "search", "status": "done", "seconds": 3.2}
 | -- | -- | -- |
 | `request_id` | **[신규]** `meta`와 같은 값. 피드백을 이 값으로 보낸다 | F-WFJGDJ |
 | `answer` | 검증기를 통과한 문장, 또는 코드 고정 문장 | F-GVVAVT |
-| `answer_origin` | `stat` 실전 1 문장 · `refusal` 코드 거절 문장 · `chart` 차트만 다시 그린 턴 · `multi` 멀티쿼리 하위 답을 이은 문장 | |
+| `answer_origin` | `stat` 실전 1 문장 · `refusal` 코드 거절 문장 · `chart` 차트만 다시 그린 턴 · `multi` 멀티쿼리 하위 답을 이은 문장 · `general` **[신규]** 역할 기반 일반 답변 | |
+| `limits` | **[신규]** `partial`일 때 답하지 못한 부분과 이유 | F-VJBKPX |
+| `clarify_options` | **[신규]** 되묻기 선택지 버튼 | F-JRXVYZ |
 | `picked` | 답이 **실제로 쓴** 표. 출처는 이것만 쓴다(후보 `candidates`는 출처에 넣지 않음) | F-XDXRJB |
 | `chart` | Vega-Lite v5. 차트가 없으면 `null`. 값은 답 문장과 같은 계산 결과에서 나온다 | F-IUDWVF, F-KHTNMQ |
 | `chart_type` · `chart_note` | 사용자가 요청한 차트 종류, 요청대로 못 그렸을 때 안내 | T3-27 |
@@ -174,7 +183,11 @@ data: {"step": "search", "status": "done", "seconds": 3.2}
 
 **[결정 필요]** `picked[]`에 출처 표시용 `survey`(조사명)·`url`(원표 링크)이 레지스트리에서 채워지는지 확인 필요. 출처 형식은 `KOSIS / 조사명 / 통계표명`.
 
-**[결정 필요]** 되묻기(`clarify`)의 선택지 필드가 아직 없다. 제안: `clarify_options: [{ "label": "전국", "question": "2023년 전국 출생아 수" }]` — 누르면 `question`을 그대로 보낸다.
+**[신규 · 11/12 결정]** 되묻기 선택지: `clarify_options: [{ "label": "전국", "question": "2023년 전국 출생아 수" }]`. 고를 후보가 있으면 버튼으로 보이고 누르면 `question`을 그대로 보낸다. 후보가 없으면 빈 목록이고 문장으로만 되묻는다.
+
+**[신규 · 11/12 결정]** 부분 답 한계: `limits: [{ "part": "사망자 수", "reason": "2024년 자료가 없습니다. 2015~2023년 자료만 있습니다." }]`. `outcome = partial`일 때만 채운다. 한계 문구에는 레지스트리의 연도 범위 말고 숫자를 쓰지 않는다.
+
+**조건 보완 요청(`clarify`, 해석 실패)**: 신뢰할 수 없는 후보 표 이름은 보내지 않는다. FE는 기존 질문을 입력창에 남기고, 고쳐 보낸 질문은 새 턴으로 처리한다(11/12 결정, F-IKACRA).
 
 #### `error` [현재]
 
@@ -220,13 +233,13 @@ data: {"step": "search", "status": "done", "seconds": 3.2}
 
 ---
 
-## 4. `GET /suggestions` · `GET /faq` [신규]
+## 4. `GET /suggestions` · `GET /faqs` [신규]
 
 ```json
 GET /suggestions?limit=4
 { "items": [ { "id": "s1", "label": "출생아 수 추이", "question": "최근 10년 출생아 수 추이 보여줘" } ] }
 
-GET /faq
+GET /faqs
 { "items": [ { "id": "f1", "question": "어떤 통계를 물어볼 수 있나요?", "answer": "…" } ] }
 ```
 
@@ -299,17 +312,30 @@ GET /admin/feedback?value=down&from=…&to=…&cursor=…
 | -- | -- | -- | -- |
 | 1 | `backend/app/main.py` | `meta` 이벤트, `request_id`, `retry_of`, `X-Session-Id`, `progress` 이벤트, `error.retryable` | 이선주 · 전민기 |
 | 2 | `graph/state.py` `new_checkpointer` | InMemorySaver → PostgreSQL saver(KOS-121), 30분 만료 정리 배치 | 김병석 |
-| 3 | `ChatResult` | `request_id`, `clarify_options`, `picked[].survey·url` 확인 | 전민기 |
+| 3 | `ChatResult` | `request_id`, `clarify_options`, `limits`, `outcome`에 `partial`·`general` 추가, `picked[].survey·url` 확인 | 전민기 |
+| 3-1 | 그래프 | 통계 외 질문 판정 → 역할 시스템 프롬프트 일반 답변 경로(숫자 검사 포함), 부분 답변 종료 경로 | 전민기 · 이선주 |
 | 4 | `kosis_store` | `feedback`, `events`, `events_quarantine`, `daily_metrics`, `sessions`(2차 `users`) 테이블 + Alembic | 임도유 · 김병석 |
-| 5 | 신규 라우터 | `/feedback`, `/suggestions`, `/faq`, `/threads/{id}`, `/events`, `/admin/*` | 이선주 · 임도유 |
+| 5 | 신규 라우터 | `/feedback`, `/suggestions`, `/faqs`, `/threads/{id}`, `/events`, `/admin/*` | 이선주 · 임도유 |
 | 6 | `docker-compose.yml` | `redis` 서비스·`REDIS_URL` 제거(11/08 결정) | 김병석 |
 
-## 10. 결정 필요 목록 (리뷰 때 정하기)
+## 10. 결정 목록
+
+### 11/12 결정됨
+
+- 결과 유형에 `partial`(근거 있는 부분 답변)·`general`(역할 기반 일반 답변) 추가
+- 되묻기: 후보가 있으면 `clarify_options` 버튼, 없으면 문장
+- 진행 표시: 단계 이름 목록 + 완료 체크
+- 조건 보완: 후보 표 숨김 · 기존 질문 입력창 유지 · 고친 질문은 새 턴
+- 차트: 없는 답은 영역 숨김 · 멀티쿼리는 마지막 답만
+- 거절: 코드에 미리 작성한 고정 문구 출력
+- 이름 통일: 대화 ID `thread_id`, 비회원 삭제 `/threads/{id}`, FAQ `/faqs`, 차트는 `result.chart`
+
+### 아직 결정 필요 (제안값으로 우선 진행)
 
 1. 문장 토큰 스트리밍 여부 — 제안: 1차는 안 함(검증 전 숫자 노출 방지)
 2. `failed` 답에 피드백을 받을지 — 제안: 받지 않음
-3. 되묻기 선택지 필드 형식 — 제안: `clarify_options[{label, question}]`
-4. 비회원 세션 만료 후 같은 `thread_id` 처리 — 제안: 새 대화로 시작 + `meta.expired: true`
-5. 질문 최대 길이 — 제안: 500자
-6. 추천 질문 카드 개수 — 제안: 4개
-7. 운영자 API 접근 방식 — 제안: 1차는 팀 공용 토큰
+3. 비회원 세션 만료 후 같은 `thread_id` 처리 — 제안: 새 대화로 시작 + `meta.expired: true`
+4. 질문 최대 길이 — 제안: 500자
+5. 추천 질문 카드 개수 — 제안: 4개
+6. 운영자 API 접근 방식 — 제안: 1차는 팀 공용 토큰
+7. 일반 답변 허용 범위 — 제안: 인사·사용법·범위 안내만 (Manyfast F-QWCVPP 질문)
