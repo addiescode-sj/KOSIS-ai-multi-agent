@@ -1,4 +1,4 @@
-"""Metric definitions over request_logs (plans/T3-29.md, docs/log-schema.md): the one place they are written.
+"""Metric definitions over request_logs (plans/T3-32.md, docs/log-schema.md): the one place they are written.
 
 PostgreSQL only (percentile_cont, jsonb_array_elements). Every metric takes :day, a date in KST: rows are stored in
 UTC and turned into a KST date here. Team and harness traffic (is_internal) is left out. The metrics that need the
