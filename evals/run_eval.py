@@ -172,6 +172,8 @@ def main(argv: list[str] | None = None) -> Path:
         "source_snapshot": {"tables.jsonl": sha256(TABLES)},
         "git": git("rev-parse", "HEAD"), "git_dirty": bool(git("status", "--porcelain")),
         "vendor_phase1": git("-C", "vendor/phase1", "rev-parse", "HEAD"),
+        # phase 2 too: its search code and stage 2 prompt (e.g. v3 -> v4 at 3f76487) move L1 / L2 / e2e numbers
+        "vendor_phase2": git("-C", "vendor/phase2", "rev-parse", "HEAD"),
         "retriever": args.retriever if args.layer in ("l1", "ablation", "l012") else None,
         "top_k": args.k if args.layer in ("l1", "ablation", "l012") else None,
         "slot_source": "gold,pred" if args.layer == "l012" else args.slot_source if slotted else None,
