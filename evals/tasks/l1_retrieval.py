@@ -37,7 +37,10 @@ def run(args) -> tuple[list[dict], dict, str]:
         # the saved run keeps only its split, so tau cannot be picked on dev again: reuse the run's tau
         tau = args.tau if args.tau is not None else past["summary"]["tau"]
     else:
-        rows = runner.run(runner.build(args.retriever, items, args.k), items, args.k)
+        from evals.runners.agent import tracing
+
+        args.telemetry = tracing("l1")  # T3-32: live search spans; run_eval links the misses after grading
+        rows = runner.run(runner.build(args.retriever, items, args.k), items, args.k, args.telemetry)
         tau = args.tau if args.tau is not None else retrieval.best_tau(
             [(r["top_score"], not r["answerable"]) for r in rows if r["split"] == "dev"])
     judged = judged_keys(args.pool)

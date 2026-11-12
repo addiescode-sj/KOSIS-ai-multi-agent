@@ -14,7 +14,6 @@ from __future__ import annotations
 import json
 import statistics
 from pathlib import Path
-from typing import Any
 
 from langchain_core.callbacks import BaseCallbackHandler
 
@@ -29,6 +28,19 @@ def tokens_of(usage: dict | None) -> tuple[int, int]:
     usage = usage or {}
     pick = lambda *names: next((int(usage[n]) for n in names if usage.get(n) is not None), 0)  # noqa: E731
     return (pick("promptTokens", "input_tokens", "prompt_tokens"), pick("completionTokens", "output_tokens", "completion_tokens"))
+
+
+def stage2_usage(meta: dict | None) -> tuple[int, int, int, bool]:
+    """(calls, input, output, retried) of the phase 2 rerank2 call recorded on the top document's metadata.
+
+    Same rule as the agent layer (kosis_agent.observability.tracing, T3-31): one rerank2 run is one logical LLM call;
+    stage2_calls counts HTTP attempts (429/5xx retries), so it only sets `retried`. Unknown tokens (CLOVA reranker
+    may give no usage) count as 0.
+    """
+    meta = meta or {}
+    attempts = int(meta.get("stage2_calls") or 0)
+    return (1 if attempts else 0, int(meta.get("stage2_input_tokens") or 0), int(meta.get("stage2_output_tokens") or 0),
+            attempts > 1)
 
 
 class UsageCallback(BaseCallbackHandler):
@@ -57,42 +69,6 @@ class UsageCallback(BaseCallbackHandler):
         self.output_tokens += o
         if model := (response.llm_output or {}).get("model_name"):
             self.models.add(model)
-
-
-def usage_client(settings=None, llm: str = "hcx"):
-    """The Phase 1 client from settings, wrapped so each question's tokens and calls can be read and reset.
-
-    llm "mock" (T3-21): Phase 1's mock backend, model name "mock" — checks the path end to end at no cost; its
-    answers are templates, not model answers, so its scores are not scores."""
-    from kosis_chat.config import load_settings
-    from kosis_chat.llm.model import LLMClient, build_client
-
-    settings = settings or load_settings(**({"backend": "mock", "model_name": "mock"} if llm == "mock" else {}))
-    inner = build_client(settings)
-
-    class UsageClient(LLMClient):
-        name = inner.name
-        model = settings.model_name
-
-        def __init__(self) -> None:
-            self.reset()
-
-        def reset(self) -> None:
-            self.calls, self.input_tokens, self.output_tokens, self.failures = 0, 0, 0, 0
-
-        def record_event(self, event: dict[str, Any]) -> None:
-            inner.record_event(event)
-
-        def generate(self, system: str, user: str):
-            result = inner.generate(system, user)
-            i, o = tokens_of(result.usage)
-            self.calls += 1
-            self.input_tokens += i
-            self.output_tokens += o
-            self.failures += result.status != "ok"
-            return result
-
-    return UsageClient()
 
 
 def load_pricing(path: Path = PRICING) -> dict[str, dict]:

@@ -8,39 +8,12 @@ run_eval --pipeline stat), so a teammate's run can be re-graded here with no mod
 from __future__ import annotations
 
 import json
-import time
 from pathlib import Path
 
 from kosis_ai.schemas import StatAnswer
 
 from evals.ops import tokens_of
 from evals.schemas import CalcItem
-
-
-def run(items: list[CalcItem], interval: float = 0.0, llm: str = "hcx") -> list[dict]:
-    """Calls the model through summarize_stat (llm hcx: HCX_API_KEY from the shell; mock: no call); a failed call is
-    recorded, not raised."""
-    from evals.ops import usage_client
-    from evals.trace import summarize  # loads the pipeline: offline commands never import it
-
-    client = usage_client(llm=llm)
-    rows = []
-    for n, item in enumerate(items):
-        if n and interval:
-            time.sleep(interval)
-        client.reset()
-        started = time.perf_counter()
-        answer, spans, error = None, [], None
-        try:
-            # ponytail: a given client builds a fresh pipeline per call (table reload); fine for 90 questions
-            answer, spans, error = summarize(item.question, item.table_key, client, interval)
-        except Exception as exc:
-            error = f"{type(exc).__name__}: {exc}"
-        rows.append({"qid": item.qid, "answer": answer, "error": error, "spans": spans,
-                     "latency_ms": (time.perf_counter() - started) * 1000,
-                     "llm_calls": client.calls, "input_tokens": client.input_tokens, "output_tokens": client.output_tokens,
-                     "model": client.model, "failed": error is not None, "retried": client.failures > 0})
-    return rows
 
 
 def _llm_spans(row: dict) -> list[dict]:

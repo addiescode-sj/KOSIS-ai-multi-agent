@@ -7,6 +7,7 @@ reranking) are counted with evals.ops.UsageCallback; an exception is a tool fail
 
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 
@@ -18,7 +19,10 @@ from kosis_rag.legacy.retrievers import BM25TableRetriever, ChromaTableRetriever
 from kosis_rag.schemas.catalog import TableRecord
 from kosis_rag.shared.catalog import to_document
 
-from evals.ops import UsageCallback
+from kosis_agent.observability.tracing import LiveSpans
+
+from evals.ops import UsageCallback, stage2_usage
+from evals.runners.agent import span_rows
 from evals.schemas import TABLES, RetrievalItem
 from evals.trace import NodeSpans
 
@@ -127,17 +131,40 @@ def build(name: str, items: list[RetrievalItem], k: int) -> Runnable:
     return retrievers[name]
 
 
-def run(retriever: BaseRetriever, items: list[RetrievalItem], k: int) -> list[dict]:
+def run(retriever: BaseRetriever, items: list[RetrievalItem], k: int, telemetry=None) -> list[dict]:
+    """One row per question. telemetry (evals.runners.agent.tracing("l1")): each search is a live trace whose root is
+    `execute_tool search_tables`, the span the service's search step has, with the graph nodes under it (T3-32)."""
+    from opentelemetry.trace import StatusCode
+
+    tracer = telemetry[0].get_tracer("kosis-agent") if telemetry else None
     rows = []
     for item in items:
         counter, nodes = UsageCallback(), NodeSpans()
+        root = None
+        if tracer is not None:
+            telemetry[1].clear()  # memory copy unused for L1: keep it from growing over the run
+            root = tracer.start_span("execute_tool search_tables", attributes={
+                "gen_ai.operation.name": "execute_tool", "gen_ai.tool.name": "search_tables", "kosis.eval.qid": item.qid,
+                "gen_ai.tool.call.arguments": json.dumps({"question": item.question}, ensure_ascii=False)})
+        callbacks = [counter, nodes] + ([LiveSpans(tracer, root)] if root is not None else [])
         started = time.perf_counter()
         error = None
         try:
-            docs = retriever.invoke(item.question, config={"callbacks": [counter, nodes]})[:k]
+            docs = retriever.invoke(item.question, config={"callbacks": callbacks})[:k]
         except Exception as exc:  # a failing question is recorded, the run goes on
             docs, error = [], f"{type(exc).__name__}: {exc}"
+        ids = {}
+        if root is not None:
+            root.set_attribute("gen_ai.tool.call.result", json.dumps([d.metadata.get("key") for d in docs], ensure_ascii=False))
+            if error:
+                root.set_status(StatusCode.ERROR, error)
+            root.end()
+            ctx = root.get_span_context()
+            mine = [s for s in telemetry[1].get_finished_spans() if s.context.trace_id == ctx.trace_id]
+            ids = {"trace_id": format(ctx.trace_id, "032x"), "span_id": format(ctx.span_id, "016x"),
+                   "trace_spans": span_rows(root, mine)}  # the live trace, for report.html
         meta = docs[0].metadata if docs else {}
+        s2_calls, s2_in, s2_out, s2_retried = stage2_usage(meta)
         rows.append({
             "qid": item.qid, "split": item.split, "qtype": item.qtype, "answerable": item.answerable,
             "no_answer_reason": item.no_answer_reason,
@@ -146,14 +173,16 @@ def run(retriever: BaseRetriever, items: list[RetrievalItem], k: int) -> list[di
             "top_score": meta.get("stage2_input_top_score", meta.get("score")),
             **{f: meta.get(f) for f in STAGE2_FIELDS},
             "latency_ms": (time.perf_counter() - started) * 1000,
-            # stage 2 calls its API directly (no LangChain callback): add what it recorded on the documents
-            "llm_calls": counter.calls + (meta.get("stage2_calls") or 0),
-            "input_tokens": counter.input_tokens + (meta.get("stage2_input_tokens") or 0),
-            "output_tokens": counter.output_tokens + (meta.get("stage2_output_tokens") or 0),
+            # stage 2 calls its API directly (no LangChain callback): add what it recorded on the documents,
+            # one logical call per rerank2 run like the agent layer (T3-31; HTTP attempts only set `retried`)
+            "llm_calls": counter.calls + s2_calls,
+            "input_tokens": counter.input_tokens + s2_in,
+            "output_tokens": counter.output_tokens + s2_out,
             "model": ",".join(sorted(counter.models | ({meta["stage2"]} if meta.get("stage2_calls") else set()))) or None,
             "failed": error is not None,
-            "retried": False,  # retrievers here do not retry; a retrying one reports it through its own metadata
+            "retried": s2_retried,  # the stage 2 API retried (429/5xx); the retrievers themselves do not retry
             "error": error,
             "search_spans": nodes.spans,  # graph nodes (T2-36); empty for a retriever that is not a graph
+            **ids,
         })
     return rows
