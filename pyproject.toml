@@ -11,6 +11,10 @@ dependencies = [
     "langgraph>=1.2,<2",
     "langchain-core>=1.7.0",
     "langchain-naver>=0.1.1",
+    # gpt-4o-mini: the multi-turn follow-up reader and multi-query split LLM step (INTERPRETER_MODEL default),
+    # and phase 1 on STAT_PROVIDER=openai | gemma for model comparisons (src/kosis_agent/services/openai_stat.py)
+    "openai>=3.3.0",
+    "langchain-openai>=1.7.3",
     # Phase 1 runtime (vendor/phase1/requirements.txt)
     "pandas>=2.0",
     "pyarrow>=15.0",

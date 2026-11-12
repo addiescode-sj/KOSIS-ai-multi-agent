@@ -41,8 +41,8 @@ RUNS: list[tuple[str, list[str], set[str], str]] = [
     ("ablation", ["--layer", "ablation", "--retriever", "chroma", "--split", "dev"], {"data", "chroma"}, "슬롯 필터 on/off별 검색"),
     ("l2-v1", ["--layer", "l2", "--split", "all"], {"data"}, "질의 파서 (규칙)"),
     ("l2-v2", ["--layer", "l2", "--split", "all", "--query-golden", str(DATASETS / "query_golden_v2.jsonl")], {"data", "v2"}, "질의 파서, 골든 v2"),
-    ("l3", ["--layer", "l3"], {"data", "llm"}, "정답 표로 summarize_stat 실호출"),
-    ("e2e", ["--layer", "e2e"], {"data", "chroma", "rerank", "llm"}, "검색 그래프 1위 표 → summarize_stat"),
+    ("l3", ["--layer", "l3"], {"data", "llm"}, "에이전트 그래프 한 턴, 정답 표 검색(oracle) → summarize_stat 실호출"),
+    ("e2e", ["--layer", "e2e"], {"data", "chroma", "rerank", "llm"}, "서비스 에이전트 그래프 한 턴 (검색 → summarize_stat)"),
     ("agent", ["--layer", "agent"], {"agent"}, "멀티턴 시나리오 → 에이전트 (T3-06)"),
 ]
 WARN_ONLY = {"sigungu"}  # checks no run needs: shown as ⚠, never skip a run
@@ -103,8 +103,7 @@ def argv_for(name: str, args: list[str], llm: str, opts: argparse.Namespace) -> 
     out = [*args, "--stage", f"{opts.stage}-{name}"]
     if name in ("l3", "e2e"):
         out += ["--llm", llm, "--interval", str(opts.interval if opts.interval is not None else (0 if llm == "mock" else 5))]
-    if name == "e2e":  # stage 2 HCX picks only on a live run; a mock run checks the path without any model call
-        out += ["--retriever", "graph:staged-hcx" if llm == "hcx" else "graph:staged"]
+    # e2e runs the service graph (T3-32): its search settings are the shell's, and --llm mock turns every model off
     if name == "agent":
         out += ["--agent", opts.agent, "--scenarios", str(opts.scenarios), "--repeat", str(opts.repeat), "--split", "all"]
     return out

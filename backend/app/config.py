@@ -10,12 +10,14 @@ then reads os.environ. In the container compose passes the same file as `env_fil
     CHROMA_HOST CHROMA_PORT CHROMA_COLLECTION      Chroma server and the dense collection (default localhost:8001)
     TEXT_FORMAT EMBED_CKPT RERANK_CKPT RERANK_MODE  table text check, query embedder, stage 1 cross-encoder
     STAGE2 COND_FILTER ANSWER_K                     stage 2 LLM (clova | hcx | gpt | none), conditions, k default
+    STAGE2_MODEL                                    stage 2 model name (default phase 2's per STAGE2); a *gemma* name runs
+                                                    on the self-hosted server Gemma_BASE_URL with Gemma_API_KEY (STAGE2=gpt, T3-33)
     HQ_BUILD HQ_WEIGHT HQ_BM25                      reverse HyDE question index (empty HQ_BUILD = off)
     HCX_API_KEY HCX_THINKING OPENAI_API_KEY         stage 2 keys (clova / hcx: HCX_API_KEY, gpt: OPENAI_API_KEY)
-    STAT_PROVIDER STAT_MODEL STAT_RETRY_INTERVAL    phase 1 model (hcx | mock, HCX-DASH-002), seconds before a retry
+    STAT_PROVIDER STAT_MODEL STAT_RETRY_INTERVAL    phase 1 model (hcx = HCX-DASH-002 default | openai | gemma | mock), seconds before a retry
     HCX_API_KEY                                     phase 1 key too (None: LLMKeyMissing when a phase 1 LLM step runs)
     ALT_TABLE_BUDGET                                candidate tables tried after a table-mismatch refusal (default 0 = off, T3-23)
-    INTERPRETER INTERPRETER_MODEL                   follow-up reading rules | hybrid | llm (default hybrid, T3-27) and its
+    INTERPRETER INTERPRETER_MODEL                   follow-up reading and multi-query split (T3-28): rules | hybrid | llm (default hybrid, T3-27) and its
                                                     model (default gpt-4o-mini with OPENAI_API_KEY; HCX-* on ChatClovaX, *gemma* at Gemma_BASE_URL;
                                                     no key = no LLM step: hybrid reads by rules)
 
@@ -65,44 +67,81 @@ def workspace() -> Path:
 
 
 def stage2_llm(name: str) -> SearchLLMConfig | None:
-    """The stage 2 LLM: phase 2's default config for the name with its key and HCX_THINKING; None when off."""
+    """The stage 2 LLM: phase 2's default config for the name with its key and HCX_THINKING; None when off.
+
+    STAGE2_MODEL swaps the model (phase 2 PR #48, T3-33). A *gemma* model is the self-hosted OpenAI-compatible server,
+    as for phase 1 (STAT_PROVIDER=gemma) and the interpreter: Gemma_BASE_URL with Gemma_API_KEY instead of OpenAI's
+    key. Phase 2 uses base_url only on its openai provider, i.e. STAGE2=gpt. evals.config calls this too."""
     if name in OFF or name not in selectors.LLM_RERANKERS:
         return None
-    return selectors.default_config(name, api_key=_env(STAGE2_KEY_ENV[name]),
-                                    thinking=(_env("HCX_THINKING") or "none").strip().lower())
+    model = _env("STAGE2_MODEL")
+    gemma = bool(model) and "gemma" in model.lower()
+    return selectors.default_config(name, api_key=_env("Gemma_API_KEY" if gemma else STAGE2_KEY_ENV[name]),
+                                    thinking=(_env("HCX_THINKING") or "none").strip().lower(),
+                                    model=model, base_url=_env("Gemma_BASE_URL") if gemma else None)
+
+
+# STAT_PROVIDER=openai | gemma (T3-28): phase 1 on an OpenAI-compatible chat model through the provider this repo
+# registers (kosis_agent.services.openai_stat); default model, key variable and base URL variable per name
+OPENAI_STAT = {"openai": ("gpt-4o-mini", "OPENAI_API_KEY", None),
+               "gemma": ("google/gemma-4-31B-it-qat-w4a16-ct", "Gemma_API_KEY", "Gemma_BASE_URL")}
 
 
 def stat_llm() -> StatLLMConfig:
-    """The phase 1 model. The key is HCX_API_KEY (a SecretStr: never in repr, logs or dumps); mock needs none.
-    mock keeps the model name HCX-DASH-002, as the phase 1 mock baseline (s0-mock-c) recorded it."""
-    key = _env("HCX_API_KEY")
+    """The phase 1 model, HCX-DASH-002 by default (STAT_PROVIDER hcx, HCX_API_KEY). Keys are SecretStr (never in repr,
+    logs or dumps); mock needs none and keeps that model name, as the phase 1 mock baseline (s0-mock-c) recorded it.
+    openai / gemma run phase 1 on gpt-4o-mini / the self-hosted Gemma (OPENAI_STAT), for model comparisons (T3-28)."""
     provider = (_env("STAT_PROVIDER") or "hcx").strip().lower()
+    if provider in OPENAI_STAT:
+        from kosis_agent.services.openai_stat import PROVIDER, register
+
+        register()
+        model, key_var, url_var = OPENAI_STAT[provider]
+        key = _env(key_var)
+        extra = {"base_url": _env(url_var)} if url_var and _env(url_var) else {}
+        return StatLLMConfig(api_key=SecretStr(key) if key else None, model=_env("STAT_MODEL") or model,
+                             provider=PROVIDER, **extra)
+    key = _env("HCX_API_KEY")
     return StatLLMConfig(api_key=SecretStr(key) if key and provider != "mock" else None,
                          model=_env("STAT_MODEL") or STAT_MODEL, provider=provider)
 
 
-def interpreter_llm(cfg):
-    """The follow-up reader's LLM step (T3-27): INTERPRETER_MODEL (default gpt-4o-mini) on ChatOpenAI with
-    OPENAI_API_KEY for gpt-*, on ChatOpenAI at Gemma_BASE_URL with Gemma_API_KEY for *gemma*, else ChatClovaX with
-    HCX_API_KEY; None (rules only) when the interpreter is "rules".
-    A missing key is not an error here: the hybrid reader then reads by rules, as with no model set."""
+def interpreter_chat_model(cfg):
+    """The chat model behind the LLM steps (T3-27 follow-up reader, T3-28 multi-query splitter): INTERPRETER_MODEL
+    (default gpt-4o-mini) on ChatOpenAI with OPENAI_API_KEY for gpt-*, on ChatOpenAI at Gemma_BASE_URL with
+    Gemma_API_KEY for *gemma*, else ChatClovaX with HCX_API_KEY; None (rules only) when the interpreter is "rules".
+    A missing key is not an error here: the hybrid steps then read by rules, as with no model set."""
     model = cfg.interpreter_model or ""
     gpt = model.lower().startswith("gpt")
     gemma = "gemma" in model.lower()  # self-hosted OpenAI-compatible server: Gemma_BASE_URL + Gemma_API_KEY
     key = _env("OPENAI_API_KEY" if gpt else "Gemma_API_KEY" if gemma else "HCX_API_KEY")
     if not model or not key or cfg.interpreter == "rules":
         return None
-    from kosis_agent.graph.context import make_llm_reader
-
     if gpt or gemma:
         from langchain_openai import ChatOpenAI
 
         base_url = _env("Gemma_BASE_URL") if gemma else None
-        return make_llm_reader(ChatOpenAI(model=model, api_key=key, base_url=base_url, temperature=0, timeout=30,
-                                          max_retries=2))
+        return ChatOpenAI(model=model, api_key=key, base_url=base_url, temperature=0, timeout=30, max_retries=2)
     from langchain_naver import ChatClovaX
 
-    return make_llm_reader(ChatClovaX(model=model, api_key=key, temperature=0, timeout=30, max_retries=2))
+    return ChatClovaX(model=model, api_key=key, temperature=0, timeout=30, max_retries=2)
+
+
+def interpreter_llm(cfg):
+    """The follow-up reader's LLM step (T3-27) on interpreter_chat_model, None for rules only."""
+    from kosis_agent.graph.context import make_llm_reader
+
+    model = interpreter_chat_model(cfg)
+    return make_llm_reader(model) if model is not None else None
+
+
+def splitter_llm(cfg):
+    """The multi-query splitter's LLM step (T3-28) on the same model, None for rules only. It runs only on turns the
+    rules defer (two measures joined by a connective ending)."""
+    from kosis_agent.graph.multiquery import make_llm_splitter
+
+    model = interpreter_chat_model(cfg)
+    return make_llm_splitter(model) if model is not None else None
 
 
 def agent_config() -> AgentConfig:

@@ -18,10 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from kosis_rag.llm.config import LLMConfig
-from kosis_rag.rerank import selectors
 from kosis_rag.schemas.resources import OFF, ChromaConfig, IndexSpec, SearchOptions
-
-STAGE2_KEY_ENV = {"clova": "HCX_API_KEY", "hcx": "HCX_API_KEY", "gpt": "OPENAI_API_KEY"}
 
 
 def _env(name: str) -> str | None:
@@ -34,11 +31,11 @@ def data_dir() -> Path:
 
 
 def stage2_llm(name: str) -> LLMConfig | None:
-    """The stage 2 LLM config for `name` (clova | hcx | gpt), with its key from the shell; None when off or unknown."""
-    if name in OFF or name not in selectors.LLM_RERANKERS:
-        return None
-    return selectors.default_config(name, api_key=_env(STAGE2_KEY_ENV[name]),
-                                    thinking=(_env("HCX_THINKING") or "none").strip().lower())
+    """The stage 2 LLM config for `name` (clova | hcx | gpt); None when off or unknown. The service's function, so an
+    L1 stage 2 preset runs the same model and server as the service (STAGE2_MODEL, Gemma_BASE_URL; T3-33)."""
+    from backend.app.config import stage2_llm as service_stage2_llm
+
+    return service_stage2_llm(name)
 
 
 def search_config(**overrides: Any) -> tuple[IndexSpec, SearchOptions]:

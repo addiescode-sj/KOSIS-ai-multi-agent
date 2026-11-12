@@ -28,7 +28,7 @@ def stream_writer() -> Callable[[Any], None] | None:
     """지금 실행 중인 그래프의 custom stream writer. 그래프 밖이면 None."""
     try:
         return get_stream_writer()
-    except RuntimeError:  # 그래프 밖에서 툴을 직접 부른 경우
+    except (RuntimeError, KeyError):  # 그래프 밖에서 툴을 직접 부른 경우 (config가 있으면 KeyError: API 툴 엔드포인트)
         return None
 
 

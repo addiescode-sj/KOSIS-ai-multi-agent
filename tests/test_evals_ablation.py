@@ -158,13 +158,14 @@ def test_l012_runs_every_layer_once_and_keeps_ops_per_layer(monkeypatch, tmp_pat
     import json
 
     from evals import ops, run_eval
+    from evals.tasks import ablation, l0_metadata, l2_query
 
     seen = []
     fake = lambda name, latency: lambda args: (seen.append((name, args.slot_source, args.split))  # noqa: E731
                                                or ([{"qid": "q1", "combo": "all", "latency_ms": latency}], {"name": name}, f"# {name}\n"))
-    monkeypatch.setattr(run_eval, "run_l0", fake("l0", 0.0))
-    monkeypatch.setattr(run_eval, "run_ablation", lambda args: fake(f"l1-{args.slot_source}", 0.0)(args))
-    monkeypatch.setattr(run_eval, "run_l2", fake("l2", 5.0))
+    monkeypatch.setattr(l0_metadata, "run", fake("l0", 0.0))
+    monkeypatch.setattr(ablation, "run", lambda args: fake(f"l1-{args.slot_source}", 0.0)(args))
+    monkeypatch.setattr(l2_query, "run", fake("l2", 5.0))
     monkeypatch.setattr(run_eval, "REPORTS", tmp_path)
     monkeypatch.setattr(ops, "append_history", lambda run_id, layer, *a: seen.append(("history", layer)))
     run = run_eval.main(["--layer", "l012", "--stage", "t"])

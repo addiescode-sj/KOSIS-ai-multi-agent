@@ -1,4 +1,4 @@
-"""T3-32 (KOS-169) request log draft: the rules of the table offline on SQLite, the metric SQL on a real PostgreSQL.
+"""T3-34 (KOS-169) request log draft: the rules of the table offline on SQLite, the metric SQL on a real PostgreSQL.
 
 The rows are made up (no golden question, no real user text). The PostgreSQL tests run only when TEST_DATABASE_URL
 is set; request_logs has no migration yet, so they create and drop the table themselves.

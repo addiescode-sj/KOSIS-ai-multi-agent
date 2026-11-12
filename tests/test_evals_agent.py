@@ -224,7 +224,7 @@ def test_layer_agent_oracle_and_from_run(tmp_path):
     import json
     from argparse import Namespace
 
-    from evals.run_eval import run_agent
+    from evals.tasks.agent import run as run_agent
 
     chat = scenario(*[(t.question, t.expect.model_dump()) for t in CHAT.turns[1:]], sid="s2")  # no calc_qid: no Parquet
     path = tmp_path / "scenarios.jsonl"
@@ -268,3 +268,31 @@ def test_an_alternate_gold_table_with_the_same_values_passes_and_is_counted_apar
     (outside,) = agent.grade_conversation(s, [{"calls": [search, _answer_from("101_DT_ZZZ", 100.0)],
                                                "answer": "100명", "error": None}], CALC, cells_of)
     assert "lost_state" in outside["errors"] and "wrong_args" in outside["errors"]
+
+
+def test_layer_agent_by_task_over_several_scenario_files(tmp_path):
+    """T3-29: multi-turn (MT-*) and multi-query (MQ-*) files in one run, success per task; repeated sids are refused."""
+    from argparse import Namespace
+
+    import pytest
+
+    from evals.tasks.agent import run as run_agent
+
+    turns = [(t.question, t.expect.model_dump()) for t in CHAT.turns[1:]]  # no calc_qid: no Parquet
+    mt, mq = tmp_path / "mt.jsonl", tmp_path / "mq.jsonl"
+    mt.write_text(scenario(*turns, sid="MT-R-001").model_dump_json() + "\n", encoding="utf-8")
+    mq.write_text(scenario(*turns[:1], sid="MQ-B-001").model_dump_json() + "\n", encoding="utf-8")
+    base = dict(split="all", calc_golden=[], agent=None, repeat=1, stage="t", oracle=True, from_run=None)
+    rows, summary, report = run_agent(Namespace(**base, scenarios=[mt, mq]))
+    assert {r["sid"] for r in rows} == {"MT-R-001", "MQ-B-001"}
+    by_task = summary["by_task"]
+    assert set(by_task) == {"multiturn", "multiquery"} and by_task["multiturn"]["n_turns"] == 2
+    assert by_task["multiquery"]["n_turns"] == 1 and by_task["multiquery"]["conversation_success"] == 1.0
+    assert "| 멀티턴 (MT-*) | 1 | 1.000 |" in report and "| 멀티쿼리 (MQ-*) | 1 | 1.000 |" in report
+    next(r for r in rows if r["sid"] == "MT-R-001")["calls"] = []  # the multi-turn run forgot the chart call: only its task fails
+    (tmp_path / "results.jsonl").write_text("".join(__import__("json").dumps(r, ensure_ascii=False) + "\n" for r in rows))
+    _, summary, _ = run_agent(Namespace(**{**base, "oracle": False, "from_run": tmp_path}, scenarios=[mt, mq]))
+    assert summary["by_task"]["multiturn"]["conversation_success"] == 0.0
+    assert summary["by_task"]["multiquery"]["conversation_success"] == 1.0
+    with pytest.raises(SystemExit, match="duplicate sids"):
+        run_agent(Namespace(**base, scenarios=[mt, mt]))

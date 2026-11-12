@@ -8,7 +8,8 @@ from backend.app import config
 
 NAMES = ("KOSIS_WORKSPACE", "CHROMA_HOST", "CHROMA_PORT", "CHROMA_COLLECTION", "TEXT_FORMAT", "EMBED_CKPT",
          "RERANK_CKPT", "RERANK_MODE", "STAGE2", "COND_FILTER", "ANSWER_K", "HQ_BUILD", "HQ_WEIGHT", "HQ_BM25",
-         "HCX_API_KEY", "HCX_THINKING", "OPENAI_API_KEY", "STAT_PROVIDER", "STAT_MODEL", "STAT_RETRY_INTERVAL")
+         "HCX_API_KEY", "HCX_THINKING", "OPENAI_API_KEY", "STAT_PROVIDER", "STAT_MODEL", "STAT_RETRY_INTERVAL",
+         "STAGE2_MODEL", "Gemma_BASE_URL", "Gemma_API_KEY")
 
 
 @pytest.fixture
@@ -60,3 +61,36 @@ def test_phase1_mock_needs_no_key(env):
     llm = config.stat_llm()
     assert llm.provider == "mock" and llm.api_key is None and llm.require_key() is None
     assert llm.model == "HCX-DASH-002"  # as the mock baseline run recorded it
+
+
+def test_multiturn_and_multiquery_llm_step_defaults_to_gpt_4o_mini(env, monkeypatch):
+    """T3-27 follow-up reader and T3-28 multi-query splitter share INTERPRETER_MODEL; phase 1 stays on HCX."""
+    monkeypatch.delenv("INTERPRETER_MODEL", raising=False)
+    monkeypatch.delenv("INTERPRETER", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-key")
+    cfg = config.agent_config()
+    assert cfg.interpreter_model == "gpt-4o-mini" and cfg.stat_llm.provider == "hcx"
+    assert config.interpreter_chat_model(cfg).model_name == "gpt-4o-mini"
+    assert config.splitter_llm(cfg) is not None
+
+
+def test_stage2_model_and_the_self_hosted_server(env):
+    """T3-33 (phase 2 PR #48): STAGE2_MODEL swaps the model; a gemma model runs on Gemma_BASE_URL with Gemma_API_KEY.
+    The eval config is the same function, so an L1 stage 2 preset matches the service."""
+    from evals import config as eval_config
+
+    env.setenv("OPENAI_API_KEY", "sk-openai")
+    plain = config.stage2_llm("gpt")
+    assert (plain.model, plain.base_url, plain.api_key.get_secret_value()) == ("gpt-4o-mini", None, "sk-openai")
+    env.setenv("STAGE2_MODEL", "google/gemma-4-31B-it-qat-w4a16-ct")
+    env.setenv("Gemma_BASE_URL", "http://gemma.local:8000/v1")
+    env.setenv("Gemma_API_KEY", "gemma-key")
+    for llm in (config.stage2_llm("gpt"), eval_config.stage2_llm("gpt")):
+        assert (llm.provider, llm.model, llm.base_url) == ("openai", "google/gemma-4-31B-it-qat-w4a16-ct",
+                                                           "http://gemma.local:8000/v1")
+        assert llm.api_key.get_secret_value() == "gemma-key"
+    env.setenv("STAGE2_MODEL", "HCX-007")  # not gemma: the named provider's own key, no server
+    hcx = config.stage2_llm("hcx")
+    assert (hcx.model, hcx.base_url) == ("HCX-007", None)
+    assert config.stage2_llm("none") is None
+

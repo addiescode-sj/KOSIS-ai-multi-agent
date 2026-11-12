@@ -4,7 +4,7 @@ import json
 from argparse import Namespace
 
 from evals import ops, report_html
-from evals.run_eval import run_agent
+from evals.tasks.agent import run as run_agent
 from tests.test_evals_agent import CHAT, scenario
 
 BASE = {"stage": "t", "split": "all", "source_snapshot": {"tables.jsonl": "0" * 64}, "git": "0" * 40, "git_dirty": False,
@@ -70,3 +70,22 @@ def test_l3_page_still_renders(tmp_path):
     summary = {"verdicts": {"all": {"PASS": 1}, "answerable": {"PASS": 1}}, "errors": {}}
     page = report_html.render(write_run(tmp_path, "l3", rows, summary, "# L3 — t\n"))
     assert "L3 계산" in page and "kind별 판정" in page
+
+
+def test_l3_e2e_report_shows_the_live_trace(tmp_path):
+    """T3-32: report.html carries each question's trace (span summary + waterfall), problem rows first."""
+    import json
+
+    from evals import report_html
+
+    spans = [{"name": "invoke_agent", "kind": "turn", "start_ms": 0, "duration_ms": 50, "depth": 0, "status": "ok"},
+             {"name": "execute_tool summarize_stat", "kind": "tool", "start_ms": 5, "duration_ms": 40, "depth": 1, "status": "ok"},
+             {"name": "analyze.llm_plan", "kind": "llm", "start_ms": 6, "duration_ms": 30, "depth": 2, "status": "error"}]
+    rows = [{"qid": q, "kind": "answerable", "verdict": v, "errors": [] if v == "PASS" else ["wrong_value"], "spans": [],
+             "failure": None, "latency_ms": 50.0, "llm_calls": 1, "trace_id": "ab" * 16, "trace_spans": spans}
+            for q, v in (("c1", "PASS"), ("c2", "FAIL"))]
+    html = report_html.traces_body({"jaeger": {"ui": "http://j"}}, rows)
+    assert "시간이 어디서 쓰였나" in html and "analyze.llm_plan" in html and "invoke_agent</td>" not in html  # root skipped
+    assert html.index("<b>c2</b>") < html.index("<b>c1</b>")  # the FAIL row first
+    assert 'class="bar llm-k err"' in html and "http://j/trace/" + "ab" * 16 in html
+    assert "trace가 없다" in report_html.traces_body({}, [{**rows[0], "trace_spans": []}])

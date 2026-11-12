@@ -18,19 +18,28 @@ alternate-table attempt, set aside and counted in alt_attempts; T3-23):
   so a number the LLM wrote itself is unsupported_final_number.
 A turn passes with no error; a conversation succeeds when every turn passes; pass^k = share of scenarios whose
 k repeated runs all succeeded.
+
+One module per evaluation task (T3-29): tools.py (tool selection, order, arguments), state.py (multi-turn state and
+refusal), numbers.py (L3 numbers, multi-query sub-answers and combine), answer.py (answer quality: unsupported
+numbers). grade_turn joins their errors in that order; aggregate adds by_task (multi-turn MT-* / multi-query MQ-*).
 """
 
 from __future__ import annotations
 
-import json
 from collections import Counter, defaultdict
 from typing import Any, Callable
 
 from kosis_ai.schemas import Fact, FactPart, Refusal, Source, StatAnswer, StatResult
 
-from evals.evaluators import calculation
-from evals.evaluators.query import field_correct
+from evals.evaluators.agent.answer import grade_answer, grounding, unsupported_final_numbers
+from evals.evaluators.agent.numbers import combined_value, grade_numbers, same_values, stat_answer, stat_answers
+from evals.evaluators.agent.state import STATE_TOOLS, first_key, grade_state, refused, state_key
+from evals.evaluators.agent.tools import final_calls, grade_tools
 from evals.schemas import AgentScenario, CalcItem, TurnExpect
+
+__all__ = ["ERRORS", "STATE_TOOLS", "aggregate", "combined_value", "final_calls", "first_key", "grade_conversation",
+           "grade_turn", "oracle_records", "oracle_stat", "refused", "same_values", "stat_answer", "stat_answers",
+           "state_key", "unsupported_final_numbers"]
 
 ERRORS = {  # error -> what it means (report legend)
     "run_failure": "턴 실행 실패 (예외)",
@@ -44,118 +53,9 @@ ERRORS = {  # error -> what it means (report legend)
     "wrong_numbers": "summarize_stat 답이 L3 채점에서 PASS가 아님",
     "unsupported_final_number": "최종 답 문장에 툴 결과·질문에 없는 숫자",
 }
-STATE_TOOLS = ("summarize_stat", "make_chart")  # calls whose table_key is the table the turn works on
-
-
-def _norm(value: Any) -> Any:
-    if value is None:
-        return None
-    return [str(v) for v in value] if isinstance(value, (list, tuple, set)) else str(value)
-
-
-def _gave_up(call: dict) -> bool:
-    """A summarize_stat call that did not answer from its table: refused, or the tool failed."""
-    result = call.get("result")
-    return call.get("status") == "error" or (isinstance(result, dict) and result.get("outcome") == "refused")
-
-
-def final_calls(calls: list[dict]) -> list[dict]:
-    """The calls a turn is graded on (T3-23): an alternate-table attempt is not a call of its own.
-
-    A summarize_stat that refused (or failed) and is followed right away by a summarize_stat on another table_key is
-    an attempt the agent moved on from; the later call stands for it (A refused -> B refused -> C answered leaves C).
-    So a turn that answers from an alternate table is graded only on its final table and answer: lost_state when that
-    table is not the expected one, wrong_numbers when the answer is wrong, never extra_call / false_refusal for the
-    attempts. A repeated summarize_stat on the same table is not an attempt and still counts as a call."""
-    out: list[dict] = []
-    for call in calls:
-        prev = out[-1] if out else None
-        if (prev is not None and prev["name"] == call["name"] == "summarize_stat" and _gave_up(prev)
-                and (prev.get("args") or {}).get("table_key") != (call.get("args") or {}).get("table_key")):
-            out[-1] = call
-        else:
-            out.append(call)
-    return out
-
-
-def first_key(result: Any) -> str | None:
-    """Top table key of a search_tables result (phase 2 SearchOutput: picked, else candidates)."""
-    if isinstance(result, dict):
-        for field in ("picked", "candidates"):
-            if (rows := result.get(field)) and isinstance(rows[0], dict):
-                return rows[0].get("key")
-    return None
-
-
-def state_key(calls: list[dict]) -> str | None:
-    """The table a turn ends on: the last summarize_stat / make_chart table_key, else the last search's top key.
-
-    ponytail: read from the calls, not from the graph state, so it does not depend on T3-04's state field names.
-    """
-    for call in reversed(calls):
-        if call["name"] in STATE_TOOLS and (call.get("args") or {}).get("table_key"):
-            return call["args"]["table_key"]
-    for call in reversed(calls):
-        if call["name"] == "search_tables" and (key := first_key(call.get("result"))):
-            return key
-    return None
-
-
-def refused(calls: list[dict]) -> bool:
-    if not calls:
-        return True
-    for call in calls:
-        result = call.get("result")
-        if isinstance(result, dict) and (result.get("route") == "refuse" or result.get("outcome") == "refused"):
-            return True
-    return False
-
-
-def stat_answer(calls: list[dict]) -> StatAnswer | None:
-    """The last successful summarize_stat result as a StatAnswer; None when there is none or it does not validate."""
-    for call in reversed(calls):
-        if call["name"] == "summarize_stat" and call.get("status", "ok") == "ok":
-            try:
-                return StatAnswer.model_validate(call.get("result"))
-            except ValueError:
-                return None
-    return None
-
-
-def _subsequence(want: list[str], got: list[str]) -> bool:
-    it = iter(got)
-    return all(name in it for name in want)
-
-
-def _numbers(text: str) -> list[str]:
-    return [n.replace(",", "") for n in calculation._NUMBER.findall(text or "")]
-
-
-def unsupported_final_numbers(answer: str, grounded: set[str], facts: list[Fact]) -> list[str]:
-    """Numbers in the final answer that no tool result or question holds, and that are no rounding of a fact value."""
-    allowed = grounded | calculation.allowed_text_numbers(facts)
-    values = [f.value for f in facts if f.value is not None]
-    out = []
-    for num in _numbers(answer):
-        digits = len(num.split(".")[1]) if "." in num else 0
-        if num not in allowed and not any(calculation.close(v, float(num), digits) for v in values):
-            out.append(num)
-    return out
-
-
-def same_values(item: CalcItem, answer: StatAnswer | None) -> bool:
-    """Every required fact's value is among the answer's facts (rounded as the golden fact says)."""
-    if answer is None or answer.outcome != "answered":
-        return False
-    got = [f.value for f in answer.result.facts if f.value is not None]
-    for fact in item.required_facts:
-        if fact.value is None:
-            return False
-        digits = fact.round if fact.round is not None else (len(str(fact.value).split(".")[1].rstrip("0"))
-                                                            if "." in str(fact.value) else 0)
-        if not any(calculation.close(fact.value, v, digits) for v in got):
-            return False
-    return True
+TASK_PREFIXES = {"MT-": "multiturn", "MQ-": "multiquery"}  # sid prefixes the builders write (builders/multiturn, multiquery)
+TASK_METRICS = ("n_turns", "n_conversations", "conversation_success", "pass^k", "turn_pass", "tool_selection", "param_accuracy",
+                "state_accuracy", "numeric_accuracy", "n_numeric", "combine_accuracy", "n_combine", "unsupported_final_number_turns")
 
 
 def grade_turn(expect: TurnExpect, record: dict, calc: dict[str, CalcItem], cells_of: Callable[[str], dict],
@@ -165,71 +65,13 @@ def grade_turn(expect: TurnExpect, record: dict, calc: dict[str, CalcItem], cell
     in alt_attempts, not as errors."""
     every = record.get("calls") or []
     calls = final_calls(every)
-    want, got = [c.name for c in expect.tools], [c["name"] for c in calls]
-    missing, extra = Counter(want) - Counter(got), Counter(got) - Counter(want)
-    seen: Counter = Counter()
-    args = []
-    for call in expect.tools:
-        same = [c for c in calls if c["name"] == call.name]
-        pred = same[seen[call.name]] if seen[call.name] < len(same) else None
-        seen[call.name] += 1
-        for field, gold in call.args.items():
-            value = _norm((pred.get("args") or {}).get(field)) if pred else None
-            ok = pred is not None and (field_correct(field, gold, value)
-                                       or (field == "table_key" and value in expect.alt_table_keys))
-            args.append({"tool": call.name, "field": field, "ok": ok})
-    key = state_key(calls)
-    did_refuse = refused(calls)
-    errors = []
-    if record.get("error"):
-        errors.append("run_failure")
-    if missing:
-        errors.append("missing_call")
-    if extra:
-        errors.append("extra_call")
-    if not missing and not extra and want != got:
-        errors.append("wrong_order")
-    if any(not a["ok"] for a in args):
-        errors.append("wrong_args")
-    state_ok = None if expect.table_key is None else (key == expect.table_key or key in expect.alt_table_keys)
-    if state_ok is False:
-        errors.append("lost_state")
-    if expect.refuse and not did_refuse:
-        errors.append("missed_refusal")
-    if not expect.refuse and did_refuse:
-        errors.append("false_refusal")
-    calc_grade = None
-    if expect.calc_qid:
-        item = calc[expect.calc_qid]
-        answer = stat_answer(calls)
-        g = calculation.grade(item, answer, cells_of(item.table_key), record.get("error"))
-        calc_grade = {"verdict": g.verdict, "errors": g.errors}
-        if g.verdict != "PASS" and key in expect.alt_table_keys and same_values(item, answer):
-            # an alternate gold table: the L3 grader checks cells of the golden table only, so the same numbers read
-            # from another table fail on dims / support. Equal values pass, counted apart (T3-27).
-            calc_grade = {"verdict": "PASS", "errors": [], "via_alternate": True, "l3": g.verdict}
-        if calc_grade["verdict"] != "PASS":
-            errors.append("wrong_numbers")
-    unsupported = unsupported_final_numbers(record.get("answer") or "", grounded, facts)
-    if unsupported:
-        errors.append("unsupported_final_number")
-    return {"tools_ok": want == got, "order_ok": _subsequence(want, got), "missing": dict(missing), "extra": dict(extra),
-            "args": args, "state_key": key, "state_ok": state_ok, "refused": did_refuse, "calc": calc_grade,
-            "expected_table": expect.table_key,
-            "alt_attempts": len(every) - len(calls),
-            "unsupported_numbers": unsupported, "errors": errors, "passed": not errors}
-
-
-def _grounding(question: str, calls: list[dict]) -> tuple[set[str], list[Fact]]:
-    numbers = set(_numbers(question))
-    facts: list[Fact] = []
-    for call in calls:
-        result = call.get("result")
-        numbers |= set(_numbers(result if isinstance(result, str) else json.dumps(result, ensure_ascii=False)))
-        numbers |= {n for v in (call.get("args") or {}).values() for n in _numbers(json.dumps(v, ensure_ascii=False))}
-    if (answer := stat_answer(calls)) is not None:
-        facts = list(answer.result.facts)
-    return numbers, facts
+    tools, tool_errors = grade_tools(expect, calls)
+    state, state_errors = grade_state(expect, calls)
+    numbers, number_errors = grade_numbers(expect, record, calls, state["state_key"], calc, cells_of)
+    answer, answer_errors = grade_answer(record, grounded, facts)
+    errors = ["run_failure"] * bool(record.get("error")) + tool_errors + state_errors + number_errors + answer_errors
+    return {**tools, **state, **numbers, "expected_table": expect.table_key, "alt_attempts": len(every) - len(calls),
+            **answer, "errors": errors, "passed": not errors}
 
 
 def grade_conversation(scenario: AgentScenario, records: list[dict], calc: dict[str, CalcItem],
@@ -241,7 +83,7 @@ def grade_conversation(scenario: AgentScenario, records: list[dict], calc: dict[
     rows = []
     for i, turn in enumerate(scenario.turns):
         record = records[i] if i < len(records) else {"calls": [], "answer": "", "error": "turn not run"}
-        numbers, new_facts = _grounding(turn.question, record.get("calls") or [])
+        numbers, new_facts = grounding(turn.question, record.get("calls") or [])
         grounded |= numbers
         facts += new_facts
         g = grade_turn(turn.expect, record, calc, cells_of, grounded, facts)
@@ -249,7 +91,20 @@ def grade_conversation(scenario: AgentScenario, records: list[dict], calc: dict[
     return rows
 
 
+def task_of(sid: str) -> str:
+    return next((name for prefix, name in TASK_PREFIXES.items() if sid.startswith(prefix)), "other")
+
+
 def aggregate(rows: list[dict]) -> dict:
+    """Run-level metrics over graded turn rows, and the same headline metrics per evaluation task (by_task, T3-29)."""
+    groups: dict[str, list[dict]] = defaultdict(list)
+    for r in rows:
+        groups[task_of(r["sid"])].append(r)
+    by_task = {name: {k: m[k] for k in TASK_METRICS} for name, part in sorted(groups.items()) for m in [_metrics(part)]}
+    return {**_metrics(rows), "by_task": by_task}
+
+
+def _metrics(rows: list[dict]) -> dict:
     """Run-level metrics over graded turn rows (rows carry sid, run, turn, passed and the turn metrics)."""
     n = len(rows)
     rate = lambda xs: sum(xs) / len(xs) if xs else None  # noqa: E731
@@ -265,6 +120,8 @@ def aggregate(rows: list[dict]) -> dict:
         for a in r["args"]:
             fields[a["field"]].append(a["ok"])
     calc = [r["calc"]["verdict"] for r in rows if r["calc"]]
+    calc += [g["verdict"] for r in rows for g in r.get("sub_calc") or []]  # T3-28: each sub-question's L3 grade
+    combine = [r["combine_ok"] for r in rows if r.get("combine_ok") is not None]
     first_fail = Counter(next(t["turn"] for t in v if not t["passed"]) for k, v in convs.items() if not success[k])
     return {
         "n_turns": n, "n_conversations": len(convs), "n_scenarios": len(by_sid),
@@ -286,6 +143,7 @@ def aggregate(rows: list[dict]) -> dict:
         "numeric_pass_via_alternate": sum(bool(r["calc"] and r["calc"].get("via_alternate")) for r in rows),
         "state_via_alternate": sum(bool(r["state_ok"] and r["state_key"] != r.get("expected_table")) for r in rows
                                    if r.get("expected_table")),
+        "combine_accuracy": rate(combine), "n_combine": len(combine),
         "unsupported_final_number_turns": sum(bool(r["unsupported_numbers"]) for r in rows),
         "errors": dict(Counter(e for r in rows for e in r["errors"])),
         "first_failed_turn": {str(k): v for k, v in sorted(first_fail.items())},
@@ -313,15 +171,22 @@ def oracle_records(scenario: AgentScenario, calc: dict[str, CalcItem]) -> list[d
     for turn in scenario.turns:
         e = turn.expect
         calls = []
+        sub_qids = iter(e.calc_qids)  # T3-28: one L3 item per summarize_stat, in call order
+        stat_keys = iter([c.args.get("table_key") for c in e.tools if c.name == "summarize_stat"])
+        next_key = None
         for call in e.tools:
             args = dict(call.args)
             if call.name in STATE_TOOLS and e.table_key and "table_key" not in args:
                 args["table_key"] = e.table_key
             if call.name == "search_tables":
-                key = e.table_key or args.get("table_key")
+                next_key = next(stat_keys, None)  # the table of the summarize_stat this search leads to
+                key = (next_key if e.calc_qids else None) or e.table_key or args.get("table_key")
                 result: Any = {"route": "refuse", "picked": []} if e.refuse else {"route": "found", "picked": [{"key": key}]}
             elif call.name == "summarize_stat":
-                result = oracle_stat(calc[e.calc_qid]) if e.calc_qid else {"outcome": "answered"}
+                qid = e.calc_qid or next(sub_qids, None)
+                result = oracle_stat(calc[qid]) if qid else {"outcome": "answered"}
+            elif call.name == "combine_values":
+                result = {"op": args.get("op"), "value": e.combine_value}
             else:
                 result = {"chart_type": args.get("chart_type")}
             calls.append({"name": call.name, "args": args, "result": result, "status": "ok"})

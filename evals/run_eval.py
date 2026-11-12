@@ -19,31 +19,31 @@ report.html (charts, evals.report_html), and appends one aggregate line to evals
 Run folders hold question text and table keys and stay out of git; ops_history holds aggregates only.
 """
 
+
 from __future__ import annotations
 
 import argparse
-import csv
 import datetime as dt
 import hashlib
 import json
 import os
 import subprocess
-import time
-from collections import Counter, defaultdict
+from collections import Counter
 from pathlib import Path
 
-from evals import ops, report_html, trace
-from evals.evaluators import calculation, retrieval
-from evals.schemas import (AGENT_SCENARIOS, DATASETS, GOLDEN, QUERY_GOLDEN, ROOT, TABLES, AgentScenario, CalcItem, QueryItem,
-                           load_items, load_jsonl)
+from kosis_agent.observability.tracing import SERVICE
 
+from evals import ops, report_html, trace
+from evals.schemas import AGENT_SCENARIOS, DATASETS, GOLDEN, QUERY_GOLDEN, ROOT, TABLES
+from evals.tasks import ablation, agent, common, l0_metadata, l1_retrieval, l2_query, l3_calculation, l4_e2e, l012
+
+# T3-29: one module per evaluation task, each with run(args) -> (rows, summary, report) and, where it has them,
+# owners(rows, summary) for the "고칠 담당" section and target(args, op) for its ops_history line.
+TASKS = {"l0": l0_metadata, "l1": l1_retrieval, "l2": l2_query, "ablation": ablation, "l012": l012, "l3": l3_calculation,
+         "e2e": l4_e2e, "agent": agent}
 REPORTS = ROOT / "evals" / "reports"
-MOCK_NOTE = " · **llm mock: 경로 확인용, 점수 아님** (모델 대신 코드 템플릿이 답함)"
 CALC_GOLDEN = DATASETS / "calculation_golden.jsonl"
 POOL = DATASETS / "retrieval_pool.csv"
-METADATA_SAMPLE = DATASETS / "metadata_sample.jsonl"  # L0 accuracy sample, labelled by the evaluation side (§3.3)
-OPS_FIELDS = ("latency_ms", "llm_calls", "input_tokens", "output_tokens", "model", "failed", "retried")
-TRACE_FIELDS = ("spans", "retrieve_ms", "search_spans")
 # T3-23: search settings as arguments (argument > shell > .env > default). Each sets the variable evals/config.py reads.
 SEARCH_ARGS = {
     "chroma_host": ("CHROMA_HOST", "Chroma host (default localhost)"),
@@ -79,356 +79,6 @@ def git(*args: str) -> str:
     return subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True).stdout.strip()
 
 
-def judged_keys(path: Path) -> dict[str, set[str]]:
-    """Keys a person looked at per question: every row of the labelled pool, gold or not."""
-    judged: dict[str, set[str]] = defaultdict(set)
-    if path.exists():
-        with path.open(encoding="utf-8-sig", newline="") as f:
-            for row in csv.DictReader(f):
-                judged[row["qid"]].add(row["key"])
-    return judged
-
-
-def run_l1(args) -> tuple[list[dict], dict, str]:
-    from evals.runners import retrieval as runner  # LangChain loads only for L1
-
-    items = load_items(args.golden)
-    by_qid = {i.qid: i for i in items}
-    if args.from_run:  # T3-22: regrade the saved rankings under the current labels; search is not run again
-        past = json.loads((args.from_run / "manifest.json").read_text(encoding="utf-8"))
-        args.retriever, args.k = past["retriever"], past["top_k"]
-        rows = [json.loads(line) for line in (args.from_run / "results.jsonl").read_text(encoding="utf-8").splitlines() if line.strip()]
-        for r in rows:  # answerable / reason follow the current golden (labels may have changed)
-            r["answerable"] = by_qid[r["qid"]].answerable
-        # the saved run keeps only its split, so tau cannot be picked on dev again: reuse the run's tau
-        tau = args.tau if args.tau is not None else past["summary"]["tau"]
-    else:
-        rows = runner.run(runner.build(args.retriever, items, args.k), items, args.k)
-        tau = args.tau if args.tau is not None else retrieval.best_tau(
-            [(r["top_score"], not r["answerable"]) for r in rows if r["split"] == "dev"])
-    judged = judged_keys(args.pool)
-    shown = [r for r in rows if args.split == "all" or r["split"] == args.split]
-    for r in shown:
-        r["no_answer_pred"] = retrieval.predict_no_answer(r["top_score"], tau)
-        if r["answerable"]:
-            r.update(retrieval.score_item(by_qid[r["qid"]], r["keys"], judged.get(r["qid"])))
-    scored = [r for r in shown if r["answerable"]]
-    agg = retrieval.aggregate(scored)
-    no_answer = retrieval.prf([(r["no_answer_pred"], not r["answerable"]) for r in shown])
-    reasons = {i.qid: i.no_answer_reason for i in items if not i.answerable}
-    summary = {"tau": tau, "metrics": agg, "no_answer": no_answer, "errors": sum(1 for r in shown if r["error"]),
-               "refusal_by_reason": retrieval.refusal_by_reason(shown, reasons)}
-    if any(r["search_spans"] for r in shown):  # a graph search (T2-36): which node each miss is lost at
-        for r in shown:
-            r["failure"] = trace.blame_search(r, by_qid[r["qid"]].gold_keys, args.k)
-        summary["search_failures"] = dict(Counter(r["failure"]["span"] or "-" for r in shown if r["failure"]))
-    return shown, summary, l1_report(args, summary)
-
-
-def load_sigungu() -> dict[str, list[str]]:
-    """The 시군구 -> 시도 dictionary parse_query needs (T2-41: without it parse reads no 시군구 and L2 regions drop)."""
-    from kosis_rag.adapters.files import load_sigungu as load
-
-    from evals.config import data_dir
-
-    return load(data_dir() / "sigungu.json")
-
-
-def run_l0(args) -> tuple[list[dict], dict, str]:
-    """L0 metadata quality over the registry; the load check runs only with --retriever chroma (needs the server)."""
-    from evals.evaluators import metadata
-    from evals.runners import retrieval as runner
-
-    records = {r.info.key: r for r in runner.load_records()}
-    gold = set().union(*(i.gold_keys for i in load_items(args.golden)))
-    sample = ({json.loads(line)["key"]: json.loads(line) for line in METADATA_SAMPLE.read_text(encoding="utf-8").splitlines()
-               if line.strip()} if METADATA_SAMPLE.exists() else None)
-    loaded = None
-    if args.retriever == "chroma":
-        loaded = set(runner.connect_chroma().collection.get(include=[])["ids"])
-    s = metadata.score(records, gold, sample, loaded)
-    rows = [{"key": k, **metadata.fields(r), "latency_ms": 0.0} for k, r in records.items()]
-    lines = ["| 필드 | 채움률 (전체) | 채움률 (골든 정답 표) |", "| --- | --- | --- |"]
-    lines += [f"| {f} | {s['all']['fill'][f]:.3f} | {s['gold']['fill'][f]:.3f} |" for f in metadata.FIELDS]
-    fmt = lambda v: "—" if v is None else f"{v:.3f}"
-    report = "\n".join([
-        f"# L0 metadata quality — {args.stage}", "",
-        f"- 표 {s['n_tables']}개, 골든 정답 표 {s['n_gold']}개 · 필드는 필터가 쓰는 함수로 읽음 (kosis_rag.shared.fields / filters / roles)", "",
-        *lines, "",
-        f"- regions \"해당 없음\"(행정구역 분류 없는 표): 전체 {s['all']['regions_none']:.3f} · 골든 {s['gold']['regions_none']:.3f}",
-        f"- measure 미매핑(이름이 세는 대상을 말하지 않음·기타): 전체 {s['all']['measure_unmapped']:.3f} · 골든 {s['gold']['measure_unmapped']:.3f}",
-        f"- dimension 미매핑(질문 분류 어휘로 고를 수 없는 분류 이름): 전체 {fmt(s['all']['dimension_unmapped'])}"
-        f" ({s['all']['dimension_names']}개) · 골든 {fmt(s['gold']['dimension_unmapped'])} ({s['gold']['dimension_names']}개)",
-        "- 정규화 정확도: " + (", ".join(f"{k} {fmt(v)}" for k, v in s["accuracy"].items()) + f" (표본 {s['n_sample']})"
-                         if s["accuracy"] else f"표본 대기 ({METADATA_SAMPLE.relative_to(ROOT)} 없음)"),
-        "- 적재 일치: " + (("일치" if s["load"]["match"] else f"불일치 — 빠짐 {s['load']['missing']}, 남음 {s['load']['extra']}")
-                        + f" ({s['load']['loaded']}개)" if "load" in s else "확인 안 함 (--retriever chroma 로 확인)"),
-    ]) + "\n"
-    return rows, s, report
-
-
-def run_l2(args) -> tuple[list[dict], dict, str]:
-    """L2: parse_query on every labelled question against query_golden.jsonl, with the 시군구 dictionary."""
-    from kosis_rag.parse.node import parse_query
-
-    from evals.evaluators import query
-
-    items: list[QueryItem] = load_jsonl(args.query_golden, QueryItem)
-    sigungu = load_sigungu()
-    rows = []
-    for item in items:
-        if args.split != "all" and item.split != args.split:
-            continue
-        started = time.perf_counter()
-        pred = parse_query(item.question, sigungu=sigungu).model_dump()
-        rows.append({"qid": item.qid, "split": item.split, **query.score_query(item, pred), "pred": pred,
-                     "latency_ms": (time.perf_counter() - started) * 1000})
-    agg = query.aggregate(rows)
-    fmt = lambda v: "—" if v is None else f"{v:.3f}"
-    cols = (*query.FIELDS, "all_fields")
-    lines = ["| split | n | " + " | ".join(cols) + " |", "|" + " --- |" * (len(cols) + 2)]
-    for name, m in agg.items():
-        lines.append(f"| {name} | {m['n']} | " + " | ".join(f"{fmt(m[c])} ({m['n_' + c]})" for c in cols) + " |")
-    report = "\n".join([
-        f"# L2 query understanding — {args.stage}", "",
-        f"- `parse_query` (규칙, LLM 0) vs `{os.path.relpath(args.query_golden.resolve(), ROOT)}` · 괄호는 라벨이 있는 문항 수, — 는 라벨 없음", "",
-        *lines, "",
-        "- 목록 필드 P/R (§5, 미시 평균; P가 낮으면 지어낸 필터, R이 낮으면 놓친 조건): " + " · ".join(
-            f"{f} P {fmt(agg['all'][f + '_p'])} R {fmt(agg['all'][f + '_r'])}" for f in query.PR_FIELDS),
-        "- 빈 슬롯도 채점: 정답이 빈 필드에 값을 내면 오답. measures는 정답 개념이 예측 검색어 안에 있으면 정답.",
-    ]) + "\n"
-    return rows, {"metrics": agg}, report
-
-
-def run_ablation(args) -> tuple[list[dict], dict, str]:
-    """Slot ablation (§4.4): filter recall per combination; with --retriever chroma also Hit/MRR, flips, verdicts."""
-    from kosis_rag.parse.node import parse_query
-
-    from evals.runners import ablation
-    from evals.runners import retrieval as runner
-
-    items = [i for i in load_items(args.golden) if args.split == "all" or i.split == args.split]
-    records = {r.info.key: r for r in runner.load_records()}
-    if args.slot_source == "gold":
-        slots = {q.qid: ablation.gold_parsed(q) for q in load_jsonl(args.query_golden, QueryItem)}
-    else:
-        sigungu = load_sigungu()
-        slots = {i.qid: parse_query(i.question, sigungu=sigungu) for i in items}
-    on = ablation.combos(args.slots.split(","))
-    retriever = None
-    if args.retriever == "chroma":
-        retriever = runner.connect_chroma(args.k)
-    rows = ablation.run(items, slots, records, on, retriever, args.k)
-    tau = args.tau
-    if tau is None and retriever is not None:  # chosen once on `none`, kept for every combination
-        tau = retrieval.best_tau([(r["top_score"], not r["answerable"]) for r in rows if r["combo"] == "none" and r["split"] == "dev"])
-    s = ablation.summarize(rows, on, slots, tau if tau is not None else 0.0)
-    fmt = lambda v, p=3: "—" if v is None else (f"{v:.{p}f}" if isinstance(v, float) else str(v))
-    lines = ["| 조합 | n | MRR | Hit@1 | Hit@5 | Hit@10 | 필터 recall | 후보 중앙값 | 0건 답 있음 | 0건 답 없음 | no_period 거절 |",
-             "|" + " --- |" * 11]
-    for c, m in s["combos"].items():
-        lines.append(f"| {c} | {m['n']} | {fmt(m.get('mrr'))} | {fmt(m.get('hit@1'))} | {fmt(m.get('hit@5'))} | {fmt(m.get('hit@10'))} "
-                     f"| {fmt(m['filter_recall'])} | {fmt(m['candidates_median'], 0)} | {fmt(m['zero_answerable'])} "
-                     f"| {fmt(m['zero_no_answer'])} ({m['n_no_answer']}) | {fmt(m['no_period_refusal'])} ({m['n_no_period']}) |")
-    slot_lines = ["| 슬롯 | 슬롯 있는 문항 | only vs none: Hit@5 순증 · Hit@1 · recall Δ | all vs all-s: Hit@5 순증 · Hit@1 · recall Δ | 조건부 ΔMRR | 판정 |",
-                  "|" + " --- |" * 6]
-    for name, v in s["slots"].items():
-        o, mi = v["only"], v["minus"]
-        slot_lines.append(f"| {name} | {v['n_with_slot']} | {o['hit5_net']:+d} · {o['hit1_net']:+d} · {o['recall_delta']:+.3f} "
-                          f"| {mi['hit5_net']:+d} · {mi['hit1_net']:+d} · {mi['recall_delta']:+.3f} | {fmt(v['conditional_mrr_delta'])} | {v['verdict']} |")
-    flips = [f"- {n}: only 좋아짐 {v['only'].get('better', [])} · 나빠짐 {v['only'].get('worse', [])}" for n, v in s["slots"].items()]
-    lost = sorted({(r["combo"], r["qid"]) for r in rows if r["answerable"] and not r["filter_pass"]})
-    report = "\n".join([
-        f"# Slot ablation — {args.stage}", "",
-        f"- 슬롯 출처 `{args.slot_source}` · 슬롯 {args.slots} · split `{args.split}` · 검색기 `{args.retriever if retriever else '없음 (필터만)'}`"
-        f" · k={min(args.k, 10)} · tau {fmt(tau, 4)} (none에서 한 번 선택)", "",
-        *lines, "", *slot_lines, "",
-        "- 판정 (§4.4): 도움 = 두 비교 모두 Hit@5 순증 ≥ 2, Hit@1 순감 없음, recall 하락 없음 / 해로움 = 어느 쪽이든 Hit@5 순감 또는 recall 하락 / 그 밖 불분명."
-        + (" 검색 없이 돌리면 recall만 보므로 해로움 또는 불분명만 나온다." if retriever is None else ""),
-        "- 단계적 완화: 없음 (T2-29 미구현). 0건 = hard 필터가 남긴 표가 0개인 문항 비율, 완화가 시작될 자리다(완화 후 결과는 아님).",
-        "", "## 뒤집힌 문항 (Hit@5)", "", *flips,
-        "", f"## 필터가 정답 표를 지운 문항 ({len(lost)})", "",
-        *[f"- {c} {q}: " + "; ".join(f"{k} {why}" for k, why in next(r for r in rows if r['combo'] == c and r['qid'] == q)['gold_removed'].items())
-          for c, q in lost],
-    ]) + "\n"
-    return rows, s, report
-
-
-def run_l012(args) -> tuple[list[dict], dict, str]:
-    """L0 + L1 filter (gold and pred slots) + L2 in one run folder; rows carry `layer`, summary and ops stay per layer."""
-    with_source = lambda src: argparse.Namespace(**{**vars(args), "slot_source": src})  # noqa: E731
-    parts = {"l0": run_l0(args), "l1-gold": run_ablation(with_source("gold")), "l1-pred": run_ablation(with_source("pred")),
-             "l2": run_l2(args)}
-    # run() skips questions without a slot reading; gold reads query_golden, pred reads the retrieval golden set
-    gold, pred = ({(r["combo"], r["qid"]) for r in parts[p][0]} for p in ("l1-gold", "l1-pred"))
-    assert gold == pred, f"gold and pred slot runs cover different questions: {sorted(gold ^ pred)[:5]}"
-    rows = [{**r, "layer": name} for name, (part, _, _) in parts.items() for r in part]
-    report = "\n".join(f"<!-- {name} -->\n{rep}" for name, (_, _, rep) in parts.items())
-    return rows, {name: s for name, (_, s, _) in parts.items()}, report
-
-
-def l1_report(args, s: dict) -> str:
-    cols = ["hit@1", "hit@5", "hit@10", "rr", "slot_recall@5", "slot_recall@10", "complete@3", "complete@10", "unjudged@10"]
-    head = "| qtype | n | " + " | ".join("MRR" if c == "rr" else c for c in cols) + " |"
-    lines = [head, "|" + " --- |" * (len(cols) + 2)]
-    order = ["all"] + sorted(k for k in s["metrics"] if k != "all")
-    for name in order:
-        m = s["metrics"][name]
-        lines.append(f"| {name} | {m['n']} | " + " | ".join(f"{m.get(c, 0):.3f}" for c in cols) + " |")
-    na = s["no_answer"]
-    rules = []
-    if "no_answer_rules" in s:  # T2-09: the LLM re-ranker's verdict next to tau
-        nr = s["no_answer_rules"]
-        rules = ["", "| 답 없음 규칙 | P | R | F1 | tp / fp / fn | 사유별 recall |", "| --- | --- | --- | --- | --- | --- |"]
-        rules += [f"| {name} | {m['precision']:.3f} | {m['recall']:.3f} | {m['f1']:.3f} | {m['tp']} / {m['fp']} / {m['fn']} | "
-                  + ", ".join(f"{g} {a}/{b}" for g, (a, b) in m["recall_by_reason"].items()) + " |"
-                  for name, m in nr.items() if name in ("tau", "llm", "either")]
-        rules += ["", f"- llm: 2차 LLM이 고른 표 0개(호출 오류 제외) · either: llm 또는 tau · LLM 사유 일치 "
-                      f"{nr['llm_reason_match'][0]}/{nr['llm_reason_match'][1]} · LLM 호출 오류 {nr['llm_errors']}건"]
-    a = s["metrics"]["all"]
-    bounds = ([f"- 판정 구간 (하한 = 판정 없는 표를 오답, 상한 = 정답으로 볼 때. 실제 값은 이 사이): "
-               + " · ".join(f"{name} {a[c]:.3f} ~ {a[c + '_upper']:.3f}"
-                            for name, c in (("Hit@1", "hit@1"), ("Hit@5", "hit@5"), ("Hit@10", "hit@10"), ("MRR", "rr"))), ""]
-              if "rr_upper" in a else [])
-    return "\n".join([
-        f"# L1 retrieval — {args.stage}", "",
-        f"- retriever `{args.retriever}`, k={args.k}, split `{args.split}`, 답 있는 문항 기준"
-        + (f" · 과거 실행 재채점 `{args.from_run}` (검색 다시 안 함, tau는 그 run 값)" if args.from_run else ""), "",
-        *lines, "", *bounds,
-        f"- 답 없음 (tau={s['tau']:.4g}, {'재채점한 run의 값' if args.from_run else 'dev에서 선택'}): P {na['precision']:.3f} · R {na['recall']:.3f} · F1 {na['f1']:.3f} "
-        f"(tp {na['tp']}, fp {na['fp']}, fn {na['fn']})",
-        "- 사유별 답 없음 판정 (§4.3, no_period는 필터 완화 회귀 감시): " + (", ".join(
-            f"{k} {v['refused']}/{v['n']} ({v['rate']:.0%})" for k, v in s.get("refusal_by_reason", {}).items()) or "답 없음 문항 없음"),
-        "- slot_recall@k: 정답 슬롯(표 자리) 중 상위 k에서 채운 비율. 단일 표 문항은 hit@k와 같고 복합 문항에서만 다르다.",
-        "- unjudged@10: 상위 10개 중 사람이 판정하지 않은 표 비율. 높으면 정답 라벨 추가 판정이 필요하다 (plans/T2-02.md 동결 규칙).",
-    ]) + "\n"
-
-
-def pct(hit: int, n: int) -> str:
-    return f"{hit}/{n} ({hit / n:.1%})" if n else "대상 없음"
-
-
-OWNERS = {"data": "데이터 (메타데이터·조건 파서: T2-14·T2-29·T2-30)", "ai_search": "AI 파이프라인 — 검색·답 없음 판정 (T2-06·07·09)",
-          "ai_answer": "AI 파이프라인 — summarize_stat 계산·문장 (실전 1)", "ai_query": "AI 파이프라인 — summarize_stat 질의 분석 (StatQuery)"}
-
-
-def owner_section(layer: str, rows: list[dict], summary: dict) -> str:
-    """'Who fixes it': failures of this run grouped by the team that owns the failing part, with example qids.
-    L0 and L2 belong to the data side, L1 ranking and no-answer to AI search, L3/L4 answers to summarize_stat."""
-    found: dict[str, list[str]] = {}
-
-    def add(owner: str, what: str, qids: list[str]) -> None:
-        if qids:
-            found.setdefault(owner, []).append(f"{what} {len(qids)} ({', '.join(qids[:5])}{' …' if len(qids) > 5 else ''})")
-
-    if layer == "l1":
-        add("ai_search", "답 있는데 상위 5에 정답 표 없음", [r["qid"] for r in rows if r["answerable"] and not r.get("hit@5")])
-        add("ai_search", "답 없음 판정 틀림", [r["qid"] for r in rows if r["no_answer_pred"] == r["answerable"]])
-    elif layer == "l2":
-        from evals.evaluators.query import FIELDS
-        for f in FIELDS:
-            add("data", f"parse_query {f} 오답", [r["qid"] for r in rows if r.get(f) == 0])
-    elif layer == "l0":
-        for scope in ("gold",):
-            s = summary.get(scope) or {}
-            if s.get("measure_unmapped"):
-                found.setdefault("data", []).append(f"정답 표 measure 미매핑 {s['measure_unmapped']:.1%}")
-            if s.get("dimension_unmapped"):
-                found.setdefault("data", []).append(f"정답 표 dimension 미매핑 {s['dimension_unmapped']:.1%}")
-        if (summary.get("load") or {}).get("match") is False:
-            found.setdefault("data", []).append("컬렉션 적재 키 불일치")
-    elif layer in ("l3", "e2e"):
-        add("ai_search", "검색 1위가 다른 표", [r["qid"] for r in rows if r.get("cause") == "retrieval"])
-        add("ai_answer", "정답 표인데 답 틀림" if layer == "e2e" else "정답 표 주고도 답 틀림",
-            [r["qid"] for r in rows if r["verdict"] != "PASS" and r.get("cause", "answer") == "answer"])
-        add("ai_query", "답의 연도가 질문과 다름", [r["qid"] for r in rows if r.get("year_ok") is False])
-        add("ai_query", "답의 지역이 질문과 다름", [r["qid"] for r in rows if r.get("region_ok") is False])
-    if not found:
-        return ""
-    lines = ["## 고칠 담당", ""]
-    for owner, items in found.items():
-        lines += [f"- **{OWNERS[owner]}**", *(f"  - {i}" for i in items)]
-    return "\n".join(lines) + "\n\n"
-
-
-def ops_section(op: dict, title: str = "운영 지표") -> str:
-    c = op["cost"]
-    cost = f"{c['total']:.2f} {c['currency']}" if c["total"] is not None else f"단가 미설정 ({', '.join(c['unpriced_models']) or '토큰 없음'}; evals/pricing.json)"
-    return "\n".join(["", f"## {title}", "",
-        f"- Latency: p50 {op['latency_ms']['p50']:.1f} ms · p95 {op['latency_ms']['p95']:.1f} ms · 평균 {op['latency_ms']['mean']:.1f} ms",
-        f"- Token Usage: 입력 {op['tokens']['input']:,} · 출력 {op['tokens']['output']:,} (호출당 {op['tokens']['per_call_mean']:.0f}) · LLM 호출 {op['llm_calls']}",
-        f"- Cost: {cost}",
-        f"- Tool Failure Rate: {op['tool_failure_rate']:.1%} ({op['tool_calls']}회 중) · 재시도 비율 {op['retry_rate']:.1%}",
-    ]) + "\n"
-
-
-def failure_section(rows: list[dict], exported: bool) -> str:
-    """Stage counts and one line per non-PASS question: the span it failed in and why (evals.trace.blame)."""
-    failed = [r for r in rows if r.get("failure")]
-    counts = Counter(r["failure"]["stage"] for r in failed)
-    lines = ["", "## 실패 단계 (trace)", "",
-             "- 판정 순서: " + " > ".join(f"{k}({v})" for k, v in trace.STAGES.items()) + " — 첫 번째로 맞는 규칙 하나 (plans/T2-15.md)",
-             "- 단계별: " + (", ".join(f"{trace.STAGES[k]} {counts[k]}" for k in trace.STAGES if counts[k]) or "실패 없음"),
-             f"- Jaeger: {'trace 전송함 (' + trace.JAEGER_UI + ')' if exported else 'OTEL_EXPORTER_OTLP_ENDPOINT 미설정, 전송 안 함'}"]
-    if failed:
-        lines += ["", "| qid | 판정 | 단계 | span | 사유 | 거친 span |", "| --- | --- | --- | --- | --- | --- |"]
-        for r in failed:
-            f = r["failure"]
-            path = " → ".join(s["name"] + ("✕" if s["status"] == "error" else "") for s in r.get("spans") or []) or "-"
-            lines.append(f"| {r['qid']} | {r['verdict']} | {f['label']} | {f['span'] or '-'} | {f['reason'].replace('|', '/')} | {path} |")
-    return "\n".join(lines) + "\n"
-
-
-def search_failure_section(rows: list[dict], exported: bool) -> str:
-    """L1 graph runs: misses per graph node and one line per miss (evals.trace.blame_search)."""
-    failed = [r for r in rows if r.get("failure")]
-    counts = Counter(r["failure"]["span"] or "-" for r in failed)
-    lines = ["", "## 실패 노드 (LangGraph trace)", "",
-             "- 판정: Hit@k 놓침 → 정답 표를 top k 밖으로 마지막으로 내린 노드(처음부터 밖이면 retrieve), 답 없음 오판 → gate (plans/T2-36.md)",
-             "- 노드별: " + (", ".join(f"{k} {v}" for k, v in counts.most_common()) or "실패 없음") + f" (합 {len(failed)})",
-             f"- Jaeger: {'trace 전송함 (' + trace.JAEGER_UI + ')' if exported else 'OTEL_EXPORTER_OTLP_ENDPOINT 미설정, 전송 안 함'}"]
-    if failed:
-        lines += ["", "| qid | qtype | 실패 | 노드 | 사유 | 거친 노드 |", "| --- | --- | --- | --- | --- | --- |"]
-        for r in failed:
-            f = r["failure"]
-            path = " → ".join(s["name"] + ("✕" if s["status"] == "error" else "") for s in r["search_spans"]) or "-"
-            lines.append(f"| {r['qid']} | {r['qtype']} | {f['label']} | {f['span'] or '-'} | {f['reason'].replace('|', '/')} | {path} |")
-    return "\n".join(lines) + "\n"
-
-
-def grade(items: list[CalcItem], answers: list[dict]) -> list[dict]:
-    """L3 grading of each answer against the golden table's cells, with the ops fields kept per row."""
-    rows = []
-    for item, a in zip(items, answers):
-        cells = calculation.read_cells(ROOT / "data" / "values" / f"{item.table_key}.parquet")
-        g = calculation.grade(item, a["answer"], cells, a["error"])
-        rows.append({**g.model_dump(), "table_key": item.table_key, **{k: a[k] for k in OPS_FIELDS + TRACE_FIELDS if k in a},
-                     "answer": a["answer"].model_dump(mode="json") if a["answer"] else None})
-    return rows
-
-
-def verdict_table(rows: list[dict]) -> tuple[dict, Counter, list[str]]:
-    """Verdict counts per kind, error counts and the markdown table both L3 and L4 reports show."""
-    by_kind: dict[str, Counter] = defaultdict(Counter)
-    for r in rows:
-        by_kind["all"][r["verdict"]] += 1
-        by_kind[r["kind"]][r["verdict"]] += 1
-    errors = Counter(e for r in rows for e in r["errors"])
-    lines = ["| kind | n | PASS | PARTIAL | FAIL |", "| --- | --- | --- | --- | --- |"]
-    for k in ["all", "answerable", "not_answerable", "clarify", "default_allowed"]:
-        v = by_kind.get(k, Counter())
-        lines.append(f"| {k} | {sum(v.values())} | {v['PASS']} | {v['PARTIAL']} | {v['FAIL']} |")
-    return {k: dict(v) for k, v in by_kind.items()}, errors, lines
-
-
-def calc_items(paths: list[Path]) -> list[CalcItem]:
-    """L3/L4 items from one or more golden files (Phase 1 file, T2-31 diverse file); qids must not repeat."""
-    items = [i for p in paths for i in load_jsonl(p, CalcItem)]
-    qids = Counter(i.qid for i in items)
-    if dupes := [q for q, n in qids.items() if n > 1]:
-        raise SystemExit(f"duplicate qids across {[str(p) for p in paths]}: {dupes[:5]}")
-    return items
-
 
 def calc_ref(paths: list[Path]) -> dict:
     """One golden ref for report_html: one file as is, several as joined paths and a hash over their hashes."""
@@ -438,144 +88,10 @@ def calc_ref(paths: list[Path]) -> dict:
             **({"files": dict(zip((p.name for p in paths), shas))} if len(paths) > 1 else {})}
 
 
-def run_l3(args) -> tuple[list[dict], dict, str]:
-    from evals.runners import stat as runner
-
-    items: list[CalcItem] = calc_items(args.calc_golden)
-    answers = runner.read_run(args.from_run, items) if args.from_run else runner.run(items, args.interval, args.llm)
-    rows = grade(items, answers)
-    verdicts, errors, lines = verdict_table(rows)
-    summary = {"verdicts": verdicts, "errors": dict(errors)}
-    report = "\n".join([
-        f"# L3 calculation — {args.stage}", "",
-        f"- 답: {'과거 실행 재채점 ' + str(args.from_run) if args.from_run else 'summarize_stat 호출'} · 정답 표 고정(oracle)"
-        + (MOCK_NOTE if args.llm == "mock" and not args.from_run else ""), "",
-        *lines, "",
-        "- 오류 유형: " + (", ".join(f"{k} {v}" for k, v in errors.most_common()) or "없음"),
-    ]) + "\n"
-    return rows, summary, report
-
-
-def run_e2e(args) -> tuple[list[dict], dict, str]:
-    """L4 end to end: the retriever picks the table (top 1), then the same answer path and grader as L3."""
-    from evals.runners import e2e
-    from evals.runners import retrieval as runner
-
-    if args.retriever == "oracle":
-        raise SystemExit("e2e with the oracle retriever is L3: run --layer l3 instead")
-    items: list[CalcItem] = calc_items(args.calc_golden)
-    # §6.3: the L1 slots judge the table and the L2 labels the 연도·지역, linked by qid (golden v2 shares qids)
-    l1 = {i.qid: i for i in load_items(args.golden)} if args.golden.exists() else {}
-    l2 = {q.qid: q for q in load_jsonl(args.query_golden, QueryItem)} if args.query_golden.exists() else {}
-    raw = e2e.run(runner.build(args.retriever, [], args.k), items, args.k, args.interval, args.llm)
-    rows = [{**g, **e2e.locate(item, a, g["verdict"], l1.get(item.qid)), **e2e.template_slots(a["answer"], l2.get(item.qid)),
-             "error": a["error"], "no_period_item": "no_period" in item.allowed_reasons}
-            for item, a, g in zip(items, raw, grade(items, raw))]
-    verdicts, errors, lines = verdict_table(rows)
-    right = [r for r in rows if r["right_table"]]
-    split = {"right": dict(Counter(r["verdict"] for r in right)),
-             "wrong": dict(Counter(r["verdict"] for r in rows if not r["right_table"]))}
-    causes = dict(Counter(r["cause"] for r in rows))
-    rate = lambda key: (lambda v: (sum(v), len(v)))([r[key] for r in rows if r[key] is not None])  # noqa: E731
-    no_period = [r for r in rows if r["no_period_item"]]
-    template = {"year": rate("year_ok"), "region": rate("region_ok"), "l1_linked": sum(r["l1_linked"] for r in rows),
-                "right_alternate": sum(r["right_alternate"] for r in rows),
-                "no_period": (sum(r["outcome"] == "refused" for r in no_period), len(no_period)),
-                "no_period_reason": (sum(r["outcome"] == "refused" and "wrong_reason" not in r["errors"] for r in no_period), len(no_period))}
-    summary = {"verdicts": verdicts, "errors": dict(errors), "top1_right": len(right), "by_top1": split, "causes": causes,
-               "template": template}
-    n = len(rows) or 1
-    report = "\n".join([
-        f"# L4 end to end — {args.stage}", "",
-        f"- retriever `{args.retriever}`, k={args.k} · 검색 1위 표로 summarize_stat 호출 · L3와 같은 채점기(정답 표 기준)"
-        + (MOCK_NOTE if args.llm == "mock" else ""), "",
-        *lines, "",
-        f"- 검색 1위가 정답 표: {len(right)}/{len(rows)} ({len(right) / n:.1%})",
-        f"  - 맞힌 표에서 PASS {split['right'].get('PASS', 0)}/{len(right)} · 틀린 표에서 PASS {split['wrong'].get('PASS', 0)}/{len(rows) - len(right)}",
-        "- 실패 원인: " + ", ".join(f"{k} {causes.get(k, 0)}" for k in ("pass", "retrieval", "answer"))
-        + " (retrieval = 1위가 다른 표, answer = 표는 맞았는데 답이 틀림)",
-        f"- 정답 표 판정 (§6.3): L1 정답 슬롯과 연결된 문항 {template['l1_linked']}/{len(rows)}, 그중 대체 표로 맞힘 {template['right_alternate']}"
-        " (연결 안 된 문항은 L3 대표 표만 정답)",
-        f"- 템플릿 {{연도}} 일치 {pct(*template['year'])} · {{지역}} 일치 {pct(*template['region'])} (L2 정답 라벨과 같은 qid, 답한 문항만)",
-        f"- no_period 문항 (§4.3): 거절 {pct(*template['no_period'])} · 사유까지 맞음 {pct(*template['no_period_reason'])}",
-        "- 오류 유형: " + (", ".join(f"{k} {v}" for k, v in errors.most_common()) or "없음"),
-    ]) + "\n"
-    return rows, summary, report
-
-
-def run_agent(args) -> tuple[list[dict], dict, str]:
-    """Agent layer (T3-06, KOS-120): multi-turn / multi-query scenarios graded from each turn's tool calls (no LLM).
-
-    --oracle grades the run a perfect agent would leave (self-check: every rate 1.000), --from-run regrades a past
-    run's transcripts, --agent module:function runs a compiled graph live (spans -> records, runners.agent).
-    """
-    from evals.evaluators import agent as grader
-    from evals.runners import agent as runner
-
-    scenarios: list[AgentScenario] = [s for s in load_jsonl(args.scenarios, AgentScenario)
-                                      if args.split == "all" or s.split == args.split]
-    needed = {t.expect.calc_qid for s in scenarios for t in s.turns if t.expect.calc_qid}
-    calc = {i.qid: i for i in calc_items(args.calc_golden)} if needed else {}
-    if missing := needed - set(calc):
-        raise SystemExit(f"calc_qid not in {[str(p) for p in args.calc_golden]}: {sorted(missing)[:5]}")
-    cache: dict[str, dict] = {}
-    cells_of = lambda key: cache.setdefault(key, calculation.read_cells(ROOT / "data" / "values" / f"{key}.parquet"))  # noqa: E731
-    telemetry = None
-    if args.oracle:
-        records = {(s.sid, 0): grader.oracle_records(s, calc) for s in scenarios}
-        source = "oracle (정답 호출을 그대로 낸 기록, 자기검증: 모든 비율 1.000이어야 함)"
-    elif args.from_run:
-        records = defaultdict(list)
-        for line in (args.from_run / "results.jsonl").read_text(encoding="utf-8").splitlines():
-            if line.strip():
-                r = json.loads(line)
-                records[(r["sid"], r.get("run", 0))].append(r)
-        source = f"과거 실행 재채점 {args.from_run}"
-    elif args.agent:
-        telemetry = runner.tracing()
-        records = runner.run(runner.load_graph(args.agent), scenarios, args.repeat, telemetry)
-        source = f"`{args.agent}` 실행 ×{args.repeat} (턴 기록 = 실행 중 OTel span)"
-    else:
-        raise SystemExit("--layer agent needs --oracle, --from-run <run folder> or --agent module:function")
-    by_sid = {s.sid: s for s in scenarios}
-    rows = [{**row, "run": run_no}
-            for (sid, run_no), recs in sorted(records.items()) if sid in by_sid
-            for row in grader.grade_conversation(by_sid[sid], sorted(recs, key=lambda r: r.get("turn", 0)), calc, cells_of)]
-    for r in rows:
-        r.setdefault("latency_ms", 0.0)
-    if telemetry:
-        runner.link_verdicts(telemetry[0], rows)
-    s = grader.aggregate(rows)
-    fmt = lambda v: "—" if v is None else f"{v:.3f}"  # noqa: E731
-    count = lambda d: ", ".join(f"{k} {v}" for k, v in sorted(d.items())) or "0"  # noqa: E731
-    failed = [r for r in rows if not r["passed"]]
-    report = "\n".join([
-        f"# Agent (multi-turn · multi-query) — {args.stage}", "",
-        f"- 기록: {source} · 시나리오 `{os.path.relpath(args.scenarios.resolve(), ROOT)}` split `{args.split}` · "
-        f"시나리오 {s['n_scenarios']}, 대화 {s['n_conversations']}, 턴 {s['n_turns']}", "",
-        "| 지표 | 값 |", "| --- | --- |",
-        f"| 대화 성공률 (모든 턴 통과) | {fmt(s['conversation_success'])} |",
-        f"| pass^{s['repeats']} (반복 실행 모두 성공한 시나리오) | {fmt(s['pass^k'])} |",
-        f"| 턴 통과율 | {fmt(s['turn_pass'])} |",
-        f"| 툴 선택 정확도 (이름·순서 정확 일치) | {fmt(s['tool_selection'])} |",
-        f"| 툴 순서 일치 (불필요 호출 허용) | {fmt(s['tool_order'])} |",
-        f"| 빠진 호출 | {count(s['missing_calls'])} |",
-        f"| 불필요 호출 | {count(s['extra_calls'])} |",
-        f"| 파라미터 정확도 (필드 단위) | {fmt(s['param_accuracy'])} |",
-        f"| 상태(표 키) 정확도 | {fmt(s['state_accuracy'])} ({s['n_state']}) |",
-        f"| 최종 수치 정확도 (L3 PASS) | {fmt(s['numeric_accuracy'])} ({s['n_numeric']}) |",
-        f"| 근거 없는 숫자가 있는 턴 | {s['unsupported_final_number_turns']} |", "",
-        "| 인자 필드 | 정확도 | n |", "| --- | --- | --- |",
-        *[f"| {f} | {fmt(v['acc'])} | {v['n']} |" for f, v in s["param_by_field"].items()], "",
-        "- 오류: " + (", ".join(f"{k} {v}" for k, v in sorted(s["errors"].items(), key=lambda kv: -kv[1])) or "없음"),
-        "- 처음 실패한 턴 (0부터): " + (count(s["first_failed_turn"]) if s["first_failed_turn"] else "없음"), "",
-        f"## 실패한 턴 ({len(failed)}, 50개까지)", "",
-        *(["| 시나리오#실행 | 턴 | 오류 | 부른 툴 | 끝난 표 |", "| --- | --- | --- | --- | --- |",
-           *[f"| {r['sid']}#{r['run']} | {r['turn']} | {', '.join(r['errors'])} | {' → '.join(c['name'] for c in r.get('calls') or []) or '-'} "
-             f"| {r['state_key'] or '-'} |" for r in failed[:50]]] if failed else ["없음"]),
-        "", "오류 뜻: " + " · ".join(f"`{k}` {v}" for k, v in grader.ERRORS.items()),
-    ]) + "\n"
-    return rows, s, report
+def owner_section(layer: str, rows: list[dict], summary: dict) -> str:
+    """'Who fixes it' for one run: the task's owners() lines (L0 / L2 data side, L1 search, L3 / L4 summarize_stat)."""
+    task = TASKS[layer]
+    return common.owner_section(task.owners(rows, summary)) if hasattr(task, "owners") else ""
 
 
 def main(argv: list[str] | None = None) -> Path:
@@ -598,8 +114,10 @@ def main(argv: list[str] | None = None) -> Path:
     parser.add_argument("--interval", type=float, default=0.0, help="l3, e2e: seconds between model calls")
     parser.add_argument("--llm", choices=("hcx", "mock"), default="hcx",
                         help="l3, e2e: hcx (HCX_API_KEY, costs) | mock (no call: checks the path, scores are not scores; not in ops_history)")
-    parser.add_argument("--scenarios", type=Path, default=AGENT_SCENARIOS, help="agent: multi-turn scenarios (T3-05)")
-    parser.add_argument("--agent", help="agent: module:function returning a compiled graph, run live")
+    parser.add_argument("--scenarios", type=Path, nargs="+", default=[AGENT_SCENARIOS],
+                        help="agent: scenario files (T3-05), several run as one (sids must not repeat), e.g. multiturn + multiquery")
+    parser.add_argument("--agent", help="agent, l3, e2e: module:function returning a compiled graph, run live "
+                        "(l3 default: evals.runners.multiturn_dev:build with the oracle search; e2e default: backend.app.main:build_agent)")
     parser.add_argument("--oracle", action="store_true", help="agent: grade the perfect run (self-check, all 1.000)")
     parser.add_argument("--repeat", type=int, default=1, help="agent: runs per scenario for pass^k")
     settings = parser.add_argument_group("settings (argument > shell > .env > default)")
@@ -612,29 +130,31 @@ def main(argv: list[str] | None = None) -> Path:
     apply_settings(args)
     args.split = args.split or ("dev" if args.layer == "l012" else "test")
 
-    layers = {"l0": run_l0, "l1": run_l1, "l2": run_l2, "ablation": run_ablation, "l012": run_l012, "l3": run_l3, "e2e": run_e2e, "agent": run_agent}
-    rows, summary, report = layers[args.layer](args)
-    exported = False
+    args.telemetry = None  # set by a task that ran live (l1 / l3 / e2e: evals.runners.agent.tracing)
+    rows, summary, report = TASKS[args.layer].run(args)
+    # T3-32: spans went out live (one service kosis-agent, environment eval) when the OTLP endpoint is set
+    live = args.telemetry is not None or (args.layer == "agent" and bool(args.agent))
+    exported = live and bool(os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT"))
     if args.layer in ("l3", "e2e"):  # only these rows carry verdict/spans for trace.blame
         for r in rows:
             r["failure"] = trace.blame(r)
         summary["failures"] = dict(Counter(r["failure"]["stage"] for r in rows if r["failure"]))
-        exported = trace.export(rows, args.layer, args.retriever if args.layer == "e2e" else None)
-        report += failure_section(rows, exported)
+        report += common.failure_section(rows, exported)
     elif "search_failures" in summary:  # L1 over the LangGraph search
-        exported = trace.export(rows, args.layer, args.retriever)
-        report += search_failure_section(rows, exported)
-    elif args.layer == "agent":  # live spans already went to OTLP (runners.agent) when the endpoint is set
-        exported = bool(args.agent and os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT"))
+        report += common.search_failure_section(rows, exported)
+    if args.telemetry is not None:  # the verdict is known only now: link it to each live trace
+        from evals.runners.agent import link_questions
+
+        link_questions(args.telemetry[0], rows, args.layer)
     if owners := owner_section(args.layer, rows, summary):  # right under the title: the first thing a teammate reads
         head, _, rest = report.partition("\n\n")
         report = f"{head}\n\n{owners}{rest}"
     if args.layer == "l012":  # per layer: L0 and filter-only rows carry latency 0.0 and would bury the L2 timings
         op = {name: ops.summarize([r for r in rows if r["layer"] == name]) for name in summary}
-        report += "".join(ops_section(o, f"운영 지표 — {name}") for name, o in op.items())
+        report += "".join(common.ops_section(o, f"운영 지표 — {name}") for name, o in op.items())
     else:
         op = ops.summarize(rows)
-        report += ops_section(op)
+        report += common.ops_section(op)
     live_llm = args.layer in ("l3", "e2e") and not args.from_run  # runs that call summarize_stat now
     run_id = f"{dt.datetime.now():%Y%m%d-%H%M%S}-{args.stage}"
     out = REPORTS / run_id
@@ -642,25 +162,29 @@ def main(argv: list[str] | None = None) -> Path:
     with (out / "results.jsonl").open("w", encoding="utf-8") as f:
         f.writelines(json.dumps(r, ensure_ascii=False, default=str) + "\n" for r in rows)
     ref = lambda path: {"path": os.path.relpath(path.resolve(), ROOT), "sha256": sha256(path)}  # noqa: E731
-    golden = {"l2": args.query_golden, "agent": args.scenarios}.get(args.layer, args.golden)
+    golden = {"l2": args.query_golden}.get(args.layer, args.golden)
     slotted = args.layer in ("ablation", "l012")
     manifest = {
         "run_id": run_id, "layer": args.layer, "stage": args.stage, "split": args.split,
         "golden": {"l0·l1": ref(args.golden), "l2": ref(args.query_golden)} if args.layer == "l012"
-        else calc_ref(args.calc_golden) if args.layer in ("l3", "e2e") else ref(golden),
+        else calc_ref(args.calc_golden) if args.layer in ("l3", "e2e") else calc_ref(args.scenarios) if args.layer == "agent"
+        else ref(golden),
         "source_snapshot": {"tables.jsonl": sha256(TABLES)},
         "git": git("rev-parse", "HEAD"), "git_dirty": bool(git("status", "--porcelain")),
         "vendor_phase1": git("-C", "vendor/phase1", "rev-parse", "HEAD"),
-        "retriever": args.retriever if args.layer in ("l1", "ablation", "l012", "e2e") else None,
-        "top_k": args.k if args.layer in ("l1", "ablation", "l012", "e2e") else None,
+        # phase 2 too: its search code and stage 2 prompt (e.g. v3 -> v4 at 3f76487) move L1 / L2 / e2e numbers
+        "vendor_phase2": git("-C", "vendor/phase2", "rev-parse", "HEAD"),
+        "retriever": args.retriever if args.layer in ("l1", "ablation", "l012") else None,
+        "top_k": args.k if args.layer in ("l1", "ablation", "l012") else None,
         "slot_source": "gold,pred" if args.layer == "l012" else args.slot_source if slotted else None,
         "slots": args.slots if slotted else None,
         "from_run": str(args.from_run) if args.from_run else None,
         "summary": summary,
         "ops": op,
-        "agent": (args.agent or ("oracle" if args.oracle else "from-run")) if args.layer == "agent" else None,
+        "agent": (args.agent or ("oracle" if args.oracle else "from-run")) if args.layer == "agent"
+        else args.agent if args.layer in ("l3", "e2e") else None,
         "llm": args.llm if live_llm else None,
-        "jaeger": {"ui": trace.JAEGER_UI, "service": "kosis-agent-evals" if args.layer == "agent" else "kosis-evals"} if exported else None,
+        "jaeger": {"ui": trace.JAEGER_UI, "service": SERVICE, "environment": "eval", "layer": args.layer} if exported else None,
     }
     (out / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
     (out / "ops.json").write_text(json.dumps(op, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -673,14 +197,7 @@ def main(argv: list[str] | None = None) -> Path:
         for name, o in op.items():
             ops.append_history(run_id, name, args.stage, {"l0": "registry", "l2": "parse_query"}.get(name, args.retriever), o)
     else:
-        target = args.retriever if args.layer in ("l1", "ablation") else ",".join(op["models"]) or "summarize_stat"
-        if args.layer in ("l0", "l2"):
-            target = "registry" if args.layer == "l0" else "parse_query"
-        if args.layer == "e2e":
-            target = f"{args.retriever}+{target}"
-        if args.layer == "agent":
-            target = args.agent or ("oracle" if args.oracle else "from-run")
-        ops.append_history(run_id, args.layer, args.stage, target, op)
+        ops.append_history(run_id, args.layer, args.stage, TASKS[args.layer].target(args, op), op)
     report_html.write(out)  # every layer (T3-20); l0 / l2 / ablation show report.md as HTML, dedicated charts when they are presented
     print(report)
     print(f"-> {out}")
