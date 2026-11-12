@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from collections import Counter, defaultdict
 from pathlib import Path
 
@@ -11,7 +12,7 @@ from evals.schemas import ROOT, CalcItem, load_jsonl
 
 MOCK_NOTE = " · **llm mock: 경로 확인용, 점수 아님** (모델 대신 코드 템플릿이 답함)"
 OPS_FIELDS = ("latency_ms", "llm_calls", "input_tokens", "output_tokens", "model", "failed", "retried")
-TRACE_FIELDS = ("spans", "retrieve_ms", "search_spans")
+TRACE_FIELDS = ("spans", "retrieve_ms", "search_spans", "trace_id", "span_id")
 
 
 def load_sigungu() -> dict[str, list[str]]:
@@ -45,6 +46,28 @@ def owner_section(found: dict[str, list[str]]) -> str:
     for owner, items in found.items():
         lines += [f"- **{OWNERS[owner]}**", *(f"  - {i}" for i in items)]
     return "\n".join(lines) + "\n\n"
+
+
+def agent_graph(args, default):
+    """The graph l3 / e2e run (T3-32): --agent module:function, else default(). The graph builders read their settings
+    from the shell (backend/app/config.py), so --llm mock sets them first: phase 1 mock, stage 2 off and the
+    follow-up reader on rules, i.e. no model call anywhere (the service's .env may say STAGE2=hcx)."""
+    from evals.runners import agent as runner
+
+    if args.llm == "mock":
+        os.environ.update(STAT_PROVIDER="mock", STAGE2="none", INTERPRETER="rules")
+    return runner.load_graph(args.agent) if args.agent else default()
+
+
+def single_turn_rows(args, layer: str, items: list[CalcItem], default) -> list[dict]:
+    """l3 / e2e answers: each golden question as a one-turn conversation of the agent graph, live-traced; the
+    providers stay on args.telemetry so run_eval can link the verdicts after grading."""
+    from evals.runners import agent as runner
+
+    args.telemetry = runner.tracing(layer)
+    meters, _ = runner.metering(layer)
+    return runner.single_turns(agent_graph(args, default), [(i.qid, i.question) for i in items], args.telemetry,
+                               meters, args.interval)
 
 
 def answer_owners(rows: list[dict], e2e: bool) -> dict[str, list[str]]:

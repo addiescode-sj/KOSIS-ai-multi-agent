@@ -39,13 +39,25 @@ from uuid import UUID
 from langchain_core.callbacks import BaseCallbackHandler
 from opentelemetry import metrics, trace
 from opentelemetry.metrics import Meter
+from opentelemetry.sdk.resources import Resource
 from opentelemetry.trace import Span, Status, StatusCode, Tracer
 
+SERVICE = "kosis-agent"  # 서비스·평가 공용 service.name (T3-32): 둘은 deployment.environment.name으로 나눈다
 ROOT_SPAN = "invoke_agent"
 TOOL_PREFIX = "execute_tool "
 CHAT_PREFIX = "chat "
 CHAT = "chat"  # gen_ai.operation.name of every LLM call span (평가 ops가 이 값으로 LLM 호출을 센다)
 STAGE2_MODEL = "kosis.stage2_model"  # search_tables 툴 metadata: 실전 2 stage 2 LLM 모델 이름 (trace에는 없음)
+
+
+def resource(environment: str, **attributes: Any) -> Resource:
+    """trace·메트릭 provider의 resource (T3-32). service.name은 하나, 실사용(service)과 평가(eval)는 environment로 나눈다.
+
+    평가는 attributes로 계층·run을 붙인다(kosis.eval.layer = l1 | l3 | e2e | agent). Jaeger UI의 Tags 검색은 이
+    process 태그도 찾으므로 `deployment.environment.name=service`로 실사용 요청만 볼 수 있다.
+    """
+    return Resource.create({"service.name": SERVICE, "deployment.environment.name": environment,
+                            **{k: v for k, v in attributes.items() if v is not None}})
 
 
 def to_json(value: Any) -> str:
@@ -210,7 +222,8 @@ class LiveSpans(BaseCallbackHandler):
         이름은 실전 1 단계 이름 그대로 둔다.
 
         T3-31: 모델 단계(gen_ai.request.model이 있음)는 gen_ai.operation.name=chat을 붙여 LLM 호출로 세고 메트릭을 남긴다.
-        형식 재시도 단계(analyze.llm_plan_retry 등)도 호출 하나로 센다. HTTP 재시도는 llm.attempts 속성으로만 남는다.
+        재시도 단계(analyze.llm_plan_retry 등)도 호출 하나로 센다. 한 단계 안의 추가 요청(JSON 형식 재시도·HTTP 재시도)은
+        실전 1이 llm.attempts(그 단계의 모델 요청 수)로 남기고 호출 수에는 넣지 않는다.
         """
         started = getattr(tool_span, "start_time", None)  # 기록하지 않는 span(NoOp)에는 시작 시각이 없다
         context = trace.set_span_in_context(tool_span)

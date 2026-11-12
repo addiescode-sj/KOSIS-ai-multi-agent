@@ -45,8 +45,9 @@ def test_unready_runs_are_skipped_with_the_reason_and_failures_do_not_stop_the_s
 
 def test_mock_and_e2e_arguments():
     o = opts(llm="mock")
-    assert suite.argv_for("e2e", ["--layer", "e2e"], "mock", o)[-6:] == ["--llm", "mock", "--interval", "0", "--retriever", "graph:staged"]
-    assert suite.argv_for("e2e", ["--layer", "e2e"], "hcx", o)[-1] == "graph:staged-hcx"
+    # T3-32: e2e is the service graph, its search settings are the shell's: no --retriever preset any more
+    assert suite.argv_for("e2e", ["--layer", "e2e"], "mock", o)[-4:] == ["--llm", "mock", "--interval", "0"]
+    assert "--retriever" not in suite.argv_for("e2e", ["--layer", "e2e"], "hcx", o)
     assert "--llm" not in suite.argv_for("l2-v1", ["--layer", "l2"], "mock", o)
 
 

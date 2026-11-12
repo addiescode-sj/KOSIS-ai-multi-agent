@@ -16,6 +16,7 @@ import html
 import json
 import re
 from pathlib import Path
+from urllib.parse import quote
 
 from evals.evaluators.calculation import ERROR_INFO
 from evals.ops import read_history
@@ -307,6 +308,14 @@ def ops_body(op: dict, rows: list[dict], history: list[dict]) -> str:
                     f'<h2 style="margin-top:12px">실행 간 추이 (같은 계층, {len(history)}회)</h2><div class="grid2">', trends, "</div>"])
 
 
+def jaeger_search(m: dict) -> str:
+    """Jaeger search for this run's layer: service kosis-agent, tags deployment.environment.name=eval + kosis.eval.layer (T3-32)."""
+    j = m.get("jaeger") or {}
+    tags = json.dumps({"deployment.environment.name": j.get("environment", "eval"),
+                       **({"kosis.eval.layer": j["layer"]} if j.get("layer") else {})})
+    return f'{j.get("ui", "")}/search?service={j.get("service", "kosis-agent")}&tags={quote(tags)}'
+
+
 def trace_link(ui: str | None, trace_id: str | None) -> str:
     return f'<a href="{esc(ui)}/trace/{esc(trace_id)}" target="_blank">trace</a>' if ui and trace_id else "-"
 
@@ -368,7 +377,7 @@ def failures_body(m: dict, rows: list[dict]) -> str:
         for r in failed)
     table = (f'<table><tr><th>qid</th><th>질문</th><th>판정</th><th>실패 단계 · span</th><th>사유</th><th>호출 도구 · span 경로</th><th>Jaeger</th></tr>{body}</table>'
              if failed else "")
-    jaeger = (f'Jaeger: <a href="{esc(ui)}/search?service=kosis-evals" target="_blank">kosis-evals 서비스</a>' if ui
+    jaeger = (f'Jaeger: <a href="{esc(jaeger_search(m))}" target="_blank">kosis-agent · 평가 trace</a>' if ui
               else "Jaeger 미전송 (OTEL_EXPORTER_OTLP_ENDPOINT를 설정하고 docker compose --profile obs up jaeger)")
     order = " &gt; ".join(STAGES.values())
     return "".join([

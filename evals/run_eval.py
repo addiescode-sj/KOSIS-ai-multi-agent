@@ -31,6 +31,8 @@ import subprocess
 from collections import Counter
 from pathlib import Path
 
+from kosis_agent.observability.tracing import SERVICE
+
 from evals import ops, report_html, trace
 from evals.schemas import AGENT_SCENARIOS, DATASETS, GOLDEN, QUERY_GOLDEN, ROOT, TABLES
 from evals.tasks import ablation, agent, common, l0_metadata, l1_retrieval, l2_query, l3_calculation, l4_e2e, l012
@@ -114,7 +116,8 @@ def main(argv: list[str] | None = None) -> Path:
                         help="l3, e2e: hcx (HCX_API_KEY, costs) | mock (no call: checks the path, scores are not scores; not in ops_history)")
     parser.add_argument("--scenarios", type=Path, nargs="+", default=[AGENT_SCENARIOS],
                         help="agent: scenario files (T3-05), several run as one (sids must not repeat), e.g. multiturn + multiquery")
-    parser.add_argument("--agent", help="agent: module:function returning a compiled graph, run live")
+    parser.add_argument("--agent", help="agent, l3, e2e: module:function returning a compiled graph, run live "
+                        "(l3 default: evals.runners.multiturn_dev:build with the oracle search; e2e default: backend.app.main:build_agent)")
     parser.add_argument("--oracle", action="store_true", help="agent: grade the perfect run (self-check, all 1.000)")
     parser.add_argument("--repeat", type=int, default=1, help="agent: runs per scenario for pass^k")
     settings = parser.add_argument_group("settings (argument > shell > .env > default)")
@@ -127,19 +130,22 @@ def main(argv: list[str] | None = None) -> Path:
     apply_settings(args)
     args.split = args.split or ("dev" if args.layer == "l012" else "test")
 
+    args.telemetry = None  # set by a task that ran live (l1 / l3 / e2e: evals.runners.agent.tracing)
     rows, summary, report = TASKS[args.layer].run(args)
-    exported = False
+    # T3-32: spans went out live (one service kosis-agent, environment eval) when the OTLP endpoint is set
+    live = args.telemetry is not None or (args.layer == "agent" and bool(args.agent))
+    exported = live and bool(os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT"))
     if args.layer in ("l3", "e2e"):  # only these rows carry verdict/spans for trace.blame
         for r in rows:
             r["failure"] = trace.blame(r)
         summary["failures"] = dict(Counter(r["failure"]["stage"] for r in rows if r["failure"]))
-        exported = trace.export(rows, args.layer, args.retriever if args.layer == "e2e" else None)
         report += common.failure_section(rows, exported)
     elif "search_failures" in summary:  # L1 over the LangGraph search
-        exported = trace.export(rows, args.layer, args.retriever)
         report += common.search_failure_section(rows, exported)
-    elif args.layer == "agent":  # live spans already went to OTLP (runners.agent) when the endpoint is set
-        exported = bool(args.agent and os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT"))
+    if args.telemetry is not None:  # the verdict is known only now: link it to each live trace
+        from evals.runners.agent import link_questions
+
+        link_questions(args.telemetry[0], rows, args.layer)
     if owners := owner_section(args.layer, rows, summary):  # right under the title: the first thing a teammate reads
         head, _, rest = report.partition("\n\n")
         report = f"{head}\n\n{owners}{rest}"
@@ -166,16 +172,17 @@ def main(argv: list[str] | None = None) -> Path:
         "source_snapshot": {"tables.jsonl": sha256(TABLES)},
         "git": git("rev-parse", "HEAD"), "git_dirty": bool(git("status", "--porcelain")),
         "vendor_phase1": git("-C", "vendor/phase1", "rev-parse", "HEAD"),
-        "retriever": args.retriever if args.layer in ("l1", "ablation", "l012", "e2e") else None,
-        "top_k": args.k if args.layer in ("l1", "ablation", "l012", "e2e") else None,
+        "retriever": args.retriever if args.layer in ("l1", "ablation", "l012") else None,
+        "top_k": args.k if args.layer in ("l1", "ablation", "l012") else None,
         "slot_source": "gold,pred" if args.layer == "l012" else args.slot_source if slotted else None,
         "slots": args.slots if slotted else None,
         "from_run": str(args.from_run) if args.from_run else None,
         "summary": summary,
         "ops": op,
-        "agent": (args.agent or ("oracle" if args.oracle else "from-run")) if args.layer == "agent" else None,
+        "agent": (args.agent or ("oracle" if args.oracle else "from-run")) if args.layer == "agent"
+        else args.agent if args.layer in ("l3", "e2e") else None,
         "llm": args.llm if live_llm else None,
-        "jaeger": {"ui": trace.JAEGER_UI, "service": "kosis-agent-evals" if args.layer == "agent" else "kosis-evals"} if exported else None,
+        "jaeger": {"ui": trace.JAEGER_UI, "service": SERVICE, "environment": "eval", "layer": args.layer} if exported else None,
     }
     (out / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
     (out / "ops.json").write_text(json.dumps(op, ensure_ascii=False, indent=2), encoding="utf-8")

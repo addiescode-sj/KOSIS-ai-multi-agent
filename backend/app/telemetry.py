@@ -1,7 +1,8 @@
 """The service's OTel provider (T3-30, KOS-114): every API request leaves one trace under service `kosis-agent`.
 
-Kept apart from evaluation on purpose: evals/runners/agent.py makes its own provider (`kosis-agent-evals`) and never
-runs this app's lifespan, and this module never sets the global provider. The only shared piece is the callback
+Kept apart from evaluation on purpose: evals/runners/agent.py makes its own provider and never runs this app's
+lifespan, and this module never sets the global provider. Both use service.name `kosis-agent` (T3-32); this one says
+deployment.environment.name=service, evaluation says eval (kosis_agent.observability.tracing.resource). The only shared piece is the callback
 (kosis_agent.observability.tracing). OTLP export only when OTEL_EXPORTER_OTLP_ENDPOINT is set; BatchSpanProcessor
 sends from its own thread, so export time is not added to the request.
 
@@ -18,12 +19,11 @@ from opentelemetry import metrics, trace
 from opentelemetry.metrics import Meter
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
-from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.trace import Tracer
 
-SERVICE = "kosis-agent"
+from kosis_agent.observability.tracing import resource as make_resource
 
 _provider: TracerProvider | None = None
 _meters: MeterProvider | None = None
@@ -32,7 +32,7 @@ _meters: MeterProvider | None = None
 def start() -> TracerProvider:
     """Create the service provider (FastAPI lifespan start)."""
     global _provider, _meters
-    resource = Resource.create({"service.name": SERVICE})
+    resource = make_resource("service")
     _provider = TracerProvider(resource=resource)
     if os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT"):
         from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter

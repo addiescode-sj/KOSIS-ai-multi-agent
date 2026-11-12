@@ -1,25 +1,30 @@
-"""L4 end to end (single turn): the retriever's top 1 table -> summarize_stat, graded like L3."""
+"""L4 end to end (single turn): the service's agent graph answers each golden question, graded like L3.
+
+T3-32 (option C): the graph is backend.app.main:build_agent (search settings from the shell, as the service; --agent
+swaps it), one new conversation per question, live-traced like the service. The table is the one the graph handed to
+phase 1 (search picked[0]); a search gate refusal is graded as a refusal. --retriever presets no longer apply here."""
 
 from __future__ import annotations
 
 from collections import Counter
 
 from evals.schemas import CalcItem, QueryItem, load_items, load_jsonl
-from evals.tasks.common import MOCK_NOTE, answer_owners, calc_items, grade, pct, summarize_stat_target, verdict_table
+from evals.tasks.common import (MOCK_NOTE, answer_owners, calc_items, grade, pct, single_turn_rows, summarize_stat_target,
+                                verdict_table)
+
+SERVICE_GRAPH = "backend.app.main:build_agent"
 
 
 def run(args) -> tuple[list[dict], dict, str]:
-    """L4 end to end: the retriever picks the table (top 1), then the same answer path and grader as L3."""
+    """L4 end to end: the agent graph picks the table and answers, then the same grader as L3."""
     from evals.runners import e2e
-    from evals.runners import retrieval as runner
+    from evals.runners.agent import load_graph
 
-    if args.retriever == "oracle":
-        raise SystemExit("e2e with the oracle retriever is L3: run --layer l3 instead")
     items: list[CalcItem] = calc_items(args.calc_golden)
     # §6.3: the L1 slots judge the table and the L2 labels the 연도·지역, linked by qid (golden v2 shares qids)
     l1 = {i.qid: i for i in load_items(args.golden)} if args.golden.exists() else {}
     l2 = {q.qid: q for q in load_jsonl(args.query_golden, QueryItem)} if args.query_golden.exists() else {}
-    raw = e2e.run(runner.build(args.retriever, [], args.k), items, args.k, args.interval, args.llm)
+    raw = single_turn_rows(args, "e2e", items, lambda: load_graph(SERVICE_GRAPH))
     rows = [{**g, **e2e.locate(item, a, g["verdict"], l1.get(item.qid)), **e2e.template_slots(a["answer"], l2.get(item.qid)),
              "error": a["error"], "no_period_item": "no_period" in item.allowed_reasons}
             for item, a, g in zip(items, raw, grade(items, raw))]
@@ -39,7 +44,7 @@ def run(args) -> tuple[list[dict], dict, str]:
     n = len(rows) or 1
     report = "\n".join([
         f"# L4 end to end — {args.stage}", "",
-        f"- retriever `{args.retriever}`, k={args.k} · 검색 1위 표로 summarize_stat 호출 · L3와 같은 채점기(정답 표 기준)"
+        f"- 에이전트 그래프 한 턴 `{args.agent or SERVICE_GRAPH}` (검색 설정 = 서비스와 같은 환경변수) · 그래프가 실전 1에 넘긴 표로 채점 · L3와 같은 채점기(정답 표 기준)"
         + (MOCK_NOTE if args.llm == "mock" else ""), "",
         *lines, "",
         f"- 검색 1위가 정답 표: {len(right)}/{len(rows)} ({len(right) / n:.1%})",
@@ -60,4 +65,4 @@ def owners(rows: list[dict], summary: dict) -> dict[str, list[str]]:
 
 
 def target(args, op: dict) -> str:
-    return f"{args.retriever}+{summarize_stat_target(op)}"
+    return f"{args.agent or SERVICE_GRAPH}+{summarize_stat_target(op)}"

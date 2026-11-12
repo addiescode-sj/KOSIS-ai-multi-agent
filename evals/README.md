@@ -21,8 +21,8 @@
 | `l1-graph` | L1 | 실제 LangGraph 검색 그래프 | 데이터·Chroma·`RERANK_CKPT` | 0 |
 | `ablation` | L1 | 슬롯 필터 on/off별 검색 (dev) | 데이터·Chroma | 0 |
 | `l2-v1` · `l2-v2` | L2 | 질의 파서(규칙) | 데이터 | 0 |
-| `l3` | L3 | 정답 표를 준 채로 `summarize_stat` 실호출 → Parquet 대조 | 데이터·HCX 키 | **HCX 90문항** (재시도 포함 약 135회로 추정) |
-| `e2e` | L4 | 검색 그래프 1위 표 → `summarize_stat` | 데이터·Chroma·`RERANK_CKPT`·HCX 키 | **HCX 90문항 + 2차 리랭커** |
+| `l3` | L3 | 에이전트 그래프 한 턴, 검색은 정답 표(oracle) → `summarize_stat` 실호출 → Parquet 대조 (T3-32) | 데이터·HCX 키 | **HCX 90문항** (재시도 포함 약 135회로 추정) |
+| `e2e` | L4 | 서비스 에이전트 그래프(`build_agent`) 한 턴: 검색 → `summarize_stat` (T3-32) | 데이터·Chroma·`RERANK_CKPT`·HCX 키 | **HCX 90문항 + 2차 리랭커** |
 | `agent` | 종합 | 멀티턴 시나리오 → 에이전트 → 툴 (§6) | `--agent`·시나리오 파일 | 에이전트가 부르는 LLM |
 
 - L3·e2e는 `--llm mock`으로 **비용 없이 경로만** 확인할 수 있다. mock은 모델 대신 코드 템플릿이 답해서 점수가 그럴듯하게 나온다(예: L3 PASS 85/90).
@@ -101,7 +101,7 @@ uv run python -m evals.run_eval --layer l2 --split all --stage $S-l2-v1
 uv run python -m evals.run_eval --layer l3 --llm mock --stage $S-l3-mock                              # 경로 확인
 uv run python -m evals.run_eval --layer l3 --interval 5 --stage $S-l3                                 # HCX
 uv run python -m evals.run_eval --layer l3 --from-run <과거 L3 run 폴더> --stage $S-l3-regrade        # 저장된 답 재채점, 호출 0
-uv run python -m evals.run_eval --layer e2e --retriever graph:staged-hcx --interval 5 --stage $S-e2e
+uv run python -m evals.run_eval --layer e2e --interval 5 --stage $S-e2e                               # 서비스 그래프, 검색 설정 = .env
 uv run python -m evals.run_eval --layer agent --oracle --scenarios <시나리오.jsonl> --split all --stage $S-agent-oracle   # 채점기 자기검증
 ```
 
@@ -142,8 +142,20 @@ L1 프리셋(`retrieval.STAGED`): `hybrid` · `hybrid+cond` · `staged` · `clov
 export PYTHONPATH=.:src:vendor/phase2/src:vendor/phase1:vendor/phase1/src   # 없으면 ModuleNotFoundError: kosis_ai
 
 uv run python -m evals.run_eval --layer l3 --stage <이름> --from-run evals/reports/T1-27-run   # 과거 run 재채점, 모델 호출 0
-uv run python -m evals.run_eval --layer l3 --stage <이름> --interval 5                         # summarize_stat 실시간 호출
-uv run python -m evals.run_eval --layer e2e --retriever bm25-record --stage <이름> --interval 5 # 검색 1위 표 → summarize_stat
+uv run python -m evals.run_eval --layer l3 --stage <이름> --interval 5                         # 에이전트 그래프 + 정답 표 검색
+uv run python -m evals.run_eval --layer e2e --stage <이름> --interval 5                         # 서비스 에이전트 그래프 (Chroma 필요)
+uv run python -m evals.run_eval --layer e2e --agent <module:function> --stage <이름>           # 다른 그래프로 (예: 검색기 실험)
+```
+
+**T3-32부터 l3·e2e는 에이전트 그래프 한 턴이다.** 질문마다 새 대화(`thread_id = <qid>#0`)로 그래프를 돌리고, 끝난 그래프 상태에서
+실전 1 답(`state["stat"]`)·검색 후보(`state["search"]`)·실전 1에 넘긴 표(`table_key`)를 읽어 L3 채점기에 넣는다.
+- l3 그래프 = `evals.runners.multiturn_dev:build`에 골든 문항의 "질문 → 정답 표"를 검색으로 준 것. e2e 그래프 = `backend.app.main:build_agent`(서비스와 같은 검색 설정, Chroma 필요). `--agent`로 바꾼다.
+- `--retriever` 프리셋은 e2e에 더 이상 쓰이지 않는다(검색 설정은 `.env`의 `STAGE2` 등). 검색기만 비교하려면 L1을 쓴다.
+- 검색 gate가 거절한 질문은 실전 1까지 가지 않는다. 그 거절(`out_of_scope`·`no_item`)을 실전 1 거절처럼 채점한다.
+- `--llm mock`은 실전 1 mock·stage 2 끔·해석기 규칙으로 바꿔 어떤 모델도 부르지 않는다(`.env`가 `STAGE2=hcx`여도).
+- T3-32 이전 l3·e2e run과 수치를 비교하지 않는다(계층 정의가 바뀜). l3는 같은 mock 입력에서 판정·답이 90/90 같았다(`plans/T3-32.md`).
+
+```bash
 ```
 
 ### L3·L4 골든 파일 (T2-31)
@@ -226,10 +238,11 @@ docker compose --profile obs up -d jaeger
 OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317 uv run python -m evals.run_eval --layer l3 --stage <이름> --from-run evals/reports/T1-27-run
 ```
 
-http://localhost:16686 에서 서비스 `kosis-evals`를 고른다. 문항 1개가 trace 1개이고, 실패한 문항은 error로 표시된다.
+http://localhost:16686 에서 서비스 `kosis-agent`를 고르고 Tags에 `deployment.environment.name=eval kosis.eval.layer=l3`처럼 넣는다(§8.1).
+리포트의 Jaeger 링크는 이 필터가 걸린 검색이다. 문항 1개가 trace 1개이고, 판정은 채점 뒤 `eval.question` span이 링크로 붙인다.
 - `OTEL_EXPORTER_OTLP_ENDPOINT`가 없으면 아무것도 보내지 않는다. 평가는 그대로 돈다.
 - Jaeger는 메모리에 저장하므로 컨테이너를 재시작하면 trace가 사라진다. 실패 단계는 run 폴더의 리포트에 남아 있다.
-- trace는 실행이 끝난 뒤 기록된 span을 재생해 만든다. 그래서 각 span의 길이와 순서는 실제 값이지만, 시작 시각은 실제가 아니다.
+- trace는 실행 중에 열린다(T3-32, 서비스와 같은 콜백). `--from-run` 재채점은 새로 실행하지 않으므로 trace를 만들지 않는다.
 
 ## 2. trace 구조 (문항 1개 = trace 1개)
 
@@ -409,16 +422,21 @@ uv run python -m evals.run_eval --layer agent --stage <이름> --split dev --age
 
 채점(§3~6)은 "맞았나"를, 계측은 "어디서 얼마나 걸리고 얼마 들었고 왜 끝났나"를 본다. 숫자 판정은 언제나 채점기가 하고, trace는 원인을 찾는 데 쓴다.
 
-### 8.1 trace가 어디서 오나 — 서비스 이름 셋
+### 8.1 trace가 어디서 오나 — 서비스 하나, environment로 구분 (T3-32)
 
-| Jaeger 서비스 | 누가 만드나 | 단위 | 시각 |
-|---|---|---|---|
-| `kosis-agent` | API 서버(`backend/app/telemetry.py`). `/chat`·`/chat/stream`·`/tools/*` 요청마다 | 요청 1건 = trace 1개, 응답의 `trace_id`로 찾음 | 실시간 |
-| `kosis-agent-evals` | `--layer agent` (`evals/runners/agent.py`) | 턴 1개 = trace 1개, 채점 뒤 `eval.scenario` span이 링크로 판정을 붙임 | 실시간 |
-| `kosis-evals` | `l3`·`e2e` (`evals/trace.py`) | 문항 1개 = trace 1개 | 끝난 뒤 재생 (길이·순서만 실제, §1 "Jaeger로 보기") |
+모든 trace의 서비스는 `kosis-agent` 하나이고 계측 코드도 하나(`kosis_agent.observability.tracing.LiveSpans`)다.
+실사용과 평가는 resource 속성으로 나눈다(`kosis_agent.observability.tracing.resource`). Jaeger UI Tags 검색은 이 process 태그도 찾는다.
 
-서비스와 agent 평가는 같은 콜백(`kosis_agent.observability.tracing.LiveSpans`)을 쓰지만 provider가 따로라 서로 섞이지 않는다. 그래서 같은 질문이면 두 trace의 모양이 같다.
-`l0`·`l1`·`l2`·`ablation`은 trace를 남기지 않는다(l1-graph는 리포트 안 span 경로만).
+| 누가 만드나 | `deployment.environment.name` | `kosis.eval.layer` | trace 단위 | 판정 |
+|---|---|---|---|---|
+| API 서버 (`backend/app/telemetry.py`) | `service` | — | 요청 1건 (응답의 `trace_id`) | — |
+| `--layer agent` | `eval` | `agent` | 턴 1개 (`invoke_agent`) | 채점 뒤 `eval.scenario` span이 턴 루트들에 링크 |
+| `--layer l3`·`e2e` | `eval` | `l3`·`e2e` | 문항 1개 = 에이전트 한 턴 (`invoke_agent`) | 채점 뒤 `eval.question` span이 링크 (`kosis.verdict`, `kosis.failure.*`) |
+| `--layer l1` | `eval` | `l1` | 문항 1개 (`execute_tool search_tables`, 그래프 프리셋이면 노드 span이 그 아래) | 채점 뒤 `eval.question` (놓친 노드) |
+
+- 실사용 요청만 보기: Tags `deployment.environment.name=service`. 평가가 서비스 메트릭(비용·거절률)을 오염시키지 않게 대시보드도 이 필터를 기본으로 건다.
+- provider는 서비스·평가가 따로 만든다(전역 provider 안 씀). 그래서 같은 프로세스에서 섞이지 않고, 같은 질문이면 trace 모양이 같다.
+- `l0`·`l2`·`ablation`은 trace를 남기지 않는다.
 
 ### 8.2 에이전트 trace 한 턴의 모양
 
@@ -449,14 +467,16 @@ LLM 호출 = `gen_ai.operation.name == "chat"`인 span 하나. agent 리포트�
 | 실전 1 HCX | 실전 1 LLM 단계 1개 (`analyze.llm_plan_retry` 같은 형식 재시도도 각각 1회) | 단계 속성 `gen_ai.usage.*` (HCX `promptTokens`·`completionTokens`) | 속성 없음 |
 | 실전 2 rerank2 | rerank2 1회 | `SearchOutput.spans`의 `stage2_input_tokens`·`stage2_output_tokens` | 속성 없음 (CLOVA reranker는 usage를 안 줄 수 있음) |
 
-- HTTP 재시도(429·5xx)는 호출 수에 넣지 않고 `llm.attempts` 속성으로만 남긴다. 그래서 `llm_calls`는 "논리 호출 수"다.
+- 한 호출 안의 추가 요청은 호출 수에 넣지 않고 `llm.attempts` 속성으로만 남긴다. 그래서 `llm_calls`는 "논리 호출 수"다.
+  - 실전 1 `llm.attempts` = 그 단계가 보낸 모델 요청 수 전체: JSON 형식이 틀려 한 번 더 묻는 **형식 재시도**(`ask_structured`, 최대 2회)와 HTTP 재시도(429·5xx)를 합친 값.
+  - rerank2 `llm.attempts` = `stage2_calls` (HTTP 시도 수).
+  - `retried`(리포트 "재시도 비율") = `llm.attempts > 1`인 LLM 호출이 있었던 행. mock 실전 1은 형식 재시도가 잦아 이 비율이 높다.
 - **모든 계층이 같은 규칙으로 센다** (T3-31에서 맞춤). 같은 질문이면 계층이 달라도 같은 호출은 같은 수로 잡힌다.
   - `l1`(stage 2 프리셋): LangChain 호출 + rerank2 1회. rerank2 HTTP 재시도는 `retried`로만 남는다.
-  - `l3`: 실전 1 LLM 클라이언트를 감싼 `UsageClient`(`evals/ops.py`)가 `generate` 호출마다 1회(HCX HTTP 재시도는 `generate` 안이라 세지 않음).
-  - `e2e`: l3와 같은 실전 1 + 검색의 rerank2 1회·토큰.
-  - `agent`: 위 표. 해석기 + 실전 1 + rerank2.
-  - rerank2 규칙은 한 곳(`evals.ops.stage2_usage`)에 있고 agent 계층(`LiveSpans._stage2_span`)과 같은 값을 읽는다.
-  - 비교 기준이 끊기는 run: T3-31 이전의 `l1` stage 2 run(재시도가 있으면 `llm_calls`가 HTTP 시도 수였음), `e2e` stage 2 run(rerank2 토큰이 빠져 있었음), `agent` run(해석기만 셈). 이 run들과 `ops_history.jsonl`에서 호출 수·토큰·비용을 비교하지 않는다.
+  - `l3`·`e2e`·`agent`: 에이전트 그래프의 chat span에서 센다(T3-32). 해석기 + 실전 1 + rerank2, 위 표 그대로.
+  - T3-32 이전 l3·e2e는 실전 1 클라이언트 래퍼가 모델 요청마다 셌다(형식 재시도 포함). 같은 l3 mock 90문항에서 요청 기준 138 → 단계 기준 66.
+  - rerank2는 L1이 `evals.ops.stage2_usage`, 나머지가 `LiveSpans._stage2_span`으로 읽는다. 같은 기록(`stage2_*`)을 같은 규칙으로 읽는다.
+  - 비교 기준이 끊기는 run: T3-31 이전의 `l1` stage 2 run(재시도가 있으면 `llm_calls`가 HTTP 시도 수였음), `agent` run(해석기만 셈), T3-32 이전의 모든 `l3`·`e2e` run(계층 정의·호출 기준·재시도 기준이 바뀜). 이 run들과 `ops_history.jsonl`에서 호출 수·재시도·비용을 비교하지 않는다.
 - agent 리포트 첫머리의 **"토큰 대조 (span 합 / 메트릭 합)"** 줄이 `불일치`면 계측 버그다. 둘은 같은 콜백에서 나오므로 항상 같아야 한다.
 
 ### 8.4 턴이 어떻게 끝났나 — 종료 이유

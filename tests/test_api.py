@@ -135,7 +135,8 @@ def test_service_tracing_never_touches_the_global_provider():
     with TestClient(app) as http:
         assert http.get("/health").status_code == 200
         assert telemetry._provider is not None
-        assert telemetry._provider.resource.attributes["service.name"] == telemetry.SERVICE
+        attributes = telemetry._provider.resource.attributes  # T3-32: one service name, the environment tells them apart
+        assert (attributes["service.name"], attributes["deployment.environment.name"]) == ("kosis-agent", "service")
     assert trace.get_tracer_provider() is before and telemetry._provider is None
 
 

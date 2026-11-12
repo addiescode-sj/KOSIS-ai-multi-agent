@@ -39,7 +39,12 @@ def candidate(key: str) -> TableCandidate:
 class GoldenLookupSearch:
     """Stands in for kosis_rag.api.SearchModule: .stream(SearchInput) -> ("output", SearchOutput)."""
 
-    def __init__(self, calc_path: Path = CALC, distractor: str = DISTRACTOR, retrieval_path: Path = RETRIEVAL):
+    def __init__(self, calc_path: Path = CALC, distractor: str = DISTRACTOR, retrieval_path: Path = RETRIEVAL,
+                 known: dict[str, str] | None = None):
+        """known: question -> table key to use instead of the golden files (l3's oracle search, T3-32)."""
+        if known is not None:
+            self.known, self.distractor, self.questions = sorted(known.items(), key=lambda qk: -len(qk[0])), distractor, []
+            return
         rows = [json.loads(line) for line in calc_path.read_text(encoding="utf-8").splitlines() if line.strip()]
         known = {r["question"]: r["table_key"] for r in rows}
         if retrieval_path.is_file():  # retrieval golden questions get the first key of their gold slot
@@ -61,8 +66,10 @@ class GoldenLookupSearch:
         yield "output", SearchOutput(question=inp.question, route="found", picked=[table], candidates=[table])
 
 
-def build():
+def build(known: dict[str, str] | None = None):
     """The graph under test with the golden lookup search, phase 1 from STAT_PROVIDER, and a checkpointer.
+
+    known: question -> table key for the search (l3 passes its golden items: the oracle table, T3-32).
 
     INTERPRETER (rules | hybrid | llm) and INTERPRETER_MODEL (the LLM step's model, default gpt-4o-mini) are read
     the way the service reads them (backend/app/config.py, interpreter_llm)."""
@@ -80,4 +87,4 @@ def build():
         from backend.app.config import splitter_llm
 
         kwargs.update(splitter=splitter_llm(agent_config()))
-    return build_graph(GoldenLookupSearch(), stat_llm(), checkpointer=new_checkpointer(), **kwargs)
+    return build_graph(GoldenLookupSearch(known=known), stat_llm(), checkpointer=new_checkpointer(), **kwargs)

@@ -1,26 +1,20 @@
-"""Stage-level tracing for L1 / L3 / e2e runs (plans/T2-15.md, T2-36): which span a question failed in, and why;
-Jaeger export.
+"""Stage-level tracing for L1 / L3 / e2e runs (plans/T2-15.md, T2-36): which span a question failed in, and why.
 
-One question = one trace:
+T3-32: the traces themselves are live (kosis_agent.observability.tracing.LiveSpans; l3 / e2e run the agent graph,
+evals.runners.agent.single_turns), one service `kosis-agent` with deployment.environment.name=eval. This module keeps
+the deterministic rules over the span *records* a row carries, which are the same names the live trace shows:
 
-    eval.question            qid, kind, layer, verdict, failure.stage / failure.span / failure.reason
-    ├─ retrieve              L1·e2e, a plain retriever: retriever, top_keys, gold_rank, right_table
-    ├─ search_tables         L1·e2e, the LangGraph search (T2-10), same attributes
-    │  └─ parse, retrieve, rerank1, rerank2, gate (route found | refuse)     (graph nodes, NodeSpans)
-    └─ tool.summarize_stat   L3·e2e: table_key, outcome, numbers_origin
-       └─ judge, analyze.*, compute, compose, verify, template, fallback_chatbot   (Phase 1 spans, T1-22)
+    invoke_agent                              l3·e2e: one turn of the agent graph
+    ├─ execute_tool search_tables             e2e (l3: the oracle search); graph nodes parse, retrieve_*, rerank1, rerank2, gate
+    └─ execute_tool summarize_stat            phase 1: judge, analyze.*, compute, compose, verify, template, fallback_chatbot
 
-The Phase 1 pipeline already records OTel-shaped span dicts in Answer.decision_metadata["spans"]; summarize() keeps
-them (summarize_stat drops them). NodeSpans records the graph nodes as span dicts of the same shape from LangChain
-callbacks (row["search_spans"], kept apart from the Phase 1 row["spans"]). blame() / blame_search() name the failing
-stage with deterministic rules, and export() replays the dicts as OTel spans over OTLP when
-OTEL_EXPORTER_OTLP_ENDPOINT is set (docker compose --profile obs up jaeger).
-Tokens and cost stay in evals.ops (ops.json); the gen_ai.* span attributes are only the per-call record.
+row["spans"] = phase 1 StatOutput.spans; row["search_spans"] = the search graph nodes as NodeSpans records them (with
+the ranked "keys" lost_at reads). blame() / blame_search() name the failing stage; run_eval links the verdict to
+the live trace (evals.runners.agent.link_questions). Tokens and cost stay in evals.ops (ops.json).
 """
 
 from __future__ import annotations
 
-import json
 import math
 import os
 import time
@@ -29,7 +23,11 @@ from uuid import UUID
 
 from langchain_core.callbacks import BaseCallbackHandler
 
+from kosis_agent.observability.tracing import TOOL_PREFIX
+
 from evals.evaluators.calculation import FACT_ERRORS
+
+STAT_TOOL, SEARCH_TOOL = TOOL_PREFIX + "summarize_stat", TOOL_PREFIX + "search_tables"  # blame's fallback span names
 
 JAEGER_UI = os.environ.get("JAEGER_UI_URL", "http://localhost:16686")
 STAGES = {  # stage -> label, in blame order
@@ -45,19 +43,6 @@ NO_ANSWER_LABEL = "답 없음 판정 오류"  # L1 only (blame_search): not a st
 JUDGE_ERRORS = {"false_refusal", "missed_refusal", "assumed_condition", "wrong_reason", "disallowed_default",
                 "unstated_default", "missing_clarification"}
 PLAN_ERRORS = FACT_ERRORS | {"missing_aux"}
-
-
-def summarize(question: str, table_key: str, client, retry_interval: float = 0.0):
-    """summarize_stat that also returns the pipeline's spans: (StatAnswer | None, spans, error)."""
-    from kosis_chat import api
-    from kosis_chat.contract import to_stat_answer
-
-    # ponytail: private _build, since summarize_stat returns no spans; drop when Phase 1 exposes them (KOS-95 follow-up)
-    bot = api._build(api.table_path(table_key), None, client, retry_interval)
-    answer = bot.ask(question)
-    spans = (answer.decision_metadata or {}).get("spans") or []
-    stat = to_stat_answer(question, answer, org_id=bot.org_id)
-    return stat, spans, None if stat else f"RuntimeError: {table_key}: the model call failed ({answer.status}: {answer.error})"
 
 
 class NodeSpans(BaseCallbackHandler):
@@ -169,13 +154,13 @@ def blame(row: dict) -> dict | None:
 
     if row.get("right_table") is False:
         rank = row.get("gold_rank")
-        span, node = "retrieve", ""
+        span, node = SEARCH_TOOL, ""
         if lost := lost_at(row.get("search_spans") or [], set(row.get("gold_keys") or []), 1):
             span, node = lost[0], f" — {lost[1]}"
         return _failure("retrieval", span, f"검색 1위 {row.get('used_table') or '없음'} ≠ 정답 표 "
                         f"(정답 순위 {rank or '밖'}){node}", errors)
     if "run_failure" in errors:
-        span = last(lambda s: s["status"] == "error") or "tool.summarize_stat"
+        span = last(lambda s: s["status"] == "error") or STAT_TOOL
         return _failure("tool_call", span, row.get("error") or "답 없음", errors - {"run_failure"})
     if "fallback_chatbot" in names:
         tried = ", ".join(f"{s['name']}={s['status']}" for s in analyze) or "analyze 없음"
@@ -191,85 +176,9 @@ def blame(row: dict) -> dict | None:
         outcome = judge["attributes"].get("outcome") if judge else None
         return _failure("understanding", span, f"판정 오류 {', '.join(sorted(hit))} (judge outcome={outcome})", errors - hit)
     if hit := errors & PLAN_ERRORS:
-        span = analyze[-1]["name"] if analyze else "tool.summarize_stat"
+        span = analyze[-1]["name"] if analyze else STAT_TOOL
         return _failure("understanding", span, f"계획이 고른 셀이 틀림: {', '.join(sorted(hit))}", errors - hit)
     if "unsupported_claim" in errors:
-        return _failure("compose", last(lambda s: s["name"] == "compose") or "tool.summarize_stat",
+        return _failure("compose", last(lambda s: s["name"] == "compose") or STAT_TOOL,
                         "근거 없는 숫자를 문장에 씀 (unsupported_claim)", errors - {"unsupported_claim"})
     return _failure("unknown", None, "규칙에 안 맞음", errors)
-
-
-def _attr(v):
-    return v if isinstance(v, (str, bool, int, float)) else json.dumps(v, ensure_ascii=False, default=str)
-
-
-def _replay(tracer, ctx, spans: list[dict], start: int, failure: dict) -> None:
-    """Child OTel spans for span dicts under ctx, offset from start (ns); the blamed one and error ones get ERROR."""
-    from opentelemetry.trace import Status, StatusCode
-
-    ms = 1_000_000
-    for sp in spans:
-        begin = start + int(sp["start_ms"] * ms)
-        child = tracer.start_span(sp["name"], context=ctx, start_time=begin,
-                                  attributes={k: _attr(v) for k, v in sp["attributes"].items()})
-        if sp["status"] == "error" or failure.get("span") == sp["name"]:
-            child.set_status(Status(StatusCode.ERROR, failure["reason"] if failure.get("span") == sp["name"] else "error"))
-        child.end(end_time=begin + int(sp["duration_ms"] * ms))
-
-
-def export(rows: list[dict], layer: str, retriever: str | None) -> bool:
-    """Replay each row as one trace over OTLP and set row["trace_id"]; no endpoint -> nothing sent, False.
-
-    Spans are laid out back to back ending now (rows hold durations, not wall-clock times), so durations and order
-    are real while absolute times are not. L1 rows are the search alone; L3 rows the tool alone; e2e both.
-    """
-    if not os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT"):
-        return False
-    from opentelemetry import trace
-    from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
-    from opentelemetry.sdk.resources import Resource
-    from opentelemetry.sdk.trace import TracerProvider
-    from opentelemetry.sdk.trace.export import BatchSpanProcessor
-    from opentelemetry.trace import Status, StatusCode
-
-    provider = TracerProvider(resource=Resource.create({"service.name": "kosis-evals"}))
-    provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter()))
-    tracer = provider.get_tracer("evals.trace")
-    ms = 1_000_000
-    t = time.time_ns() - int(sum(r.get("latency_ms", 0) for r in rows) * ms)
-    for r in rows:
-        f = r.get("failure") or {}
-        end = t + int(r.get("latency_ms", 0) * ms)
-        root = tracer.start_span("eval.question", start_time=t, attributes={
-            "qid": r["qid"], "layer": layer,
-            **{k: r[k] for k in ("kind", "verdict", "errors", "qtype", "answerable") if r.get(k) is not None},
-            **{f"failure.{k}": v for k, v in f.items() if v is not None and k != "label"}})
-        ctx = trace.set_span_in_context(root)
-        tool_start = t
-        if layer == "l1" or "right_table" in r:  # the search step: the whole row in L1, the first part in e2e
-            tool_start = end if layer == "l1" else t + int(r.get("retrieve_ms", 0) * ms)
-            nodes = r.get("search_spans") or []
-            s = tracer.start_span("search_tables" if nodes else "retrieve", context=ctx, start_time=t, attributes={
-                "retriever": retriever or "", "top_keys": r.get("top_keys") or (r.get("keys") or [])[:5],
-                "gold_rank": r.get("gold_rank") or r.get("rank") or 0,
-                **({"right_table": r["right_table"]} if "right_table" in r else {})})
-            if f.get("span") == "retrieve" and not nodes:
-                s.set_status(Status(StatusCode.ERROR, f["reason"]))
-            _replay(tracer, trace.set_span_in_context(s), nodes, t, f)
-            s.end(end_time=tool_start)
-        if layer != "l1":
-            answer = r.get("answer") or {}
-            tool = tracer.start_span("tool.summarize_stat", context=ctx, start_time=tool_start, attributes={
-                "table_key": r.get("used_table") or r.get("table_key") or "", "outcome": r.get("outcome") or "",
-                "numbers_origin": answer.get("numbers_origin") or ""})
-            _replay(tracer, trace.set_span_in_context(tool), r.get("spans") or [], tool_start, f)
-            if f.get("stage") == "tool_call":
-                tool.set_status(Status(StatusCode.ERROR, f["reason"]))
-            tool.end(end_time=end)
-        if f:
-            root.set_status(Status(StatusCode.ERROR, f"{f['label']}: {f['reason']}"))
-        root.end(end_time=end)
-        r["trace_id"] = format(root.get_span_context().trace_id, "032x")
-        t = end
-    provider.shutdown()  # flushes the batch
-    return True
