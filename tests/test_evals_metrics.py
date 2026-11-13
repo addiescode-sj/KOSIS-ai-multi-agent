@@ -15,9 +15,12 @@ def test_hit_mrr_and_complete_over_slots():
     row = retrieval.score_item(item, ["x", "a2", "y", "b"], judged={"x"})
     assert row["rank"] == 2 and row["rr"] == 0.5
     assert row["hit@1"] == 0 and row["hit@3"] == 1
+    assert row["complete@2"] == 0 and row["slot_recall@2"] == 0.5  # a2 is 2nd, b is 4th
     assert row["complete@3"] == 0 and row["slot_recall@3"] == 0.5  # b is 4th
     assert row["complete@5"] == 1
     assert row["unjudged@10"] == 0.25  # y: neither gold nor judged
+
+    assert retrieval.score_item(item, ["b", "a"])["complete@2"] == 1  # both slots in the top 2
 
 
 def test_no_answer_threshold_and_prf():

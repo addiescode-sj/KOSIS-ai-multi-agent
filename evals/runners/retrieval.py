@@ -22,7 +22,7 @@ from kosis_rag.shared.catalog import to_document
 from kosis_agent.observability.tracing import LiveSpans
 
 from evals.ops import UsageCallback, stage2_usage
-from evals.runners.agent import span_rows
+from evals.runners.agent import progress, span_rows
 from evals.schemas import TABLES, RetrievalItem
 from evals.trace import NodeSpans
 
@@ -61,6 +61,8 @@ STAGED = {
     "hybrid+cond-hcx": {"cond_filter": True, "rerank_ckpt": "", "stage2": "hcx"},  # T2-09, HCX_THINKING=none | low
     "staged-hcx": {"cond_filter": True, "stage2": "hcx"},
     "hybrid+cond-gpt": {"cond_filter": True, "rerank_ckpt": "", "stage2": "gpt"},  # same prompt, gpt-4o-mini
+    # stage 1 + the OpenAI-compatible stage 2: gpt-4o-mini, or STAGE2_MODEL on STAGE2_BASE_URL (e.g. vLLM Gemma, T3-33)
+    "staged-gpt": {"cond_filter": True, "stage2": "gpt"},
 }
 
 
@@ -138,7 +140,7 @@ def run(retriever: BaseRetriever, items: list[RetrievalItem], k: int, telemetry=
 
     tracer = telemetry[0].get_tracer("kosis-agent") if telemetry else None
     rows = []
-    for item in items:
+    for n, item in enumerate(items, 1):
         counter, nodes = UsageCallback(), NodeSpans()
         root = None
         if tracer is not None:
@@ -185,4 +187,5 @@ def run(retriever: BaseRetriever, items: list[RetrievalItem], k: int, telemetry=
             "search_spans": nodes.spans,  # graph nodes (T2-36); empty for a retriever that is not a graph
             **ids,
         })
+        progress(n, len(items), item.qid, started, error)
     return rows

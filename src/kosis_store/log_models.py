@@ -1,4 +1,4 @@
-"""User request log, draft (plans/T3-34.md, docs/log-schema.md): one row per question.
+"""User request log, draft (plans/T3-36.md, docs/log-schema.md): one row per question.
 
 Draft: `request_logs` has no Alembic migration yet (the number is agreed with the backend task KOS-158 first), so it
 sits on its own LogBase and the migration check of T3-18 (Base.metadata) does not see it.

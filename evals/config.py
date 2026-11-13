@@ -32,7 +32,7 @@ def data_dir() -> Path:
 
 def stage2_llm(name: str) -> LLMConfig | None:
     """The stage 2 LLM config for `name` (clova | hcx | gpt); None when off or unknown. The service's function, so an
-    L1 stage 2 preset runs the same model and server as the service (STAGE2_MODEL, Gemma_BASE_URL; T3-33)."""
+    L1 stage 2 preset runs the same model and server as the service (STAGE2_MODEL / STAGE2_BASE_URL / STAGE2_API_KEY, T3-33)."""
     from backend.app.config import stage2_llm as service_stage2_llm
 
     return service_stage2_llm(name)

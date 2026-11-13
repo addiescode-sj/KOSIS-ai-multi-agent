@@ -21,6 +21,7 @@ from __future__ import annotations
 import importlib
 import json
 import os
+import sys
 import time
 from typing import Any, get_args
 
@@ -147,13 +148,15 @@ def run(graph, scenarios: list[AgentScenario], repeat: int = 1,
     tracer = provider.get_tracer("kosis-agent")
     meter = meters.get_meter("kosis-agent") if meters is not None else None
     out: dict[tuple[str, int], list[dict]] = {}
+    total, done = len(scenarios) * repeat, 0
     for scenario in scenarios:
         for r in range(repeat):
             thread = f"{scenario.sid}#{r}"
             records = out[(scenario.sid, r)] = []
+            done += 1
             for i, turn in enumerate(scenario.turns):
                 memory.clear()
-                answer, error = "", None
+                answer, error, started = "", None, time.perf_counter()
                 with agent_turn(tracer, thread, i, meter) as (root, spans):
                     try:
                         state = graph.invoke({"messages": [("user", turn.question)]},
@@ -164,10 +167,17 @@ def run(graph, scenarios: list[AgentScenario], repeat: int = 1,
                         root.record_exception(e)
                         root.set_status(StatusCode.ERROR, error)
                 records.append({**turn_record(list(memory.get_finished_spans()), answer, error), "run": r})
+                progress(done, total, f"{thread} turn {i}", started, error)
                 if error:
                     break
     provider.force_flush()
     return out
+
+
+def progress(n: int, total: int, label: str, started: float, error: str | None = None) -> None:
+    """One stderr line per question / turn, so a long live run shows how far it is (T3-33; run_eval prints the rest at the end)."""
+    print(f"[{n}/{total}] {label} {time.perf_counter() - started:.1f}s" + (f" ERROR {error[:80]}" if error else ""),
+          file=sys.stderr, flush=True)
 
 
 def _final_answer(state: dict, error: str | None):
@@ -209,6 +219,7 @@ def single_turns(graph, questions: list[tuple[str, str]], telemetry: tuple[Trace
         if n and interval:
             time.sleep(interval)
         memory.clear()
+        started = time.perf_counter()
         state, error, nodes, thread = {}, None, NodeSpans(), f"{qid}#0"
         with agent_turn(tracer, thread, 0, meter) as (root, spans):
             root.set_attribute("kosis.eval.qid", qid)
@@ -231,6 +242,7 @@ def single_turns(graph, questions: list[tuple[str, str]], telemetry: tuple[Trace
                      **{k: record[k] for k in ("latency_ms", "llm_calls", "input_tokens", "output_tokens", "model",
                                                "retried", "trace_id", "span_id")},
                      "failed": error is not None})
+        progress(n + 1, len(questions), qid, started, error)
     provider.force_flush()
     return rows
 
