@@ -13,7 +13,7 @@ Phase 0·1 태스크는 실전 1 레포(`vendor/phase1/TASK.md`), Phase 2는 실
 
 - [x] **T3-00** 레포 초기 세팅 — 실전 1·2 submodule(`vendor/phase1`, `vendor/phase2`), 하네스(skill·hook·agents·AGENTS.md·CLAUDE.md) 팀 공유 이식, 기술 스택 골격(FastAPI·LangGraph·Next.js·Docker Compose·CI), `scripts/verify.sh` OK → 결과: 인프라 태스크라 지표 없음, 질문 → supervisor → 실전 2 검색 그래프 → SSE 경로 0 → 1, `scripts/verify.sh` OK (pytest 66 pass: 골격 5 + 실전 2에서 복사한 평가 모듈 `evals/` 61, 하네스·프론트 타입체크 통과). Docker compose 5서비스 healthy·frontend→backend SSE 확인(1노드 골격 기준). 실전 2 검색 실연결은 Docker 복구 후 확인
 - [ ] **T3-01** 툴 래핑 — `search_tables`, `summarize_stat`, `make_chart`를 툴 스키마로 등록 (실전 1·2 모듈 재사용, 검증기 유지)
-- [ ] **T3-02** 차트 모듈 — 시간 변화=꺾은선, 항목 비교=막대, 구성비=원형·누적막대 자동 선택, Vega-Lite spec (산출물④)
+- [x] **T3-02** 차트 모듈 — 시간 변화=꺾은선, 항목 비교=막대, 구성비=원형·누적막대 자동 선택, Vega-Lite spec (산출물④) (Linear KOS-38, 11/15, 임도유, `plans/T3-02.md`) → 결과(옵션 A 패턴 표 + 요청 가드): 가짜 표 계산으로 만든 측정 세트에서 자동 선택 규칙 일치 설계용 12/15 → 15/15 · 검증용 2/5 → 5/5, 사용자가 말한 종류 처리 설계용 4/10 → 10/10 · 검증용 2/4 → 4/4, 오해를 부르는 차트(연도·지역을 원형, 시간 축 없는 꺾은선) 6 → 0, 누적막대 0 → 1종, 차트 숫자 변화 0, pytest 218 → 256 (`src/kosis_agent/services/chart.py`, `tests/test_chart_choice.py`). 골든 90문항 회귀: 답 66개 중 종류가 바뀐 차트 10개(모두 표의 범주: 기간 평균·합계·최댓값 → 꺾은선 7, 구성비 변화 → 누적막대 3), 숫자 변화 0
 - [ ] **T3-03** 단일 에이전트 루프 — LLM이 툴 선택·순서 결정, 1턴 시나리오 동작
 - [ ] **T3-04** 대화 상태 — 선택한 표·조건 기억, "이거"·"그 표" 지시어 해석 (산출물⑤)
 - [~] **T3-05** ⭐ 에이전트 평가셋 — 단일턴 + 멀티턴 시나리오(과제 문서 시나리오 포함)
