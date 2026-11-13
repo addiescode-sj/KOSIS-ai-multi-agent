@@ -46,7 +46,7 @@ from kosis_agent.graph.state import AgentState
 from kosis_agent.retrieval.search import make_search_tables_tool
 from kosis_agent.services.chart import CHART_NAMES, make_chart_tool, to_vega_lite
 from kosis_agent.services.combine import combine_text, make_combine_values_tool
-from kosis_agent.services.statistics import make_summarize_stat_tool
+from kosis_agent.services.statistics import MAX_TABLE_ROWS, make_summarize_stat_tool
 from kosis_chat.api import summarize_stat_run
 from kosis_chat.schemas.io import StatOutput
 from kosis_chat.schemas.resources import LLMConfig as StatLLMConfig
@@ -101,7 +101,8 @@ def default_parser(search: Any) -> Callable[[str], ParsedQuery]:
 def build_graph(search: Any, stat_llm: StatLLMConfig, *, retry_interval: float = 0.0,
                 summarize: Callable[..., StatOutput] = summarize_stat_run, checkpointer: Any = None,
                 alt_table_budget: int = 0, parse: Callable[[str], ParsedQuery] | None = None,
-                interpreter: Mode = "hybrid", llm: LLMReader | None = None, splitter: SplitReader | None = None):
+                interpreter: Mode = "hybrid", llm: LLMReader | None = None, splitter: SplitReader | None = None,
+                max_table_rows: int = MAX_TABLE_ROWS):
     """메인 그래프를 compile한다.
 
     In: search = kosis_rag.api.SearchModule (테스트·stat_oracle에서는 .stream(SearchInput)만 있는 가짜);
@@ -117,6 +118,7 @@ def build_graph(search: Any, stat_llm: StatLLMConfig, *, retry_interval: float =
             llm이 None이면 hybrid는 rules와 같다(LLM 단계 없음).
         splitter = 멀티쿼리 분해의 LLM 단계(graph/multiquery.py make_llm_splitter). 규칙이 판단 보류한 턴만 부른다.
             None이면 규칙으로만 나눈다.
+        max_table_rows = summarize_stat이 실전 1을 부르지 않고 거절할 표 크기(행 수, 0 = 한도 없음, T3-23).
     Out: AgentState 위의 compiled graph. stream_mode "custom"으로 돌리면 실전 2 노드마다 (노드 이름, trace 항목),
         그다음 실전 1 시도마다 ("stat", {"seconds", "key", "spans"})가 온다.
     Errors: 실전 1의 LLMKeyMissing·RuntimeError와 실전 2의 예외는 그대로 올라간다(SSE `error`). 실전 1의
@@ -125,7 +127,8 @@ def build_graph(search: Any, stat_llm: StatLLMConfig, *, retry_interval: float =
     if alt_table_budget < 0:
         raise ValueError("alt_table_budget cannot be negative")
     search_tables = make_search_tables_tool(search)
-    summarize_stat = make_summarize_stat_tool(stat_llm, retry_interval=retry_interval, summarize=summarize)
+    summarize_stat = make_summarize_stat_tool(stat_llm, retry_interval=retry_interval, summarize=summarize,
+                                              max_table_rows=max_table_rows)
     make_chart = make_chart_tool()
     combine_values = make_combine_values_tool()
     parse = parse or default_parser(search)

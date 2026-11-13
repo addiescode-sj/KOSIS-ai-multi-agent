@@ -15,6 +15,7 @@ then reads os.environ. In the container compose passes the same file as `env_fil
     HQ_BUILD HQ_WEIGHT HQ_BM25                      reverse HyDE question index (empty HQ_BUILD = off)
     HCX_API_KEY HCX_THINKING OPENAI_API_KEY         stage 2 keys (clova / hcx: HCX_API_KEY, gpt: OPENAI_API_KEY)
     STAT_PROVIDER STAT_MODEL STAT_RETRY_INTERVAL    phase 1 model (hcx = HCX-DASH-002 default | openai | gemma | mock), seconds before a retry
+    STAT_MAX_TABLE_ROWS                             tables with more rows are refused without loading (default 1,000,000; 0 = no limit, T3-23)
     HCX_API_KEY                                     phase 1 key too (None: LLMKeyMissing when a phase 1 LLM step runs)
     ALT_TABLE_BUDGET                                candidate tables tried after a table-mismatch refusal (default 0 = off, T3-23)
     INTERPRETER INTERPRETER_MODEL                   follow-up reading and multi-query split (T3-28): rules | hybrid | llm (default hybrid, T3-27) and its
@@ -34,6 +35,7 @@ from typing import NamedTuple
 
 from pydantic import SecretStr
 
+from kosis_agent.services.statistics import MAX_TABLE_ROWS
 from kosis_chat.schemas.resources import LLMConfig as StatLLMConfig
 from kosis_rag.llm.config import LLMConfig as SearchLLMConfig
 from kosis_rag.rerank import selectors
@@ -55,6 +57,7 @@ class AgentConfig(NamedTuple):
     alt_table_budget: int  # T3-23: tables tried after the first one refuses for a table mismatch
     interpreter: str  # T3-27: rules | hybrid | llm (src/kosis_agent/graph/context.py)
     interpreter_model: str  # T3-27: the LLM step's model (default gpt-4o-mini, interpreter_llm below)
+    stat_max_table_rows: int = MAX_TABLE_ROWS  # T3-23: summarize_stat refuses bigger tables (0 = no limit)
 
 
 def _env(name: str) -> str | None:
@@ -176,4 +179,5 @@ def agent_config() -> AgentConfig:
                        alt_table_budget=int(_env("ALT_TABLE_BUDGET") or 0),
                        interpreter=(_env("INTERPRETER") or "hybrid").strip().lower(),
                        # T3-27: gpt-4o-mini beat HCX-005 on the LLM-only reading (dev 0.798 vs 0.723) at ~1/5 of Gemma's latency
-                       interpreter_model=_env("INTERPRETER_MODEL") or "gpt-4o-mini")
+                       interpreter_model=_env("INTERPRETER_MODEL") or "gpt-4o-mini",
+                       stat_max_table_rows=int(_env("STAT_MAX_TABLE_ROWS") or MAX_TABLE_ROWS))

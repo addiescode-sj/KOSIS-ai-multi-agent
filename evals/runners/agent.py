@@ -18,6 +18,7 @@ link_questions adds the verdict afterwards as an `eval.question` span linked to 
 
 from __future__ import annotations
 
+import gc
 import importlib
 import json
 import os
@@ -243,6 +244,8 @@ def single_turns(graph, questions: list[tuple[str, str]], telemetry: tuple[Trace
                                                "retried", "trace_id", "span_id")},
                      "failed": error is not None})
         progress(n + 1, len(questions), qid, started, error)
+        state = search = stat = None
+        gc.collect()  # T3-23: phase 1 tables hold reference cycles (TableInput <-> TableIndex): free one before the next
     provider.force_flush()
     return rows
 

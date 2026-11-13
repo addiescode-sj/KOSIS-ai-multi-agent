@@ -21,17 +21,35 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable
+from pathlib import Path
 
 from langchain_core.tools import BaseTool, tool
 
 from kosis_agent.runtime import stream_writer, without_checkpointer
 from kosis_ai.schemas import Refusal, StatAnswer
-from kosis_chat.api import summarize_stat_run
+from kosis_chat.api import summarize_stat_run, table_path
 from kosis_chat.schemas.io import StatOutput
 from kosis_chat.schemas.resources import LLMConfig as StatLLMConfig
 
 # 표 키가 tables.csv에 없을 때 사용자에게 보여 줄 문장 (코드 고정 문장, LLM 아님)
 NOT_IN_CATALOG_TEXT = "찾은 통계표의 원자료를 열 수 없어 답할 수 없어요. 다른 표현으로 다시 물어봐 주세요."
+# 표가 너무 커서 읽지 않을 때 보여 줄 문장 (코드 고정 문장, LLM 아님)
+TABLE_TOO_LARGE_TEXT = "찾은 통계표가 너무 커서 지금은 바로 계산할 수 없어요. 지역이나 기간을 좁혀 다시 물어봐 주세요."
+# T3-23: 실전 1은 표 전체를 읽어 행마다 Python 객체를 만든다(행당 수 KB). 이보다 큰 표는 메모리를 다 써서 PC가 멈췄다
+# (11/10 e2e). 골든 정답 표 중 가장 큰 표는 약 16만 행이고, 이 한도를 넘는 표는 54개다. 0 = 한도 없음.
+MAX_TABLE_ROWS = 1_000_000
+
+
+def table_rows(table_key: str) -> int | None:
+    """표의 행 수 (Parquet footer만 읽음, 데이터는 안 읽음). tables.csv에 없거나 파일이 없으면 None
+    (그 경우는 실전 1이 LookupError로 알려 주고 not_in_catalog 거절이 된다)."""
+    import pyarrow.parquet as pq
+
+    try:
+        path: Path = table_path(table_key)
+    except LookupError:
+        return None
+    return pq.ParquetFile(path).metadata.num_rows
 
 
 def not_in_catalog(error: LookupError) -> StatOutput:
@@ -47,16 +65,28 @@ def not_in_catalog(error: LookupError) -> StatOutput:
                                                          "error": f"{type(error).__name__}: {error}"}])
 
 
+def too_large(table_key: str, rows: int, limit: int) -> StatOutput:
+    """행 수가 한도를 넘어 실전 1을 부르지 않은 표의 거절 답 (not_in_catalog와 같은 모양, reason out_of_scope)."""
+    refusal = Refusal(reason="out_of_scope", message=TABLE_TOO_LARGE_TEXT, available=None)
+    answer = StatAnswer(outcome="refused", text=TABLE_TOO_LARGE_TEXT, refusal=refusal)
+    return StatOutput(answer=answer, chart=None, spans=[{"name": "table_size", "status": "error",
+                                                         "error": f"TableTooLarge: {table_key}: {rows:,} rows > {limit:,}"}])
+
+
 def make_summarize_stat_tool(stat_llm: StatLLMConfig, *, retry_interval: float = 0.0,
-                             summarize: Callable[..., StatOutput] = summarize_stat_run) -> BaseTool:
+                             summarize: Callable[..., StatOutput] = summarize_stat_run,
+                             max_table_rows: int = MAX_TABLE_ROWS,
+                             count_rows: Callable[[str], int | None] = table_rows) -> BaseTool:
     """실전 1을 감싼 summarize_stat 툴을 만든다.
 
     In: stat_llm = 실전 1의 LLMConfig (실전 2와 다른 클래스); retry_interval = HCX 429 때 두 번째 호출 전 대기 초;
-        summarize = 실전 1 summarize_stat_run (테스트에서는 가짜).
+        summarize = 실전 1 summarize_stat_run (테스트에서는 가짜);
+        max_table_rows = 이보다 행이 많은 표는 실전 1을 부르지 않고 거절한다 (0 = 한도 없음, T3-23);
+        count_rows = 표 키 → 행 수 (None = 모름, 검사 생략; 테스트에서는 가짜).
     Out: summarize_stat 툴. 실행이 끝나면 ("stat", {"seconds", "key", "spans"}) 이벤트를 stream writer로 내보낸다
         (리팩토링 전 stat_agent 노드가 내던 것과 같은 이름·내용).
-    Errors: LookupError(표 키가 tables.csv에 없음)만 거절 답으로 바꾼다. LLMKeyMissing·RuntimeError(키 없음·모델
-        호출 실패)는 장애라서 그대로 올려 SSE `error`로 끝낸다.
+    Errors: LookupError(표 키가 tables.csv에 없음)와 행 수 초과(TableTooLarge)만 거절 답으로 바꾼다.
+        LLMKeyMissing·RuntimeError(키 없음·모델 호출 실패)는 장애라서 그대로 올려 SSE `error`로 끝낸다.
     """
 
     @tool("summarize_stat", response_format="content_and_artifact")
@@ -69,9 +99,13 @@ def make_summarize_stat_tool(stat_llm: StatLLMConfig, *, retry_interval: float =
         # 선택 인자 4개는 기록·채점용이다. 실전 1은 question에서 조건을 직접 읽는다(모듈 docstring 참고).
         del period_start, period_end, regions, dimensions
         started = time.perf_counter()
+        rows = count_rows(table_key) if max_table_rows else None
         try:
-            with without_checkpointer():  # 실전 1 StatState를 대화 체크포인트에 쌓지 않는다 (runtime.py 참고)
-                stat = summarize(question, table_key, llm=stat_llm, retry_interval=retry_interval)
+            if rows is not None and rows > max_table_rows:
+                stat = too_large(table_key, rows, max_table_rows)
+            else:
+                with without_checkpointer():  # 실전 1 StatState를 대화 체크포인트에 쌓지 않는다 (runtime.py 참고)
+                    stat = summarize(question, table_key, llm=stat_llm, retry_interval=retry_interval)
         except LookupError as error:
             stat = not_in_catalog(error)
         writer = stream_writer()

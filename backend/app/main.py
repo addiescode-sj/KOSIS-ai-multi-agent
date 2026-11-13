@@ -79,9 +79,10 @@ def _build() -> tuple[Any, dict[str, BaseTool]]:
     # a Postgres saver once the compose Postgres is wired (KOS-121)
     graph = build_graph(search, cfg.stat_llm, retry_interval=cfg.stat_retry_interval, checkpointer=new_checkpointer(),
                         alt_table_budget=cfg.alt_table_budget, interpreter=cfg.interpreter, llm=interpreter_llm(cfg),
-                        splitter=splitter_llm(cfg))
+                        splitter=splitter_llm(cfg), max_table_rows=cfg.stat_max_table_rows)
     tools = [make_search_tables_tool(search),
-             make_summarize_stat_tool(cfg.stat_llm, retry_interval=cfg.stat_retry_interval), make_chart_tool()]
+             make_summarize_stat_tool(cfg.stat_llm, retry_interval=cfg.stat_retry_interval,
+                                      max_table_rows=cfg.stat_max_table_rows), make_chart_tool()]
     return graph, {t.name: t for t in tools}
 
 
