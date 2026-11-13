@@ -63,7 +63,7 @@ def run(args) -> tuple[list[dict], dict, str]:
 
 
 def report(args, s: dict) -> str:
-    cols = ["hit@1", "hit@5", "hit@10", "rr", "slot_recall@5", "slot_recall@10", "complete@3", "complete@10", "unjudged@10"]
+    cols = ["hit@1", "hit@5", "hit@10", "rr", "slot_recall@5", "slot_recall@10", "complete@2", "complete@3", "complete@10", "unjudged@10"]
     head = "| qtype | n | " + " | ".join("MRR" if c == "rr" else c for c in cols) + " |"
     lines = [head, "|" + " --- |" * (len(cols) + 2)]
     order = ["all"] + sorted(k for k in s["metrics"] if k != "all")

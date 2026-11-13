@@ -195,7 +195,7 @@ def l1_body(m: dict, rows: list[dict]) -> str:
     agg = s["metrics"]
     a = agg.get("all", {})
     tiles = [tile(pct(a.get("hit@1", 0)), "Hit@1"), tile(pct(a.get("hit@5", 0)), "Hit@5"), tile(f"{a.get('rr', 0):.3f}", "MRR"),
-             tile(pct(a.get("slot_recall@5", 0)), "SlotRecall@5"), tile(pct(a.get("complete@3", 0)), "Complete@3"),
+             tile(pct(a.get("slot_recall@5", 0)), "SlotRecall@5"), tile(pct(a.get("complete@2", 0)), "Complete@2"),
              tile(f"{s['no_answer']['f1']:.3f}", f"답 없음 F1 (τ={s['tau']:.3g})")]
     cats = [c for c in QTYPE_ORDER if c in agg]
     chart = hbar_groups(cats, [("Hit@1", "--series-1", [agg[c]["hit@1"] for c in cats]),
@@ -210,7 +210,7 @@ def l1_body(m: dict, rows: list[dict]) -> str:
     def chip(rank):
         if rank is None:
             return '<span class="chip bad">✕ 없음</span>'
-        cls, icon = ("ok", "✓") if rank <= 5 else ("warn", "△")
+        cls, icon = ("ok", "✓") if rank <= 2 else ("warn", "△")
         return f'<span class="chip {cls}">{icon} {rank}위</span>'
 
     slot_rows = "".join(f'<tr><td>{esc(r["qid"])}</td><td>{esc(r.get("question", ""))}</td><td>'
@@ -226,7 +226,7 @@ def l1_body(m: dict, rows: list[dict]) -> str:
         f'<table><tr><th>Precision</th><th>Recall</th><th>F1</th><th>TP</th><th>FP</th><th>FN</th></tr><tr>'
         f'<td class="num">{na["precision"]:.3f}</td><td class="num">{na["recall"]:.3f}</td><td class="num">{na["f1"]:.3f}</td>'
         f'<td class="num">{na["tp"]}</td><td class="num">{na["fp"]}</td><td class="num">{na["fn"]}</td></tr></table></div></div>',
-        '<div class="card"><h2>슬롯별 채점 (복합 질문)</h2><p class="note">✓ 5위 안 · △ 6~10위 · ✕ 10위 밖. 오른쪽은 SlotRecall@10.</p>',
+        '<div class="card"><h2>슬롯별 채점 (복합 질문)</h2><p class="note">✓ 2위 안 · △ 3~10위 · ✕ 10위 밖. 오른쪽은 SlotRecall@10.</p>',
         f"<table><tr><th>qid</th><th>질문</th><th>슬롯별 첫 정답 순위</th><th>SlotRecall@10</th></tr>{slot_rows}</table>" if multi else '<p class="note">이 split에 복합 문항이 없다.</p>',
         "</div>",
     ])
