@@ -57,10 +57,14 @@ STAGED = {
     "hybrid+cond-hcx": {"cond_filter": True, "rerank_ckpt": "", "stage2": "hcx"},  # T2-09, HCX_THINKING=none | low
     "staged-hcx": {"cond_filter": True, "stage2": "hcx"},
     "hybrid+cond-gpt": {"cond_filter": True, "rerank_ckpt": "", "stage2": "gpt"},  # same prompt, gpt-4o-mini
+    "staged-gpt": {"cond_filter": True, "stage2": "gpt"},  # T3-23: stage 1 (RERANK_CKPT) + gpt-4o-mini
+    "hybrid+cond-jev": {"cond_filter": True, "rerank_ckpt": "", "stage2": "jev"},  # T3-23: Jev-style decision model
+    "staged-jev": {"cond_filter": True, "stage2": "jev"},  # T3-23: stage 1 + Clef-Flash (JEV_*)
 }
 
 
-STAGE2_FIELDS = ("stage2_picked_n", "stage2_reason", "stage2_error", "stage2_calls")  # None when no stage 2 ran
+# None when no stage 2 ran; stage2_scores only for a scoring stage 2 (jev: key -> probability, to re-pick a threshold)
+STAGE2_FIELDS = ("stage2_picked_n", "stage2_reason", "stage2_error", "stage2_calls", "stage2_scores")
 
 
 GRAPH = "graph:"  # graph:<STAGED name> = the same settings run through the LangGraph search (T2-10)

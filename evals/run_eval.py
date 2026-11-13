@@ -55,7 +55,17 @@ SEARCH_ARGS = {
     "rerank_mode": ("RERANK_MODE", "stage 1: blend | score"),
     "answer_k": ("ANSWER_K", "candidates handed to gate"),
     "hq_build": ("HQ_BUILD", "question index build id (T2-39)"),
+    "hq_weight": ("HQ_WEIGHT", "RRF weight of the question lists (default 1.0)"),
+    "stage2_model": ("STAGE2_MODEL", "stage 2 model name (default: the preset's, gpt-4o-mini for gpt)"),
+    "stage2_base_url": ("STAGE2_BASE_URL", "stage 2 gpt: an OpenAI-compatible server, e.g. http://localhost:8000/v1"),
+    "stage2_api_key": ("STAGE2_API_KEY", "stage 2 key for that server (default: OPENAI_API_KEY / HCX_API_KEY)"),
     "hcx_thinking": ("HCX_THINKING", "stage 2 hcx: none | low"),
+    "jev_base_url": ("JEV_BASE_URL", "stage 2 jev: the /v1/systemone server, e.g. https://<tunnel>.trycloudflare.com/v1"),
+    "jev_model": ("JEV_MODEL", "stage 2 jev: model name (default Cloudflare/clef-flash)"),
+    "jev_api_key": ("JEV_API_KEY", "stage 2 jev: the server's key"),
+    "jev_mode": ("JEV_MODE", "stage 2 jev: noul (true/false per table, default) | choice"),
+    "jev_threshold": ("JEV_THRESHOLD", "stage 2 jev: pick threshold (default noul 0.5, choice 0.05)"),
+    "jev_prompt": ("JEV_PROMPT", "stage 2 jev: prompt version, rerank/prompts/stage2-jev-<mode>-<this>.md (default v1)"),
 }
 
 
@@ -89,6 +99,20 @@ def judged_keys(path: Path) -> dict[str, set[str]]:
     return judged
 
 
+def recut_jev(row: dict, threshold: float, k: int) -> None:
+    """Re-pick a jev stage 2 row at `threshold` from its saved probabilities (stage2_scores, the top stage2_k in
+    stage 1 order): picked tables first (highest first, at most MAX_PICK), then the other scored tables in stage 1
+    order, then the rest as saved; cut to k. A row without scores (no stage 2, or a call error) is left as it was."""
+    from kosis_rag.rerank.systemone import cut
+
+    scores = row.get("stage2_scores")
+    if not scores or row.get("stage2_error"):
+        return
+    picked = cut(scores, threshold)
+    order = picked + [key for key in scores if key not in picked] + [key for key in row["keys"] if key not in scores]
+    row["keys"], row["stage2_picked_n"] = order[:k], len(picked)
+
+
 def run_l1(args) -> tuple[list[dict], dict, str]:
     from evals.runners import retrieval as runner  # LangChain loads only for L1
 
@@ -102,6 +126,9 @@ def run_l1(args) -> tuple[list[dict], dict, str]:
             r["answerable"] = by_qid[r["qid"]].answerable
         # the saved run keeps only its split, so tau cannot be picked on dev again: reuse the run's tau
         tau = args.tau if args.tau is not None else past["summary"]["tau"]
+        if args.jev_recut is not None:  # T3-23 Jev: re-pick the stage 2 tables at another threshold, no model call
+            for r in rows:
+                recut_jev(r, args.jev_recut, args.k)
     else:
         rows = runner.run(runner.build(args.retriever, items, args.k), items, args.k)
         tau = args.tau if args.tau is not None else retrieval.best_tau(
@@ -587,6 +614,7 @@ def main(argv: list[str] | None = None) -> Path:
     parser.add_argument("--retriever", default="bm25-catalog", help="l1, e2e: oracle (l1 only) | bm25-catalog | bm25-record | chroma")
     parser.add_argument("--k", type=int, default=10)
     parser.add_argument("--tau", type=float, help="l1: fixed no-answer threshold (default: best F1 on dev)")
+    parser.add_argument("--jev-recut", type=float, help="l1 --from-run of a jev run: re-pick stage 2 at this threshold from the saved probabilities (no model call)")
     parser.add_argument("--from-run", type=Path, help="l1, l3, agent: grade a past run folder instead of searching / calling the model (l1 reuses its retriever, k and tau)")
     parser.add_argument("--slot-source", choices=("gold", "pred"), default="pred", help="ablation: query_golden labels or parse_query")
     parser.add_argument("--slots", default="year,cycle,region,dimension,measure", help="ablation: slots to switch")
@@ -653,6 +681,10 @@ def main(argv: list[str] | None = None) -> Path:
         "vendor_phase1": git("-C", "vendor/phase1", "rev-parse", "HEAD"),
         "retriever": args.retriever if args.layer in ("l1", "ablation", "l012", "e2e") else None,
         "top_k": args.k if args.layer in ("l1", "ablation", "l012", "e2e") else None,
+        # T3-23: which stage 2 model / server ran (the key is not written)
+        "stage2_llm": {"model": os.environ.get("STAGE2_MODEL"), "base_url": os.environ.get("STAGE2_BASE_URL"),
+                       "jev": {**{k.lower(): os.environ.get(f"JEV_{k}") for k in ("MODEL", "BASE_URL", "MODE", "THRESHOLD", "PROMPT")},
+                               "recut": getattr(args, "jev_recut", None)}},
         "slot_source": "gold,pred" if args.layer == "l012" else args.slot_source if slotted else None,
         "slots": args.slots if slotted else None,
         "from_run": str(args.from_run) if args.from_run else None,

@@ -47,13 +47,31 @@ JUDGE_ERRORS = {"false_refusal", "missed_refusal", "assumed_condition", "wrong_r
 PLAN_ERRORS = FACT_ERRORS | {"missing_aux"}
 
 
+MAX_TABLE_ROWS = 1_000_000  # T3-23: Phase 1 makes Python objects per row (~3-5 KB); bigger tables can exhaust RAM
+
+
+def table_rows(path) -> int:
+    """Row count from the Parquet footer only (no data read)."""
+    import pyarrow.parquet as pq
+
+    return pq.ParquetFile(path).metadata.num_rows
+
+
 def summarize(question: str, table_key: str, client, retry_interval: float = 0.0):
-    """summarize_stat that also returns the pipeline's spans: (StatAnswer | None, spans, error)."""
+    """summarize_stat that also returns the pipeline's spans: (StatAnswer | None, spans, error).
+
+    A table over E2E_MAX_TABLE_ROWS rows (default MAX_TABLE_ROWS, 0 = no limit) is not loaded: the question fails
+    with TableTooLarge instead of reading tens of millions of rows into memory (T3-23: the PC froze on one).
+    """
     from kosis_chat import api
     from kosis_chat.contract import to_stat_answer
 
+    path = api.table_path(table_key)
+    limit = int(os.environ.get("E2E_MAX_TABLE_ROWS") or MAX_TABLE_ROWS)
+    if limit and (rows := table_rows(path)) > limit:
+        return None, [], f"TableTooLarge: {table_key}: {rows:,} rows > {limit:,} (E2E_MAX_TABLE_ROWS)"
     # ponytail: private _build, since summarize_stat returns no spans; drop when Phase 1 exposes them (KOS-95 follow-up)
-    bot = api._build(api.table_path(table_key), None, client, retry_interval)
+    bot = api._build(path, None, client, retry_interval)
     answer = bot.ask(question)
     spans = (answer.decision_metadata or {}).get("spans") or []
     stat = to_stat_answer(question, answer, org_id=bot.org_id)

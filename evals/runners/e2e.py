@@ -9,6 +9,7 @@ table key.
 
 from __future__ import annotations
 
+import gc
 import time
 
 from langchain_core.retrievers import BaseRetriever
@@ -52,6 +53,11 @@ def run(retriever: BaseRetriever, items: list[CalcItem], k: int, interval: float
                      "llm_calls": client.calls, "input_tokens": client.input_tokens,
                      "output_tokens": client.output_tokens, "model": client.model,
                      "failed": error is not None, "retried": client.failures > 0})
+        row = rows[-1]  # progress line: the run writes nothing until the end, so a slow table must not look like a hang
+        print(f"[e2e {n + 1}/{len(items)}] {item.qid} {row['used_table'] or '-'} {row['latency_ms'] / 1000:.1f}s"
+              + (f" ERROR {str(error)[:120]}" if error else ""), flush=True)
+        answer = spans = None
+        gc.collect()  # Phase 1 tables hold reference cycles (TableInput <-> TableIndex): free one before the next
     return rows
 
 

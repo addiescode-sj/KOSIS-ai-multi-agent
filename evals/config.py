@@ -7,6 +7,7 @@ os.environ first (kosis_agent.envfile, shell values win); this module reads os.e
 
     CHROMA_HOST CHROMA_PORT CHROMA_COLLECTION · TEXT_FORMAT EMBED_CKPT RERANK_CKPT RERANK_MODE
     STAGE2 COND_FILTER ANSWER_K · HQ_BUILD HQ_WEIGHT HQ_BM25 · HCX_API_KEY HCX_THINKING OPENAI_API_KEY
+    STAGE2_MODEL STAGE2_BASE_URL STAGE2_API_KEY · JEV_BASE_URL JEV_MODEL JEV_API_KEY JEV_MODE JEV_THRESHOLD JEV_PROMPT (STAGE2=jev)
 
 ponytail: replace with this repo's backend config (agent_config()) once T3-01 adds it.
 """
@@ -21,7 +22,7 @@ from kosis_rag.llm.config import LLMConfig
 from kosis_rag.rerank import selectors
 from kosis_rag.schemas.resources import OFF, ChromaConfig, IndexSpec, SearchOptions
 
-STAGE2_KEY_ENV = {"clova": "HCX_API_KEY", "hcx": "HCX_API_KEY", "gpt": "OPENAI_API_KEY"}
+STAGE2_KEY_ENV = {"clova": "HCX_API_KEY", "hcx": "HCX_API_KEY", "gpt": "OPENAI_API_KEY", "jev": "JEV_API_KEY"}
 
 
 def _env(name: str) -> str | None:
@@ -37,8 +38,15 @@ def stage2_llm(name: str) -> LLMConfig | None:
     """The stage 2 LLM config for `name` (clova | hcx | gpt), with its key from the shell; None when off or unknown."""
     if name in OFF or name not in selectors.LLM_RERANKERS:
         return None
-    return selectors.default_config(name, api_key=_env(STAGE2_KEY_ENV[name]),
-                                    thinking=(_env("HCX_THINKING") or "none").strip().lower())
+    if name == "jev":  # T3-23: a Jev-style decision model (the Colab Clef-Flash server, Gemma_server/clef_server.ipynb)
+        threshold = _env("JEV_THRESHOLD")
+        return selectors.default_config(name, api_key=_env("JEV_API_KEY"), model=_env("JEV_MODEL"),
+                                        base_url=_env("JEV_BASE_URL"), decision_mode=_env("JEV_MODE"),
+                                        threshold=float(threshold) if threshold else None,
+                                        prompt_version=_env("JEV_PROMPT"))
+    return selectors.default_config(name, api_key=_env("STAGE2_API_KEY") or _env(STAGE2_KEY_ENV[name]),
+                                    thinking=(_env("HCX_THINKING") or "none").strip().lower(),
+                                    model=_env("STAGE2_MODEL"), base_url=_env("STAGE2_BASE_URL"))
 
 
 def search_config(**overrides: Any) -> tuple[IndexSpec, SearchOptions]:
