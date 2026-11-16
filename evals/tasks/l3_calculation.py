@@ -17,7 +17,7 @@ def run(args) -> tuple[list[dict], dict, str]:
 
     items: list[CalcItem] = calc_items(args.calc_golden)
     oracle = {i.question: i.table_key for i in items}
-    answers = (runner.read_run(args.from_run, items) if args.from_run
+    answers = (runner.read_rows(args.from_run, items) if args.from_run
                else single_turn_rows(args, "l3", items, lambda: multiturn_dev.build(oracle)))
     rows = grade(items, answers)
     verdicts, errors, lines = verdict_table(rows)

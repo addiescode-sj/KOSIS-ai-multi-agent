@@ -11,7 +11,7 @@ from evals.evaluators import calculation
 from evals.schemas import ROOT, CalcItem, load_jsonl
 
 MOCK_NOTE = " · **llm mock: 경로 확인용, 점수 아님** (모델 대신 코드 템플릿이 답함)"
-OPS_FIELDS = ("latency_ms", "llm_calls", "input_tokens", "output_tokens", "model", "failed", "retried")
+OPS_FIELDS = ("latency_ms", "llm_calls", "input_tokens", "output_tokens", "model", "tokens_by_model", "failed", "retried")
 TRACE_FIELDS = ("spans", "retrieve_ms", "search_spans", "trace_id", "span_id", "trace_spans")
 
 
@@ -88,11 +88,13 @@ def summarize_stat_target(op: dict) -> str:
 
 def ops_section(op: dict, title: str = "운영 지표") -> str:
     c = op["cost"]
-    cost = f"{c['total']:.2f} {c['currency']}" if c["total"] is not None else f"단가 미설정 ({', '.join(c['unpriced_models']) or '토큰 없음'}; evals/pricing.json)"
+    cost = f"{c['total']:.4f} {c['currency']}" if c["total"] is not None else f"단가 미설정 ({', '.join(c['unpriced_models']) or '토큰 없음'}; evals/pricing.json)"
+    by_model = ", ".join(f"{m} 입력 {t['input']:,} · 출력 {t['output']:,}" + (f" · {t['cost']:.4f}" if t.get("cost") is not None else "")
+                         for m, t in (c.get("by_model") or {}).items())
     return "\n".join(["", f"## {title}", "",
         f"- Latency: p50 {op['latency_ms']['p50']:.1f} ms · p95 {op['latency_ms']['p95']:.1f} ms · 평균 {op['latency_ms']['mean']:.1f} ms",
         f"- Token Usage: 입력 {op['tokens']['input']:,} · 출력 {op['tokens']['output']:,} (호출당 {op['tokens']['per_call_mean']:.0f}) · LLM 호출 {op['llm_calls']}",
-        f"- Cost: {cost}",
+        f"- Cost: {cost}" + (f" — 모델별: {by_model}" if by_model else ""),
         f"- Tool Failure Rate: {op['tool_failure_rate']:.1%} ({op['tool_calls']}회 중) · 재시도 비율 {op['retry_rate']:.1%}",
     ]) + "\n"
 
@@ -135,7 +137,9 @@ def grade(items: list[CalcItem], answers: list[dict]) -> list[dict]:
     """L3 grading of each answer against the golden table's cells, with the ops fields kept per row."""
     rows = []
     for item, a in zip(items, answers):
-        cells = calculation.read_cells(ROOT / "data" / "values" / f"{item.table_key}.parquet")
+        # only the graded cells: a whole large table as Python objects took GBs (plans/T3-06.md, exit 137)
+        cells = calculation.read_cells(ROOT / "data" / "values" / f"{item.table_key}.parquet",
+                                       calculation.grade_refs(item, a["answer"]))
         g = calculation.grade(item, a["answer"], cells, a["error"])
         rows.append({**g.model_dump(), "table_key": item.table_key, **{k: a[k] for k in OPS_FIELDS + TRACE_FIELDS if k in a},
                      "answer": a["answer"].model_dump(mode="json") if a["answer"] else None})

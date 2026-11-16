@@ -181,6 +181,10 @@ def run(retriever: BaseRetriever, items: list[RetrievalItem], k: int, telemetry=
             "input_tokens": counter.input_tokens + s2_in,
             "output_tokens": counter.output_tokens + s2_out,
             "model": ",".join(sorted(counter.models | ({meta["stage2"]} if meta.get("stage2_calls") else set()))) or None,
+            # per model (T3-35): the callback's models share its totals only when there is one; rerank2 apart
+            "tokens_by_model": {**({next(iter(counter.models)): {"input": counter.input_tokens, "output": counter.output_tokens}}
+                                   if len(counter.models) == 1 else {}),
+                                **({meta["stage2"]: {"input": s2_in, "output": s2_out}} if meta.get("stage2_calls") else {})},
             "failed": error is not None,
             "retried": s2_retried,  # the stage 2 API retried (429/5xx); the retrievers themselves do not retry
             "error": error,
