@@ -13,15 +13,17 @@ alternate-table attempt, set aside and counted in alt_attempts; T3-23):
 - refusal: a turn refuses when a tool said so (search route "refuse", summarize_stat outcome "refused") or no tool
   ran. missed_refusal / false_refusal as in L3.
 - numbers: expect.calc_qid grades the turn's last summarize_stat answer with the L3 grader as is
-  (evaluators.calculation.grade against the table's Parquet cells). Every number in the final answer text must
-  also come from a tool result or a question of the conversation so far (rounding allowed against fact values),
-  so a number the LLM wrote itself is unsupported_final_number.
+  (evaluators.calculation.grade against the table's Parquet cells).
+- answer (T3-36): every number in the final answer text must come from a question, a summarize_stat fact (rounding
+  allowed), a combine_values result or a default condition of the conversation so far, else
+  unsupported_final_number; the answer must cite survey and table name of each answered summarize_stat, else
+  missing_source.
 A turn passes with no error; a conversation succeeds when every turn passes; pass^k = share of scenarios whose
 k repeated runs all succeeded.
 
 One module per evaluation task (T3-29): tools.py (tool selection, order, arguments), state.py (multi-turn state and
 refusal), numbers.py (L3 numbers, multi-query sub-answers and combine), answer.py (answer quality: unsupported
-numbers). grade_turn joins their errors in that order; aggregate adds by_task (multi-turn MT-* / multi-query MQ-*).
+numbers, missing source). grade_turn joins their errors in that order; aggregate adds by_task (multi-turn MT-* / multi-query MQ-*).
 """
 
 from __future__ import annotations
@@ -29,17 +31,17 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from typing import Any, Callable
 
-from kosis_ai.schemas import Fact, FactPart, Refusal, Source, StatAnswer, StatResult
+from kosis_ai.schemas import FactPart, Refusal, Source, StatAnswer, StatResult
 
-from evals.evaluators.agent.answer import grade_answer, grounding, unsupported_final_numbers
+from evals.evaluators.agent.answer import Grounds, grade_answer, grounding, missing_sources, unsupported_final_numbers
 from evals.evaluators.agent.numbers import combined_value, grade_numbers, same_values, stat_answer, stat_answers
 from evals.evaluators.agent.state import STATE_TOOLS, first_key, grade_state, refused, state_key
 from evals.evaluators.agent.tools import final_calls, grade_tools
 from evals.schemas import AgentScenario, CalcItem, TurnExpect
 
-__all__ = ["ERRORS", "STATE_TOOLS", "aggregate", "combined_value", "final_calls", "first_key", "grade_conversation",
+__all__ = ["ERRORS", "Grounds", "STATE_TOOLS", "aggregate", "combined_value", "final_calls", "first_key", "grade_conversation",
            "grade_turn", "oracle_records", "oracle_stat", "refused", "same_values", "stat_answer", "stat_answers",
-           "state_key", "unsupported_final_numbers"]
+           "missing_sources", "state_key", "unsupported_final_numbers"]
 
 ERRORS = {  # error -> what it means (report legend)
     "run_failure": "턴 실행 실패 (예외)",
@@ -51,16 +53,18 @@ ERRORS = {  # error -> what it means (report legend)
     "missed_refusal": "거절해야 할 턴에 답함",
     "false_refusal": "답할 수 있는 턴을 거절함",
     "wrong_numbers": "summarize_stat 답이 L3 채점에서 PASS가 아님",
-    "unsupported_final_number": "최종 답 문장에 툴 결과·질문에 없는 숫자",
+    "unsupported_final_number": "최종 답 문장에 질문·사실 값·합산 결과에 없는 숫자 (반올림·만·천·억 단위 허용)",
+    "missing_source": "답한 summarize_stat의 출처(조사명·통계표명)가 최종 답에 없음",
 }
 TASK_PREFIXES = {"MT-": "multiturn", "MQ-": "multiquery"}  # sid prefixes the builders write (builders/multiturn, multiquery)
 TASK_METRICS = ("n_turns", "n_conversations", "conversation_success", "pass^k", "turn_pass", "tool_selection", "param_accuracy",
-                "state_accuracy", "numeric_accuracy", "n_numeric", "combine_accuracy", "n_combine", "unsupported_final_number_turns")
+                "state_accuracy", "numeric_accuracy", "n_numeric", "combine_accuracy", "n_combine", "unsupported_final_number_turns",
+                "missing_source_turns")
 
 
 def grade_turn(expect: TurnExpect, record: dict, calc: dict[str, CalcItem], cells_of: Callable[[str], dict],
-               grounded: set[str], facts: list[Fact]) -> dict:
-    """One turn's metrics and errors. grounded / facts = numbers and facts of the conversation so far (this turn's
+               grounds: Grounds) -> dict:
+    """One turn's metrics and errors. grounds = what grounds a number in the conversation so far (this turn's
     question and tool results included). Graded on final_calls: alternate-table attempts are set aside and counted
     in alt_attempts, not as errors."""
     every = record.get("calls") or []
@@ -68,7 +72,7 @@ def grade_turn(expect: TurnExpect, record: dict, calc: dict[str, CalcItem], cell
     tools, tool_errors = grade_tools(expect, calls)
     state, state_errors = grade_state(expect, calls)
     numbers, number_errors = grade_numbers(expect, record, calls, state["state_key"], calc, cells_of)
-    answer, answer_errors = grade_answer(record, grounded, facts)
+    answer, answer_errors = grade_answer(record, calls, grounds)
     errors = ["run_failure"] * bool(record.get("error")) + tool_errors + state_errors + number_errors + answer_errors
     return {**tools, **state, **numbers, "expected_table": expect.table_key, "alt_attempts": len(every) - len(calls),
             **answer, "errors": errors, "passed": not errors}
@@ -78,15 +82,12 @@ def grade_conversation(scenario: AgentScenario, records: list[dict], calc: dict[
                        cells_of: Callable[[str], dict]) -> list[dict]:
     """Graded rows, one per scenario turn, for one run of the scenario (records in turn order; a missing turn —
     the run stopped — is a run_failure). Each row keeps its record (the transcript) for --from-run."""
-    grounded: set[str] = set()
-    facts: list[Fact] = []
+    grounds = Grounds()
     rows = []
     for i, turn in enumerate(scenario.turns):
         record = records[i] if i < len(records) else {"calls": [], "answer": "", "error": "turn not run"}
-        numbers, new_facts = grounding(turn.question, record.get("calls") or [])
-        grounded |= numbers
-        facts += new_facts
-        g = grade_turn(turn.expect, record, calc, cells_of, grounded, facts)
+        grounds.add(grounding(turn.question, final_calls(record.get("calls") or [])))
+        g = grade_turn(turn.expect, record, calc, cells_of, grounds)
         rows.append({**record, "sid": scenario.sid, "split": scenario.split, "turn": i, "question": turn.question, **g})
     return rows
 
@@ -145,23 +146,30 @@ def _metrics(rows: list[dict]) -> dict:
                                    if r.get("expected_table")),
         "combine_accuracy": rate(combine), "n_combine": len(combine),
         "unsupported_final_number_turns": sum(bool(r["unsupported_numbers"]) for r in rows),
+        "missing_source_turns": sum(bool(r.get("missing_sources")) for r in rows),
         "errors": dict(Counter(e for r in rows for e in r["errors"])),
         "first_failed_turn": {str(k): v for k, v in sorted(first_fail.items())},
     }
 
 
+def _oracle_source(table_key: str | None) -> Source:
+    org_id, _, tbl_id = (table_key or "000_oracle").partition("_")
+    return Source(org_id=org_id, tbl_id=tbl_id or "oracle", survey_nm="oracle", tbl_nm="oracle")
+
+
 def oracle_stat(item: CalcItem) -> dict:
     """A summarize_stat answer that is right by construction for an L3 item (the oracle's self-check)."""
-    org_id, _, tbl_id = item.table_key.partition("_")
-    source = Source(org_id=org_id, tbl_id=tbl_id, survey_nm="oracle", tbl_nm="oracle")
+    source = _oracle_source(item.table_key)
+    cite = f"출처: {source.citation()}"  # the line Phase 1 final_text ends every answer with (T3-36)
     if item.kind == "not_answerable":
-        answer = StatAnswer(outcome="refused", refusal=Refusal(reason=item.allowed_reasons[0], message="oracle"), source=source)
+        answer = StatAnswer(outcome="refused", refusal=Refusal(reason=item.allowed_reasons[0], message="oracle"), source=source,
+                            text=cite)
     elif item.kind == "clarify":
-        answer = StatAnswer(outcome="clarify", clarify_options=item.clarify_options, source=source)
+        answer = StatAnswer(outcome="clarify", clarify_options=item.clarify_options, source=source, text=cite)
     else:
         facts = [*item.required_facts, *item.aux_facts]
         answer = StatAnswer(outcome="answered", result=StatResult(facts=facts), parts=[FactPart(fact_id=f.id) for f in facts],
-                            default_applied=item.default_applied, source=source)
+                            default_applied=item.default_applied, source=source, text=cite)
     return answer.model_dump(mode="json")
 
 
@@ -184,11 +192,14 @@ def oracle_records(scenario: AgentScenario, calc: dict[str, CalcItem]) -> list[d
                 result: Any = {"route": "refuse", "picked": []} if e.refuse else {"route": "found", "picked": [{"key": key}]}
             elif call.name == "summarize_stat":
                 qid = e.calc_qid or next(sub_qids, None)
-                result = oracle_stat(calc[qid]) if qid else {"outcome": "answered"}
+                source = _oracle_source(args.get("table_key"))
+                result = oracle_stat(calc[qid]) if qid else {"outcome": "answered", "source": source.model_dump(mode="json"),
+                                                             "text": f"출처: {source.citation()}"}
             elif call.name == "combine_values":
                 result = {"op": args.get("op"), "value": e.combine_value}
             else:
                 result = {"chart_type": args.get("chart_type")}
             calls.append({"name": call.name, "args": args, "result": result, "status": "ok"})
-        records.append({"calls": calls, "answer": "", "error": None})
+        texts = [c["result"].get("text") for c in calls if c["name"] == "summarize_stat" and isinstance(c["result"], dict)]
+        records.append({"calls": calls, "answer": "\n\n".join(t for t in texts if t), "error": None})  # as finalize joins them
     return records

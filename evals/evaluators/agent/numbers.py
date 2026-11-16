@@ -66,7 +66,7 @@ def grade_numbers(expect: TurnExpect, record: dict, calls: list[dict], key: str 
     if expect.calc_qid:
         item = calc[expect.calc_qid]
         answer = stat_answer(calls)
-        g = calculation.grade(item, answer, cells_of(item.table_key), record.get("error"))
+        g = calculation.grade(item, answer, cells_of(item.table_key), record.get("error"), cite=False)
         calc_grade = {"verdict": g.verdict, "errors": g.errors}
         if g.verdict != "PASS" and key in expect.alt_table_keys and same_values(item, answer):
             # an alternate gold table: the L3 grader checks cells of the golden table only, so the same numbers read
@@ -80,7 +80,7 @@ def grade_numbers(expect: TurnExpect, record: dict, calls: list[dict], key: str 
         for i, qid in enumerate(expect.calc_qids):
             item = calc[qid]
             answer = answers[i] if i < len(answers) else None
-            g = calculation.grade(item, answer, cells_of(item.table_key), record.get("error"))
+            g = calculation.grade(item, answer, cells_of(item.table_key), record.get("error"), cite=False)
             verdict = g.verdict
             if verdict != "PASS" and same_values(item, answer):  # alternate table holding the same numbers
                 verdict = "PASS"

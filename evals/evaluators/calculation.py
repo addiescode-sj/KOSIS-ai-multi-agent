@@ -48,6 +48,7 @@ ERROR_INFO = {
     "missing_clarification": "되묻기는 했지만 선택지가 2개 미만이다",
     "disallowed_default": "기본값 적용이 허용된 질문에서 답하지 않았거나, 허용되지 않은 기본값을 적용했다",
     "unstated_default": "기본값을 적용했는데 답에 무엇을 적용했는지 밝히지 않았다 (PARTIAL)",
+    "missing_source": "답에 출처(KOSIS / 조사명 / 통계표명)가 없다 — source가 비었거나 답 문장에 조사명·통계표명이 없다 (PARTIAL)",
     "run_failure": "답이 없다 — 예외, 모델 호출 실패, 검색 결과 없음",
 }
 _NUMBER = re.compile(r"\d[\d,]*(?:\.\d+)?")
@@ -186,8 +187,18 @@ def unsupported_numbers(answer: StatAnswer, cells: dict[str, Cell], details: lis
     return count
 
 
-def grade(item: CalcItem, answer: StatAnswer | None, cells: dict[str, Cell], error: str | None = None) -> CalcGrade:
-    """answer None means the call failed (error says why): run_failure, never a refusal."""
+def missing_source(answer: StatAnswer) -> bool:
+    """An answered StatAnswer that does not cite its source: no source, or survey / table name not in its text."""
+    if answer.outcome != "answered":
+        return False
+    source = answer.source
+    return source is None or source.survey_nm not in (answer.text or "") or source.tbl_nm not in (answer.text or "")
+
+
+def grade(item: CalcItem, answer: StatAnswer | None, cells: dict[str, Cell], error: str | None = None,
+          cite: bool = True) -> CalcGrade:
+    """answer None means the call failed (error says why): run_failure, never a refusal. cite=False skips the source
+    check (the agent layer checks the final message, evaluators.agent.answer)."""
     if answer is None:
         return CalcGrade(qid=item.qid, kind=item.kind, outcome="error", verdict="FAIL", errors=["run_failure"],
                          details=[error or "no answer"])
@@ -195,6 +206,9 @@ def grade(item: CalcItem, answer: StatAnswer | None, cells: dict[str, Cell], err
     errors: set[str] = set()
     if unsupported_numbers(answer, cells, details):
         errors.add("unsupported_claim")
+    if cite and missing_source(answer):
+        errors.add("missing_source")
+        details.append("source missing" if answer.source is None else f"text does not cite {answer.source.citation()!r}")
     if item.kind in ("answerable", "default_allowed"):
         if answer.outcome != "answered":
             errors.add("false_refusal" if item.kind == "answerable" else "disallowed_default")

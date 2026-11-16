@@ -33,7 +33,8 @@ def source(key: str) -> Source:
 
 def answered(key: str) -> StatOutput:
     fact = Fact(id="f1", value=100.0, source_ref=f"{key.partition('_')[2]}|T1|11|2024", unit="명", period="2024")
-    answer = StatAnswer(outcome="answered", text=f"{key}: 100명", result=StatResult(facts=[fact]),
+    # 실전 1 final_text처럼 본문 뒤에 출처 줄을 붙인다(T3-36: 채점기가 최종 답의 출처를 본다)
+    answer = StatAnswer(outcome="answered", text=f"{key}: 100명\n\n출처: {source(key).citation()}", result=StatResult(facts=[fact]),
                         parts=[FactPart(fact_id="f1")], source=source(key))
     return StatOutput(answer=answer)
 
@@ -93,7 +94,7 @@ def test_a_table_mismatch_refusal_tries_the_next_candidate():
     out = run(Search(["101_A"], ["101_A", "101_B"]), stat)
     assert [k for _, k in stat.calls] == ["101_A", "101_B"]  # picked 다음 candidates 순서
     r = chat_result(out)
-    assert r.outcome == "answered" and not r.no_answer and r.table_key == "101_B" and r.answer == "101_B: 100명"
+    assert r.outcome == "answered" and not r.no_answer and r.table_key == "101_B" and r.answer.startswith("101_B: 100명")
     assert r.attempted_keys == ["101_A", "101_B"] and out["active_table"] == "101_B"
 
 

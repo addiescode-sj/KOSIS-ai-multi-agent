@@ -597,7 +597,8 @@ def agent_body(m: dict, rows: list[dict]) -> str:
     tiles = [tile(f(s["conversation_success"]), f"대화 성공률 ({s['n_conversations']}대화)"), tile(f(s["pass^k"]), f"pass^{s['repeats']}"),
              tile(f(s["turn_pass"]), f"턴 통과율 ({s['n_turns']}턴)"), tile(f(s["tool_selection"]), "툴 선택 정확도"),
              tile(f(s["param_accuracy"]), "파라미터 정확도"), tile(f(s["state_accuracy"]), f"상태(표 키) 정확도 (n={s['n_state']})"),
-             tile(f(s["numeric_accuracy"]), f"최종 수치 정확도 (n={s['n_numeric']})"), tile(str(s["unsupported_final_number_turns"]), "근거 없는 숫자가 있는 턴")]
+             tile(f(s["numeric_accuracy"]), f"최종 수치 정확도 (n={s['n_numeric']})"), tile(str(s["unsupported_final_number_turns"]), "근거 없는 숫자가 있는 턴"),
+             tile(str(s.get("missing_source_turns", "—")), "출처가 빠진 턴")]
     tools = sorted(set(s["missing_calls"]) | set(s["extra_calls"]))
     calls = (hbars([f"{t} 빠짐" for t in tools] + [f"{t} 불필요" for t in tools],
                    [s["missing_calls"].get(t, 0) for t in tools] + [s["extra_calls"].get(t, 0) for t in tools])

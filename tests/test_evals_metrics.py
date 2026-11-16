@@ -2,7 +2,7 @@
 
 from types import SimpleNamespace
 
-from kosis_ai.schemas import Fact, Refusal, StatAnswer, StatResult, TextPart
+from kosis_ai.schemas import Fact, Refusal, Source, StatAnswer, StatResult, TextPart
 
 from evals.evaluators import calculation, retrieval
 from evals.schemas import CalcItem, RetrievalItem
@@ -40,10 +40,15 @@ def calc(**kw) -> CalcItem:
     return CalcItem(qid="c1", question="q", table_key="101_DT_X", table_sha256="0", **kw)
 
 
-def answered(facts: list[Fact], text: str = "") -> StatAnswer:
+SOURCE = Source(org_id="101", tbl_id="DT_X", survey_nm="인구동향조사", tbl_nm="출생아수")
+
+
+def answered(facts: list[Fact], text: str = "", source: Source | None = SOURCE) -> StatAnswer:
+    """Phase 1's answer: parts, and the rendered text ending with the source line (render/text.py final_text)."""
     parts = [TextPart(text=text)] if text else []
-    return StatAnswer.model_construct(outcome="answered", result=StatResult(facts=facts), parts=parts,
-                                      refusal=None, clarify_options=[], default_applied={})
+    full = f"{text}\n\n출처: {source.citation()}" if source else text
+    return StatAnswer.model_construct(outcome="answered", result=StatResult(facts=facts), parts=parts, text=full,
+                                      refusal=None, clarify_options=[], default_applied={}, source=source)
 
 
 def test_cell_and_derived_facts():
@@ -61,6 +66,21 @@ def test_unsupported_text_number_fails():
     want = [Fact(id="f1", value=100.0, source_ref=REF)]
     g = calculation.grade(calc(kind="answerable", required_facts=want), answered(want, "2024년 약 120명"), CELLS)
     assert "unsupported_claim" in g.errors and g.verdict == "FAIL"
+
+
+def test_an_answer_without_its_source_is_partial():
+    """T3-36 (KOS-196): every answer cites KOSIS / survey / table; refusals are not checked."""
+    want = [Fact(id="f1", value=100.0, source_ref=REF)]
+    item = calc(kind="answerable", required_facts=want)
+    assert calculation.grade(item, answered(want), CELLS).verdict == "PASS"
+    no_source = calculation.grade(item, answered(want, source=None), CELLS)
+    assert (no_source.verdict, no_source.errors) == ("PARTIAL", ["missing_source"])
+    uncited = answered(want).model_copy(update={"text": "2024년 100명"})
+    assert calculation.grade(item, uncited, CELLS).errors == ["missing_source"]
+    assert calculation.grade(item, uncited, CELLS, cite=False).verdict == "PASS"  # the agent layer checks its message
+    refused = StatAnswer.model_construct(outcome="refused", result=StatResult(), parts=[], clarify_options=[], text="x",
+                                         default_applied={}, refusal=Refusal(reason="no_period", message="x"), source=None)
+    assert "missing_source" not in calculation.grade(calc(kind="not_answerable", allowed_reasons=["no_period"]), refused, CELLS).errors
 
 
 def test_refusal_reason_and_run_failure():
