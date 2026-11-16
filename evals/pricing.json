@@ -1,7 +1,12 @@
 {
-  "_note": "Price per 1,000 tokens by model name (the name the run records, e.g. Settings.model_name). Fill from the provider's current price list; null means unknown and the report shows cost as not set.",
+  "_note": "Price per 1,000 tokens by model name (the name the run records: gen_ai.request.model, i.e. STAT_MODEL / INTERPRETER_MODEL / STAGE2_MODEL, or the stage 2 kind clova|hcx|gpt for an L1 run). Fill from the provider's current price list; null means unknown and the report shows cost as not set. A run that calls models in two currencies shows no total (ops.summarize). Self-hosted models (gemma) have no per-token price: null until the team agrees on one.",
   "models": {
     "HCX-DASH-002": {"input_per_1k": null, "output_per_1k": null, "currency": "KRW"},
-    "HCX-007": {"input_per_1k": null, "output_per_1k": null, "currency": "KRW"}
+    "HCX-005": {"input_per_1k": null, "output_per_1k": null, "currency": "KRW"},
+    "HCX-007": {"input_per_1k": null, "output_per_1k": null, "currency": "KRW"},
+    "gpt-4o-mini": {"input_per_1k": 0.00015, "output_per_1k": 0.0006, "currency": "USD", "_source": "OpenAI list price, USD 0.15 / 0.60 per 1M tokens"},
+    "gpt-4o-mini-2024-07-18": {"input_per_1k": 0.00015, "output_per_1k": 0.0006, "currency": "USD"},
+    "google/gemma-4-31B-it-qat-w4a16-ct": {"input_per_1k": null, "output_per_1k": null, "currency": "KRW"},
+    "mock": {"input_per_1k": 0, "output_per_1k": 0, "currency": "KRW"}
   }
 }
