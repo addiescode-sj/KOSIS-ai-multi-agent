@@ -103,7 +103,7 @@ def main(argv: list[str] | None = None) -> Path:
     parser.add_argument("--retriever", default="bm25-catalog", help="l1, e2e: oracle (l1 only) | bm25-catalog | bm25-record | chroma")
     parser.add_argument("--k", type=int, default=10)
     parser.add_argument("--tau", type=float, help="l1: fixed no-answer threshold (default: best F1 on dev)")
-    parser.add_argument("--from-run", type=Path, help="l1, l3, agent: grade a past run folder instead of searching / calling the model (l1 reuses its retriever, k and tau)")
+    parser.add_argument("--from-run", type=Path, help="l1, l3, e2e, agent: grade a past run folder instead of searching / calling the model (l1 reuses its retriever, k and tau)")
     parser.add_argument("--slot-source", choices=("gold", "pred"), default="pred", help="ablation: query_golden labels or parse_query")
     parser.add_argument("--slots", default="year,cycle,region,dimension,measure", help="ablation: slots to switch")
     parser.add_argument("--golden", type=Path, default=GOLDEN, help="l0, l1, ablation, l012, e2e (§6.3 table slots by qid): retrieval golden (v2: retrieval_golden_v2.jsonl)")
@@ -191,8 +191,8 @@ def main(argv: list[str] | None = None) -> Path:
     (out / "report.md").write_text(report, encoding="utf-8")
     if args.llm == "mock" and live_llm:
         pass  # a mock run checks the path; its numbers stay out of the committed history
-    elif args.layer == "l1" and args.from_run:
-        pass  # a regrade copies the past run's latencies: they are already in the history once
+    elif args.from_run:
+        pass  # a regrade copies the past run's latencies and tokens: they are already in the history once
     elif args.layer == "l012":
         for name, o in op.items():
             ops.append_history(run_id, name, args.stage, {"l0": "registry", "l2": "parse_query"}.get(name, args.retriever), o)
