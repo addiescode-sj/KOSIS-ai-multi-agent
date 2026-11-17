@@ -84,7 +84,7 @@ def cost(model: str | None, input_tokens: int, output_tokens: int, pricing: dict
 
 
 def tokens_by_model(row: dict) -> dict[str, dict[str, int]]:
-    """{model: {"input": n, "output": n}} of one row. Rows written since T3-35 carry it (a turn calls several models:
+    """{model: {"input": n, "output": n}} of one row. Rows written since T3-39 carry it (a turn calls several models:
     the follow-up reader on gpt-4o-mini and phase 1 on HCX); an older row with one model is read from its totals,
     and one with several models joined by ',' cannot be split, so it stays unpriced."""
     if row.get("tokens_by_model"):

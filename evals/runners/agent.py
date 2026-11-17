@@ -99,7 +99,7 @@ def turn_record(spans: list[ReadableSpan], answer: str, error: str | None) -> di
     tools = sorted((s for s in mine if s.name.startswith(TOOL_PREFIX)), key=lambda s: s.start_time)
     chats = [s for s in mine if _is_llm(s)]
     models = sorted({s.attributes.get("gen_ai.request.model") for s in chats} - {None})
-    by_model: dict[str, dict[str, int]] = {}  # per model, so ops can price a turn that calls two models (T3-35)
+    by_model: dict[str, dict[str, int]] = {}  # per model, so ops can price a turn that calls two models (T3-39)
     for s in chats:
         t = by_model.setdefault(s.attributes.get("gen_ai.request.model") or "unknown", {"input": 0, "output": 0})
         t["input"] += int(s.attributes.get("gen_ai.usage.input_tokens") or 0)

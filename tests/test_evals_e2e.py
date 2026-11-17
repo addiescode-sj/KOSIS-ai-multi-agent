@@ -205,7 +205,7 @@ def test_mock_turns_every_model_off_before_the_graph_is_built(monkeypatch):
 
 
 def test_l1_items_link_by_qid_phase1_id_or_question():
-    """T3-35: the retrieval golden item of a calculation question, so an alternate gold table counts as the right
+    """T3-39: the retrieval golden item of a calculation question, so an alternate gold table counts as the right
     table on the v1 golden too (its qids differ from the retrieval golden's)."""
     from evals.tasks.l4_e2e import l1_index, l1_item
 
@@ -223,7 +223,7 @@ def test_l1_items_link_by_qid_phase1_id_or_question():
 
 
 def test_e2e_from_run_regrades_the_saved_rows(monkeypatch, tmp_path):
-    """T3-35: --from-run reads this repo's l3 / e2e results.jsonl (answer dump, keys, used_table) with no model call."""
+    """T3-39: --from-run reads this repo's l3 / e2e results.jsonl (answer dump, keys, used_table) with no model call."""
     from argparse import Namespace
 
     from evals.evaluators import calculation
