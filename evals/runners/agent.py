@@ -99,6 +99,11 @@ def turn_record(spans: list[ReadableSpan], answer: str, error: str | None) -> di
     tools = sorted((s for s in mine if s.name.startswith(TOOL_PREFIX)), key=lambda s: s.start_time)
     chats = [s for s in mine if _is_llm(s)]
     models = sorted({s.attributes.get("gen_ai.request.model") for s in chats} - {None})
+    by_model: dict[str, dict[str, int]] = {}  # per model, so ops can price a turn that calls two models (T3-39)
+    for s in chats:
+        t = by_model.setdefault(s.attributes.get("gen_ai.request.model") or "unknown", {"input": 0, "output": 0})
+        t["input"] += int(s.attributes.get("gen_ai.usage.input_tokens") or 0)
+        t["output"] += int(s.attributes.get("gen_ai.usage.output_tokens") or 0)
     return {
         "calls": [{"name": s.attributes.get("gen_ai.tool.name"),
                    "args": _loads(s.attributes.get("gen_ai.tool.call.arguments")) or {},
@@ -110,6 +115,7 @@ def turn_record(spans: list[ReadableSpan], answer: str, error: str | None) -> di
         "input_tokens": sum(int(s.attributes.get("gen_ai.usage.input_tokens") or 0) for s in chats),
         "output_tokens": sum(int(s.attributes.get("gen_ai.usage.output_tokens") or 0) for s in chats),
         "model": ",".join(models) or None,
+        "tokens_by_model": by_model,
         "failed": error is not None,
         "retried": any(int(s.attributes.get("llm.attempts") or 1) > 1 for s in chats),  # an HTTP retry (429/5xx)
         "trace_id": format(root.context.trace_id, "032x"), "span_id": format(root.context.span_id, "016x"),
@@ -240,7 +246,7 @@ def single_turns(graph, questions: list[tuple[str, str]], telemetry: tuple[Trace
                      "spans": list(stat.spans) if stat is not None else [], "search_spans": nodes.spans,
                      "retrieve_ms": search_ms, "trace_spans": record["spans"],  # the live trace, for report.html
                      **{k: record[k] for k in ("latency_ms", "llm_calls", "input_tokens", "output_tokens", "model",
-                                               "retried", "trace_id", "span_id")},
+                                               "tokens_by_model", "retried", "trace_id", "span_id")},
                      "failed": error is not None})
         progress(n + 1, len(questions), qid, started, error)
     provider.force_flush()

@@ -297,6 +297,10 @@ def ops_body(op: dict, rows: list[dict], history: list[dict]) -> str:
         tl, tc = histogram(tok)
         tok_chart = f'<div class="card"><h2>문항당 토큰 분포</h2><p class="note">x축은 구간 시작값(토큰).</p>{vbars(tl, tc, ["--series-1"] * len(tl))}</div>'
     note = "" if no_llm or c["total"] is not None else f'<p class="note">비용: 단가 미설정 모델 {esc(", ".join(c["unpriced_models"]) or "-")} → evals/pricing.json에 1K 토큰 단가를 넣으면 계산된다.</p>'
+    if by_model := c.get("by_model"):  # T3-39: a turn may call two models; tokens and cost per model
+        note += '<p class="note">모델별: ' + " · ".join(
+            f'{esc(m)} 입력 {t["input"]:,} / 출력 {t["output"]:,}' + (f' / {t["cost"]:.4f}' if t.get("cost") is not None else " / 단가 없음")
+            for m, t in by_model.items()) + "</p>"
     trends = "".join([
         f'<div class="card"><h2>{title}</h2>{trend([(h["stage"], h[key] or 0) for h in history], fmt)}</div>'
         for title, key, fmt in [("Latency p95 추이 (ms)", "latency_p95_ms", lambda v: f"{v:.0f}"),

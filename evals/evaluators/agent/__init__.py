@@ -58,7 +58,7 @@ TASK_METRICS = ("n_turns", "n_conversations", "conversation_success", "pass^k", 
                 "state_accuracy", "numeric_accuracy", "n_numeric", "combine_accuracy", "n_combine", "unsupported_final_number_turns")
 
 
-def grade_turn(expect: TurnExpect, record: dict, calc: dict[str, CalcItem], cells_of: Callable[[str], dict],
+def grade_turn(expect: TurnExpect, record: dict, calc: dict[str, CalcItem], cells_of: Callable[[str, frozenset[str]], dict],
                grounded: set[str], facts: list[Fact]) -> dict:
     """One turn's metrics and errors. grounded / facts = numbers and facts of the conversation so far (this turn's
     question and tool results included). Graded on final_calls: alternate-table attempts are set aside and counted
@@ -75,7 +75,7 @@ def grade_turn(expect: TurnExpect, record: dict, calc: dict[str, CalcItem], cell
 
 
 def grade_conversation(scenario: AgentScenario, records: list[dict], calc: dict[str, CalcItem],
-                       cells_of: Callable[[str], dict]) -> list[dict]:
+                       cells_of: Callable[[str, frozenset[str]], dict]) -> list[dict]:
     """Graded rows, one per scenario turn, for one run of the scenario (records in turn order; a missing turn —
     the run stopped — is a run_failure). Each row keeps its record (the transcript) for --from-run."""
     grounded: set[str] = set()

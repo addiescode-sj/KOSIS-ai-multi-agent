@@ -8,25 +8,46 @@ from __future__ import annotations
 
 from collections import Counter
 
-from evals.schemas import CalcItem, QueryItem, load_items, load_jsonl
+from evals.schemas import CalcItem, QueryItem, RetrievalItem, load_items, load_jsonl
 from evals.tasks.common import (MOCK_NOTE, answer_owners, calc_items, grade, pct, single_turn_rows, summarize_stat_target,
                                 verdict_table)
 
 SERVICE_GRAPH = "backend.app.main:build_agent"
 
 
+def l1_index(items: list[RetrievalItem]) -> dict[str, RetrievalItem]:
+    """Retrieval golden items by qid, by phase1_id and by question text, so a calculation item finds the L1 item
+    of the same question whichever golden version it comes from (v2 shares qids; v1 links by phase1_id / text)."""
+    out: dict[str, RetrievalItem] = {}
+    for i in items:
+        out.setdefault(i.question, i)
+        if i.phase1_id:
+            out.setdefault(i.phase1_id, i)
+    for i in items:
+        out[i.qid] = i
+    return out
+
+
+def l1_item(index: dict[str, RetrievalItem], item: CalcItem) -> RetrievalItem | None:
+    return index.get(item.qid) or index.get(item.question)
+
+
 def run(args) -> tuple[list[dict], dict, str]:
-    """L4 end to end: the agent graph picks the table and answers, then the same grader as L3."""
+    """L4 end to end: the agent graph picks the table and answers, then the same grader as L3. --from-run regrades
+    a past e2e run's saved answers and rankings (no model, no search)."""
     from evals.runners import e2e
     from evals.runners.agent import load_graph
+    from evals.runners.stat import read_rows
 
     items: list[CalcItem] = calc_items(args.calc_golden)
-    # §6.3: the L1 slots judge the table and the L2 labels the 연도·지역, linked by qid (golden v2 shares qids)
-    l1 = {i.qid: i for i in load_items(args.golden)} if args.golden.exists() else {}
+    # §6.3: the L1 slots judge the table and the L2 labels the 연도·지역, linked by qid (golden v2 shares qids),
+    # by phase1_id or by the question text (golden v1: the phase 1 questions the retrieval golden took over, T3-39)
+    l1 = l1_index(load_items(args.golden)) if args.golden.exists() else {}
     l2 = {q.qid: q for q in load_jsonl(args.query_golden, QueryItem)} if args.query_golden.exists() else {}
-    raw = single_turn_rows(args, "e2e", items, lambda: load_graph(SERVICE_GRAPH))
-    rows = [{**g, **e2e.locate(item, a, g["verdict"], l1.get(item.qid)), **e2e.template_slots(a["answer"], l2.get(item.qid)),
-             "error": a["error"], "no_period_item": "no_period" in item.allowed_reasons}
+    raw = (read_rows(args.from_run, items) if args.from_run
+           else single_turn_rows(args, "e2e", items, lambda: load_graph(SERVICE_GRAPH)))
+    rows = [{**g, **e2e.locate(item, a, g["verdict"], l1_item(l1, item)), **e2e.template_slots(a["answer"], l2.get(item.qid)),
+             "error": a["error"], "keys": a["keys"], "no_period_item": "no_period" in item.allowed_reasons}
             for item, a, g in zip(items, raw, grade(items, raw))]
     verdicts, errors, lines = verdict_table(rows)
     right = [r for r in rows if r["right_table"]]
@@ -44,8 +65,10 @@ def run(args) -> tuple[list[dict], dict, str]:
     n = len(rows) or 1
     report = "\n".join([
         f"# L4 end to end — {args.stage}", "",
-        f"- 에이전트 그래프 한 턴 `{args.agent or SERVICE_GRAPH}` (검색 설정 = 서비스와 같은 환경변수) · 그래프가 실전 1에 넘긴 표로 채점 · L3와 같은 채점기(정답 표 기준)"
-        + (MOCK_NOTE if args.llm == "mock" else ""), "",
+        (f"- 과거 실행 재채점 `{args.from_run}` (검색·모델 호출 없음)" if args.from_run else
+         f"- 에이전트 그래프 한 턴 `{args.agent or SERVICE_GRAPH}` (검색 설정 = 서비스와 같은 환경변수)")
+        + " · 그래프가 실전 1에 넘긴 표로 채점 · L3와 같은 채점기(정답 표 기준)"
+        + (MOCK_NOTE if args.llm == "mock" and not args.from_run else ""), "",
         *lines, "",
         f"- 검색 1위가 정답 표: {len(right)}/{len(rows)} ({len(right) / n:.1%})",
         f"  - 맞힌 표에서 PASS {split['right'].get('PASS', 0)}/{len(right)} · 틀린 표에서 PASS {split['wrong'].get('PASS', 0)}/{len(rows) - len(right)}",
