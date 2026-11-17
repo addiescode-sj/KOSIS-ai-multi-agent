@@ -58,15 +58,16 @@ def same_values(item: CalcItem, answer: StatAnswer | None) -> bool:
 
 
 def grade_numbers(expect: TurnExpect, record: dict, calls: list[dict], key: str | None, calc: dict[str, CalcItem],
-                  cells_of: Callable[[str], dict]) -> tuple[dict, list[str]]:
+                  cells_of: Callable[[str, frozenset[str]], dict]) -> tuple[dict, list[str]]:
     """One wrong_numbers per failing check (calc_qid, calc_qids, combine_value), so a turn can carry it more than once
-    and the summary error counts stay as they were before the split (T3-29)."""
+    and the summary error counts stay as they were before the split (T3-29). cells_of(table_key, refs) returns the
+    cells of those refs (calculation.read_cells)."""
     errors = []
     calc_grade = None
     if expect.calc_qid:
         item = calc[expect.calc_qid]
         answer = stat_answer(calls)
-        g = calculation.grade(item, answer, cells_of(item.table_key), record.get("error"), cite=False)
+        g = calculation.grade(item, answer, cells_of(item.table_key, calculation.grade_refs(item, answer)), record.get("error"), cite=False)
         calc_grade = {"verdict": g.verdict, "errors": g.errors}
         if g.verdict != "PASS" and key in expect.alt_table_keys and same_values(item, answer):
             # an alternate gold table: the L3 grader checks cells of the golden table only, so the same numbers read
@@ -80,7 +81,7 @@ def grade_numbers(expect: TurnExpect, record: dict, calls: list[dict], key: str 
         for i, qid in enumerate(expect.calc_qids):
             item = calc[qid]
             answer = answers[i] if i < len(answers) else None
-            g = calculation.grade(item, answer, cells_of(item.table_key), record.get("error"), cite=False)
+            g = calculation.grade(item, answer, cells_of(item.table_key, calculation.grade_refs(item, answer)), record.get("error"), cite=False)
             verdict = g.verdict
             if verdict != "PASS" and same_values(item, answer):  # alternate table holding the same numbers
                 verdict = "PASS"

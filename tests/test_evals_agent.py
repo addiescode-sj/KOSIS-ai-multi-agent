@@ -19,7 +19,7 @@ REF = "DT_X|T1|11|2024"
 CELLS = {REF: SimpleNamespace(value=100.0)}
 CALC = {"c1": CalcItem(qid="c1", question="q", table_key="101_DT_X", table_sha256="0", kind="answerable",
                        required_facts=[Fact(id="f1", value=100.0, source_ref=REF, unit="명", period="2024")])}
-cells_of = lambda key: CELLS  # noqa: E731
+cells_of = lambda key, refs=None: CELLS  # noqa: E731
 CITE = "출처: KOSIS / oracle / oracle"  # what oracle_stat cites (T3-36: every answer names its source)
 ALT_CITE = "출처: KOSIS / 조사 / 표"
 

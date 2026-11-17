@@ -22,7 +22,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
-from kosis_ai.schemas import Cell, Fact, StatAnswer, TextPart
+from kosis_ai.schemas import MAX_DIMS, Cell, Fact, StatAnswer, TextPart
 
 from evals.schemas import CalcItem
 
@@ -66,11 +66,41 @@ class CalcGrade(BaseModel):
 
 
 @lru_cache(maxsize=16)
-def read_cells(path: Path) -> dict[str, Cell]:
-    """All cells of one Parquet table keyed by Cell.ref() (the source_ref format)."""
+def read_cells(path: Path, refs: frozenset[str] | None = None) -> dict[str, Cell]:
+    """Cells of one Parquet table keyed by Cell.ref() (the source_ref format).
+
+    With `refs`, only those cells are built: the file is scanned batch by batch and the ref of every row is made
+    from its key columns with pyarrow, so a 10 MB table (2M rows, 4 GB and 70 s as Python objects) costs a few
+    hundred MB and a few seconds. Grading needs only the golden facts' cells and the answer's cells (grade_refs).
+    Without `refs`, every cell is built (small tables, the builders)."""
+    import pyarrow as pa
+    import pyarrow.compute as pc
     import pyarrow.parquet as pq
 
-    return {c.ref(): c for c in map(Cell.from_row, pq.read_table(path).to_pylist())}
+    if refs is None:
+        return {c.ref(): c for c in map(Cell.from_row, pq.read_table(path).to_pylist())}
+    out: dict[str, Cell] = {}
+    if not refs:
+        return out
+    wanted = pa.array(sorted(refs))
+    file = pq.ParquetFile(path)
+    dims = [f"dim{i}_code" for i in range(1, MAX_DIMS + 1) if f"dim{i}_code" in file.schema_arrow.names]
+    for batch in file.iter_batches(batch_size=200_000):
+        parts = [batch.column("tbl_id"), batch.column("item_id"), *(batch.column(d) for d in dims), batch.column("period")]
+        # a missing dim code must leave no empty field: join skips nulls (null_handling='skip')
+        ref = pc.binary_join_element_wise(*(pc.cast(p, pa.string()) for p in parts), "|", null_handling="skip")
+        hit = pc.is_in(ref, value_set=wanted)
+        if pc.any(hit).as_py():
+            out.update((c.ref(), c) for c in map(Cell.from_row, batch.filter(hit).to_pylist()))
+    return out
+
+
+def grade_refs(item: CalcItem, answer: StatAnswer | None) -> frozenset[str]:
+    """The cells grade() reads: the golden facts' and the answer's source_refs (read_cells(path, refs))."""
+    facts = [*item.required_facts, *item.aux_facts]
+    if answer is not None and answer.result is not None:
+        facts += answer.result.facts
+    return frozenset(f.source_ref for f in facts if f.source_ref)
 
 
 def evaluate(expr: str, values: dict[str, float]) -> float:

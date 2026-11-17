@@ -54,8 +54,8 @@ def run(args) -> tuple[list[dict], dict, str]:
     calc = {i.qid: i for i in calc_items(args.calc_golden)} if needed else {}
     if missing := needed - set(calc):
         raise SystemExit(f"calc_qid not in {[str(p) for p in args.calc_golden]}: {sorted(missing)[:5]}")
-    cache: dict[str, dict] = {}
-    cells_of = lambda key: cache.setdefault(key, calculation.read_cells(ROOT / "data" / "values" / f"{key}.parquet"))  # noqa: E731
+    # only the graded cells of a table (read_cells caches per (path, refs)); a whole large table took GBs
+    cells_of = lambda key, refs: calculation.read_cells(ROOT / "data" / "values" / f"{key}.parquet", refs)  # noqa: E731
     telemetry = metric_reader = None
     if args.oracle:
         records = {(s.sid, 0): grader.oracle_records(s, calc) for s in scenarios}
