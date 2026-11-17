@@ -16,12 +16,15 @@ alternate-table attempt, set aside and counted in alt_attempts; T3-23):
   (evaluators.calculation.grade against the table's Parquet cells). Every number in the final answer text must
   also come from a tool result or a question of the conversation so far (rounding allowed against fact values),
   so a number the LLM wrote itself is unsupported_final_number.
+- charts (T3-37): every number a make_chart call draws (Vega-Lite data.values) must be a fact value of the turn's
+  summarize_stat answers (a chart-only turn: the conversation's latest ones), else chart_data_mismatch; where the user
+  named no chart type, expect.auto_chart must be the family of the drawn kind, else wrong_chart_type.
 A turn passes with no error; a conversation succeeds when every turn passes; pass^k = share of scenarios whose
 k repeated runs all succeeded.
 
 One module per evaluation task (T3-29): tools.py (tool selection, order, arguments), state.py (multi-turn state and
-refusal), numbers.py (L3 numbers, multi-query sub-answers and combine), answer.py (answer quality: unsupported
-numbers). grade_turn joins their errors in that order; aggregate adds by_task (multi-turn MT-* / multi-query MQ-*).
+refusal), numbers.py (L3 numbers, multi-query sub-answers and combine), chart.py (chart data and automatic
+chart choice, T3-37), answer.py (answer quality: unsupported numbers). grade_turn joins their errors in that order; aggregate adds by_task (multi-turn MT-* / multi-query MQ-*).
 """
 
 from __future__ import annotations
@@ -29,9 +32,10 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from typing import Any, Callable
 
-from kosis_ai.schemas import Fact, FactPart, Refusal, Source, StatAnswer, StatResult
+from kosis_ai.schemas import ChartPoint, ChartSeries, ChartSpec, Fact, FactPart, Refusal, Source, StatAnswer, StatResult
 
 from evals.evaluators.agent.answer import grade_answer, grounding, unsupported_final_numbers
+from evals.evaluators.agent.chart import grade_chart, turn_values
 from evals.evaluators.agent.numbers import combined_value, grade_numbers, same_values, stat_answer, stat_answers
 from evals.evaluators.agent.state import STATE_TOOLS, first_key, grade_state, refused, state_key
 from evals.evaluators.agent.tools import final_calls, grade_tools
@@ -52,26 +56,33 @@ ERRORS = {  # error -> what it means (report legend)
     "false_refusal": "답할 수 있는 턴을 거절함",
     "wrong_numbers": "summarize_stat 답이 L3 채점에서 PASS가 아님",
     "unsupported_final_number": "최종 답 문장에 툴 결과·질문에 없는 숫자",
+    "chart_data_mismatch": "차트(Vega-Lite data.values)에 summarize_stat 사실 값이 아닌 숫자가 그려짐",
+    "wrong_chart_type": "차트 종류 말이 없는 턴에서 그린 차트 계열(막대·꺾은선·원형)이 기대 종류와 다름",
 }
 TASK_PREFIXES = {"MT-": "multiturn", "MQ-": "multiquery"}  # sid prefixes the builders write (builders/multiturn, multiquery)
 TASK_METRICS = ("n_turns", "n_conversations", "conversation_success", "pass^k", "turn_pass", "tool_selection", "param_accuracy",
-                "state_accuracy", "numeric_accuracy", "n_numeric", "combine_accuracy", "n_combine", "unsupported_final_number_turns")
+                "state_accuracy", "numeric_accuracy", "n_numeric", "combine_accuracy", "n_combine", "unsupported_final_number_turns",
+                "chart_turn_pass", "n_chart_turns", "auto_chart_agreement", "n_auto_chart")
 
 
 def grade_turn(expect: TurnExpect, record: dict, calc: dict[str, CalcItem], cells_of: Callable[[str], dict],
-               grounded: set[str], facts: list[Fact]) -> dict:
+               grounded: set[str], facts: list[Fact], chart_facts: list[float] | None = None) -> dict:
     """One turn's metrics and errors. grounded / facts = numbers and facts of the conversation so far (this turn's
-    question and tool results included). Graded on final_calls: alternate-table attempts are set aside and counted
-    in alt_attempts, not as errors."""
+    question and tool results included). chart_facts = the fact values this turn's charts may draw (default: this
+    turn's summarize_stat answers). Graded on final_calls: alternate-table attempts are set aside and counted in
+    alt_attempts, not as errors."""
     every = record.get("calls") or []
     calls = final_calls(every)
     tools, tool_errors = grade_tools(expect, calls)
     state, state_errors = grade_state(expect, calls)
     numbers, number_errors = grade_numbers(expect, record, calls, state["state_key"], calc, cells_of)
+    chart, chart_errors = grade_chart(expect, calls, chart_facts if chart_facts is not None else turn_values(calls) or [],
+                                      cells_of)
     answer, answer_errors = grade_answer(record, grounded, facts)
-    errors = ["run_failure"] * bool(record.get("error")) + tool_errors + state_errors + number_errors + answer_errors
+    errors = (["run_failure"] * bool(record.get("error")) + tool_errors + state_errors + number_errors + chart_errors
+              + answer_errors)
     return {**tools, **state, **numbers, "expected_table": expect.table_key, "alt_attempts": len(every) - len(calls),
-            **answer, "errors": errors, "passed": not errors}
+            **chart, **answer, "errors": errors, "passed": not errors}
 
 
 def grade_conversation(scenario: AgentScenario, records: list[dict], calc: dict[str, CalcItem],
@@ -80,13 +91,16 @@ def grade_conversation(scenario: AgentScenario, records: list[dict], calc: dict[
     the run stopped — is a run_failure). Each row keeps its record (the transcript) for --from-run."""
     grounded: set[str] = set()
     facts: list[Fact] = []
+    latest: list[float] = []  # fact values of the latest turn that called summarize_stat (a chart-only turn draws them)
     rows = []
     for i, turn in enumerate(scenario.turns):
         record = records[i] if i < len(records) else {"calls": [], "answer": "", "error": "turn not run"}
         numbers, new_facts = grounding(turn.question, record.get("calls") or [])
         grounded |= numbers
         facts += new_facts
-        g = grade_turn(turn.expect, record, calc, cells_of, grounded, facts)
+        own = turn_values(final_calls(record.get("calls") or []))
+        latest = own if own is not None else latest
+        g = grade_turn(turn.expect, record, calc, cells_of, grounded, facts, latest)
         rows.append({**record, "sid": scenario.sid, "split": scenario.split, "turn": i, "question": turn.question, **g})
     return rows
 
@@ -122,6 +136,8 @@ def _metrics(rows: list[dict]) -> dict:
     calc = [r["calc"]["verdict"] for r in rows if r["calc"]]
     calc += [g["verdict"] for r in rows for g in r.get("sub_calc") or []]  # T3-28: each sub-question's L3 grade
     combine = [r["combine_ok"] for r in rows if r.get("combine_ok") is not None]
+    charts = [r for r in rows if r.get("chart_turn")]
+    auto = [r for r in rows if r.get("auto_chart_ok") is not None]
     first_fail = Counter(next(t["turn"] for t in v if not t["passed"]) for k, v in convs.items() if not success[k])
     return {
         "n_turns": n, "n_conversations": len(convs), "n_scenarios": len(by_sid),
@@ -145,6 +161,12 @@ def _metrics(rows: list[dict]) -> dict:
                                    if r.get("expected_table")),
         "combine_accuracy": rate(combine), "n_combine": len(combine),
         "unsupported_final_number_turns": sum(bool(r["unsupported_numbers"]) for r in rows),
+        # T3-37: turns that expect make_chart, their drawn data vs the facts, and the automatic chart choice
+        "chart_turn_pass": rate([r["passed"] for r in charts]), "n_chart_turns": len(charts),
+        "chart_data_accuracy": rate([r["chart_data_ok"] for r in rows if r.get("chart_data_ok") is not None]),
+        "n_chart_data": sum(r.get("chart_data_ok") is not None for r in rows),
+        "auto_chart_agreement": rate([r["auto_chart_ok"] for r in auto]), "n_auto_chart": len(auto),
+        "auto_chart_confusion": dict(sorted(Counter(f"{r['auto_chart']}→{r['chart_kind'] or '-'}" for r in auto).items())),
         "errors": dict(Counter(e for r in rows for e in r["errors"])),
         "first_failed_turn": {str(k): v for k, v in sorted(first_fail.items())},
     }
@@ -165,9 +187,25 @@ def oracle_stat(item: CalcItem) -> dict:
     return answer.model_dump(mode="json")
 
 
+def oracle_chart(args: dict, auto_chart: str | None, facts: list[Fact]) -> tuple[dict, dict]:
+    """make_chart args and result a perfect agent leaves (T3-37): the result has the tool's content shape
+    (services/chart.py) and the `chart` arg is a phase 1 ChartSpec drawing exactly the latest answer's facts, so the
+    grader's rebuilt Vega-Lite holds fact values only. No facts (a structure run): nothing to draw from, no spec."""
+    kind = args.get("chart_type") or auto_chart or "bar"
+    drawn = [f for f in facts if f.value is not None]
+    if drawn:
+        points = [ChartPoint(label=f.id, value=f.value, display=str(f.value), fact_id=f.id, period=f.period) for f in drawn]
+        spec = ChartSpec(kind=kind, title="oracle", series=[ChartSeries(name="oracle", points=points)],
+                         fact_ids=[f.id for f in drawn])
+        args = {**args, "chart": spec.model_dump(mode="json")}
+    return args, {"table_key": args.get("table_key"), "chart_type": args.get("chart_type"), "kind": kind, "drawn": True,
+                  "note": None}
+
+
 def oracle_records(scenario: AgentScenario, calc: dict[str, CalcItem]) -> list[dict]:
     """The run record a perfect agent would leave: expected calls with expected args and consistent results."""
     records = []
+    latest: list[Fact] = []  # facts of the latest oracle summarize_stat answer (what its charts draw, T3-37)
     for turn in scenario.turns:
         e = turn.expect
         calls = []
@@ -185,10 +223,11 @@ def oracle_records(scenario: AgentScenario, calc: dict[str, CalcItem]) -> list[d
             elif call.name == "summarize_stat":
                 qid = e.calc_qid or next(sub_qids, None)
                 result = oracle_stat(calc[qid]) if qid else {"outcome": "answered"}
+                latest = StatAnswer.model_validate(result).result.facts if qid else []
             elif call.name == "combine_values":
                 result = {"op": args.get("op"), "value": e.combine_value}
             else:
-                result = {"chart_type": args.get("chart_type")}
+                args, result = oracle_chart(args, e.auto_chart, latest)
             calls.append({"name": call.name, "args": args, "result": result, "status": "ok"})
         records.append({"calls": calls, "answer": "", "error": None})
     return records

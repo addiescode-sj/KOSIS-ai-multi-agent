@@ -375,6 +375,17 @@ STAT_PROVIDER=hcx uv run python -m evals.run_eval --layer agent --stage <이름>
 
 `INTERPRETER`는 rules | hybrid | llm이다. 유형(R·E·X…)별 비율은 `results.jsonl`의 `sid`(`MT-<유형>-<번호>`)로 나눠 본다.
 
+**차트 자동 선택 시나리오 (T3-37, KOS-197, `plans/T3-37.md`)**: 종류 말이 없는 차트 요청("그래프로 보여줘", "그려줘")을 C(차트 후속)·M(한 턴 여러 요청)으로 30개 만든다.
+기대 계열(`expect.auto_chart`)은 계산 골든 문항 `type`에서 코드로 정한다(`builders/multiturn.AUTO_CHART`, 실전 1 `kosis_chat/chart/builders.py`의 종류 선택과 같다):
+value → 막대 · trend → 꺾은선 · compare → 막대 · share → 원형 · extreme → 막대. 그린 실전 1 종류는 계열로 묶어 비교한다(bar·timeline·grouped_bar = 막대, line·multi_line = 꺾은선, pie = 원형).
+기존 파일은 건드리지 않고 아래 두 파일만 쓴다(sid `MT-C-A001`·`MT-M-A001`).
+
+```bash
+uv run python -m evals.builders.multiturn --auto-chart   # → agent_scenarios_multiturn_chart_auto(_structure).jsonl
+STAT_PROVIDER=mock INTERPRETER=rules uv run python -m evals.run_eval --layer agent --stage <이름> --split dev \
+  --agent evals.runners.multiturn_dev:build --scenarios evals/datasets/agent_scenarios_multiturn_chart_auto_structure.jsonl
+```
+
 **평가 태스크별 성공률 (T3-29)**: `--scenarios`는 파일을 여러 개 받는다(sid 중복 금지). 멀티턴·멀티쿼리 파일을 한 실행에 넣으면
 리포트의 "평가 태스크" 표와 `summary.by_task`에 태스크마다(`multiturn` = `MT-*`, `multiquery` = `MQ-*`, 그 밖 `other`) 대화 성공률·턴 통과율·툴 선택·상태·
 최종 수치·합산·근거 없는 숫자 턴(답변 품질)이 따로 나온다. 파일 하나만 주면 표에 한 줄이다.
@@ -402,13 +413,17 @@ uv run python -m evals.run_eval --layer agent --stage <이름> --split dev --age
 | 최종 수치 정확도 | `calc_qid` 턴의 `summarize_stat` 답을 L3 채점기(`calculation.grade`, Parquet 셀 대조) 그대로 채점해 PASS인 비율 | 결정적 |
 | 근거 없는 숫자 | 최종 답 문장의 숫자 중 이 대화의 툴 결과·질문에 없고 사실 값의 반올림도 아닌 것이 있는 턴 수 (0이 목표) | 결정적 |
 | 대체 표 시도 | `summarize_stat`이 거절(또는 툴 오류)된 뒤 바로 **다른** `table_key`로 다시 부른 호출 수(`alt_attempts`)와 그런 턴 수. 시도는 감점하지 않고 위 지표에서 모두 뺀다. 툴·인자·상태·거절·수치는 **최종 호출**로만 채점하므로, 최종 표가 정답 표와 다르면 `lost_state`, 최종 답이 틀리면 `wrong_numbers`다 (T3-23). 같은 표를 다시 부르거나 답한 뒤 다시 부른 호출은 시도가 아니라 불필요 호출이다 | 결정적 |
+| 차트 데이터 일치 (T3-37) | make_chart가 그린 Vega-Lite `data.values`(x·y·theta의 quantitative 필드)의 숫자가 같은 턴(차트만 다시 그리는 턴이면 대화의 마지막) `summarize_stat` 사실 값 안에 있는 차트의 비율. 턴 기록에는 Vega-Lite가 없으므로(툴 content는 `kind`·`drawn`만) 인자 `chart`(실전 1 ChartSpec)를 툴과 같은 `to_vega`로 다시 그려 읽는다. 실전 1 계약상 사실이 아닌 맥락 점(`fact_id` 없음: 같은 표의 다른 기간·후보 셀, 원형의 "그 외" = 합계 사실 − 조각)은 통과시키고 `chart_context_values`로 센다 | 결정적 |
+| 차트 자동 선택 일치 (T3-37) | `expect.auto_chart`가 있는 턴(종류 말 없음)에서 그린 종류의 계열 == 기대 계열인 비율. 리포트에 `기대→실제` 분포 | 결정적 |
+| 차트 턴 통과율 (T3-37) | make_chart를 기대한 턴 중 오류가 없는 턴의 비율 (`by_task`에도) | 결정적 |
 | 턴 통과율 | 오류가 하나도 없는 턴의 비율 | 결정적 |
 | 대화 성공률 | 모든 턴이 통과한 대화(실행)의 비율. 리포트에 처음 실패한 턴 분포 | 결정적 |
 | pass^k | `--repeat k`번 모두 성공한 시나리오의 비율 | 결정적 |
 | 요청당 비용·지연 | 턴 = 요청 1건. `ops.json`의 p50·p95 지연, LLM 호출 수, 토큰, 비용 (`ops_history.jsonl`에 누적) | 결정적 |
 
 턴 오류: `run_failure` 실행 실패 · `missing_call` · `extra_call` · `wrong_order` · `wrong_args` · `lost_state`(지시어·조건 이월 실패 포함) · `missed_refusal` · `false_refusal`
-(거절 = 검색 `route` `refuse` 또는 `summarize_stat` `outcome` `refused`, 또는 툴을 하나도 안 부름) · `wrong_numbers` · `unsupported_final_number`. 예외가 난 실행은 거기서 멈추고 남은 턴은 `run_failure`다.
+(거절 = 검색 `route` `refuse` 또는 `summarize_stat` `outcome` `refused`, 또는 툴을 하나도 안 부름) · `wrong_numbers` · `unsupported_final_number` ·
+`chart_data_mismatch`(차트에 사실·표 데이터가 아닌 숫자, T3-37) · `wrong_chart_type`(종류 말 없는 턴에서 make_chart를 불렀는데 계열이 다름, T3-37; 안 불렀으면 `missing_call`만). 예외가 난 실행은 거기서 멈추고 남은 턴은 `run_failure`다.
 
 - LLM 호출·토큰 (T3-31부터): 해석기·멀티쿼리(LangChain), 실전 1 HCX 단계, 실전 2 rerank2를 모두 센다(§8.3). T3-31 이전 agent run은 해석기 호출만 세었으므로 `ops_history.jsonl`에서 그 전후의 토큰·비용을 비교하지 않는다.
 - 테스트: `tests/test_evals_agent.py` (oracle 1.000, 빠진·불필요 호출, 인자 불일치, 멀티턴 중간 실패와 pass^k, 거절, L3 연결·근거 없는 숫자, 실제 LangGraph 그래프 → span → 기록 왕복).
@@ -419,7 +434,7 @@ uv run python -m evals.run_eval --layer agent --stage <이름> --split dev --age
   `owners()`(고칠 담당), `target()`(ops_history 대상)을 갖는다 — `l0_metadata` · `l1_retrieval` · `l2_query` · `ablation` · `l012` · `l3_calculation` · `l4_e2e` · `agent`, 공용 조각은 `common`.
   새 계층은 파일 하나를 만들고 `run_eval.TASKS`에 한 줄 넣는다(헤드라인 지표는 `suite.metrics`, HTML 본문은 `report_html`).
 - 에이전트 채점기 `evaluators/agent/`: `tools.py`(툴 선택·순서·인자) · `state.py`(멀티턴 상태·거절) · `numbers.py`(L3 수치·멀티쿼리 하위 답·합산) ·
-  `answer.py`(답변 품질: 근거 없는 숫자). `__init__.py`의 `grade_turn`이 이 순서로 오류를 이어 붙이고 `aggregate`가 `by_task`를 더한다.
+  `chart.py`(차트 데이터·자동 선택, T3-37) · `answer.py`(답변 품질: 근거 없는 숫자). `__init__.py`의 `grade_turn`이 이 순서로 오류를 이어 붙이고 `aggregate`가 `by_task`를 더한다.
 
 - 판정 규칙: `trace.py`의 `blame()`. 단계를 추가하면 `STAGES`에도 넣는다. 리포트 표기와 판정 순서 표시가 여기서 나온다.
 - 오류 유형: `evaluators/calculation.py`의 `grade()`·`fact_errors()`. 새 오류를 만들면 `ERROR_INFO`와 이 문서 4절에 설명을 추가한다.
