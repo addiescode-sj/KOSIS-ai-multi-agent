@@ -41,7 +41,7 @@ def run(args) -> tuple[list[dict], dict, str]:
 
     items: list[CalcItem] = calc_items(args.calc_golden)
     # §6.3: the L1 slots judge the table and the L2 labels the 연도·지역, linked by qid (golden v2 shares qids),
-    # by phase1_id or by the question text (golden v1: the phase 1 questions the retrieval golden took over, T3-35)
+    # by phase1_id or by the question text (golden v1: the phase 1 questions the retrieval golden took over, T3-39)
     l1 = l1_index(load_items(args.golden)) if args.golden.exists() else {}
     l2 = {q.qid: q for q in load_jsonl(args.query_golden, QueryItem)} if args.query_golden.exists() else {}
     raw = (read_rows(args.from_run, items) if args.from_run

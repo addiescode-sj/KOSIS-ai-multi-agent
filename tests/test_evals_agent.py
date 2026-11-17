@@ -20,7 +20,7 @@ CELLS = {REF: SimpleNamespace(value=100.0)}
 CALC = {"c1": CalcItem(qid="c1", question="q", table_key="101_DT_X", table_sha256="0", kind="answerable",
                        required_facts=[Fact(id="f1", value=100.0, source_ref=REF, unit="명", period="2024")])}
 cells_of = lambda key, refs=None: CELLS  # noqa: E731
-CITE = "출처: KOSIS / oracle / oracle"  # what oracle_stat cites (T3-36: every answer names its source)
+CITE = "출처: KOSIS / oracle / oracle"  # what oracle_stat cites (T3-40: every answer names its source)
 ALT_CITE = "출처: KOSIS / 조사 / 표"
 
 
@@ -113,7 +113,7 @@ def test_numbers_use_the_l3_grader_and_the_final_text_must_be_grounded():
 
 
 def test_search_results_cell_refs_and_codes_do_not_ground_a_number():
-    """T3-36 (KOS-198): only questions, facts, combine results and the cited source ground a number."""
+    """T3-40 (KOS-198): only questions, facts, combine results and the cited source ground a number."""
     search, stat = agent.oracle_records(CHAT, CALC)[0]["calls"]
     noisy = {**search, "result": {"route": "found", "picked": [{"key": "101_DT_1B8000H", "score": 0.64}],
                                   "candidates": [{"key": "101_DT_7777", "period": "년 (1990 ~ 2025)"}]}}
@@ -152,7 +152,7 @@ def test_combine_values_result_grounds_its_rounded_value():
 
 
 def test_an_answer_must_cite_every_answered_source():
-    """T3-36 (KOS-196): survey and table name of each answered summarize_stat, each multi-query sub-answer too."""
+    """T3-40 (KOS-196): survey and table name of each answered summarize_stat, each multi-query sub-answer too."""
     uncited = grade(CHAT, _oracle_with(0, answer="2024년 서울 출생아는 100명입니다."))[0]
     assert uncited["missing_sources"] == ["101_DT_X"] and uncited["errors"] == ["missing_source"]
     s = agent.aggregate(grade(CHAT, _oracle_with(0, answer="100명")))
@@ -165,7 +165,7 @@ def test_an_answer_must_cite_every_answered_source():
 
 
 def test_phase1_code_lines_and_fact_units_are_not_claims():
-    """Measured on saved runs (T3-36): caveat lines, the refusal message and digits of a fact's unit are code's text."""
+    """Measured on saved runs (T3-40): caveat lines, the refusal message and digits of a fact's unit are code's text."""
     caveat = "참고: '코로나19 유행 직전'은(는) 사건 달력의 시작 시점 2020년 1월 기준입니다."
     stat = agent.oracle_stat(CALC["c1"])
     stat = {**stat, "text": f"100명\n{caveat}\n\n{CITE}",
