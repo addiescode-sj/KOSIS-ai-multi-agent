@@ -1,6 +1,7 @@
 """Multi-turn dev scenarios from the calculation golden set (T3-27, KOS-177). Data only, no LLM.
 
-    python -m evals.builders.multiturn            # writes the three files below into evals/datasets/
+    python -m evals.builders.multiturn               # writes the three files below into evals/datasets/
+    python -m evals.builders.multiturn --auto-chart  # T3-37: C / M with no chart type named (OUT_AUTO*) only
 
 R, S, C and M come from the retrieval golden set: their table turns are retrieval checks, so a turn may end on any
 table of the question's L1 gold slot (alt_table_keys), and numbers are graded where the question is also a calculation
@@ -67,6 +68,15 @@ PARAPHRASE = {
           ("꺾은선으로 시각화해줘", "line")],
 }
 OUT_PARAPHRASE = DATASETS / "agent_scenarios_multiturn_paraphrase_structure.jsonl"
+# T3-37 (KOS-197) automatic chart choice: C and M wordings that name no chart type, and the chart family phase 1
+# draws for each calculation question type (kosis_chat/chart/builders.py: value = one bar or bars in period order,
+# trend = a line over the periods, compare = bars, share = a pie, extreme = sorted bars; T3-02: a time series is a
+# line, a comparison of items is bars, a composition is a pie). Written by --auto-chart to the files below only.
+AUTO_CHART = {"value": "bar", "trend": "line", "compare": "bar", "share": "pie", "extreme": "bar"}
+AUTO_C = ["그래프로 보여줘", "그려줘", "차트로 그려줘", "그래프로 그려줄래?"]
+AUTO_M = [" 그래프로도 보여줘", " 차트로도 그려줘"]
+OUT_AUTO = DATASETS / "agent_scenarios_multiturn_chart_auto.jsonl"
+OUT_AUTO_STRUCTURE = DATASETS / "agent_scenarios_multiturn_chart_auto_structure.jsonl"
 CAP = 15  # C and M scenarios each, so chart kinds do not outweigh the carry-over kinds in the overall rates
 MAX_ROWS = 10_000_000  # gold tables larger than this are left out of scenario turns (l1_items)
 
@@ -146,6 +156,13 @@ def alternates(retrieval_path: Path = RETRIEVAL) -> dict[str, set[str]]:
     return {i.phase1_id: i.gold_keys for i in items if i.phase1_id and i.answerable}
 
 
+def small_tables() -> set[str]:
+    """tables.csv keys with a Parquet file of at most MAX_ROWS rows (what a scenario turn may be answered from)."""
+    with (ROOT / "data" / "tables.csv").open(encoding="utf-8-sig", newline="") as f:
+        return {r["key"] for r in csv.DictReader(f)
+                if (ROOT / "data" / r["parquet"]).is_file() and int(r["rows"] or 0) <= MAX_ROWS}
+
+
 def l1_items(retrieval_path: Path = RETRIEVAL) -> list[RetrievalItem]:
     """Answerable one-slot retrieval golden items (multi-table questions need several tables in one turn)."""
     if not retrieval_path.is_file():
@@ -157,9 +174,7 @@ def l1_items(retrieval_path: Path = RETRIEVAL) -> list[RetrievalItem]:
     # Tables over MAX_ROWS are dropped too: phase 1 loads a whole table into pandas per turn, and 101_DT_1B04005N
     # (47M rows) / 101_DT_1B04006 (21M) pushed one scenario run into swap for 30+ minutes (2026-11-09).
     # ponytail: row cap instead of a phase 1 table cache; lift it once phase 1 reads filtered columns.
-    with (ROOT / "data" / "tables.csv").open(encoding="utf-8-sig", newline="") as f:
-        has_data = {r["key"] for r in csv.DictReader(f)
-                    if (ROOT / "data" / r["parquet"]).is_file() and int(r["rows"] or 0) <= MAX_ROWS}
+    has_data = small_tables()
     out = []
     for i in items:
         if not i.answerable or len(i.required) != 1:
@@ -307,6 +322,44 @@ def build(calc_path: Path = CALC, seed: int = 0) -> tuple[list[AgentScenario], l
     return [AgentScenario.model_validate(s) for s in scenarios], made
 
 
+def build_auto(calc_path: Path = CALC, seed: int = 0) -> list[AgentScenario]:
+    """C and M scenarios whose chart wording names no chart type (T3-37): the expected chart family (auto_chart) is
+    AUTO_CHART of the calculation item's type. Made from calculation items directly (the retrieval-golden C / M above
+    have only 10 items with a calculation type, none share or extreme), taking the types in turn so each is drawn;
+    turn 1 is graded like an E / X first turn (calc_qid, the L1 gold tables of the same question as alternates)."""
+    rng = random.Random(seed)
+    alt = alternates()
+    small = small_tables()
+    items = [CalcItem.model_validate_json(line) for line in calc_path.read_text(encoding="utf-8").splitlines()
+             if line.strip()]
+    by_type: dict[str, list[CalcItem]] = defaultdict(list)
+    for i in items:
+        if i.kind == "answerable" and i.type in AUTO_CHART and i.table_key in small:
+            by_type[i.type].append(i)
+    for group in by_type.values():
+        rng.shuffle(group)
+    order: list[CalcItem] = []  # round robin over the types, so share / extreme are not crowded out by trend
+    while any(by_type.values()):
+        order += [by_type[t].pop() for t in sorted(by_type) if by_type[t]]
+    scenarios: list[dict] = []
+
+    def add(kind: str, turns: list[dict]) -> None:
+        n = sum(s["notes"] == kind for s in scenarios) + 1
+        scenarios.append(add_alternates({"sid": f"MT-{kind}-A{n:03d}", "split": "dev", "source": "synthetic",
+                                         "notes": kind, "turns": turns}, alt, {}))
+
+    for item in order[:CAP]:
+        chart = {"name": "make_chart", "args": {"table_key": item.table_key}}
+        add("C", [first_turn(item), {"question": rng.choice(AUTO_C), "expect": {
+            "tools": [chart], "table_key": item.table_key, "auto_chart": AUTO_CHART[item.type], "origin": item.qid}}])
+    for item in order[CAP:2 * CAP]:
+        turn = first_turn(item, item.question + rng.choice(AUTO_M),
+                          extra=[{"name": "make_chart", "args": {"table_key": item.table_key}}])
+        turn["expect"]["auto_chart"] = AUTO_CHART[item.type]
+        add("M", [turn])
+    return [AgentScenario.model_validate(s) for s in scenarios]
+
+
 def paraphrased(scenarios: list[AgentScenario], seed: int = 1) -> list[AgentScenario]:
     """The E, X and C scenarios with turn 2 reworded from PARAPHRASE (same expectations, calc_qid removed)."""
     rng = random.Random(seed)
@@ -353,7 +406,20 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--calc", type=Path, default=CALC)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--auto-chart", action="store_true",
+                        help="T3-37: write only the C / M scenarios with no chart type named (OUT_AUTO, OUT_AUTO_STRUCTURE)")
     args = parser.parse_args(argv)
+    if args.auto_chart:
+        auto = build_auto(args.calc, args.seed)
+        dump = lambda rows: "".join(r.model_dump_json(exclude_none=True) + "\n" for r in rows)  # noqa: E731
+        OUT_AUTO.write_text(dump(auto), encoding="utf-8")
+        OUT_AUTO_STRUCTURE.write_text(dump([without_calc(s) for s in auto]), encoding="utf-8")
+        kinds = defaultdict(int)
+        for s in auto:
+            kinds[(s.notes, s.turns[-1].expect.auto_chart)] += 1
+        print(f"{len(auto)} scenarios ({', '.join(f'{k}/{c} {v}' for (k, c), v in sorted(kinds.items()))}) -> "
+              f"{OUT_AUTO.relative_to(ROOT)}")
+        return
     scenarios, made = build(args.calc, args.seed)
     write(scenarios, made)
     counts: dict[str, int] = defaultdict(int)

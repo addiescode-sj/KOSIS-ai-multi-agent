@@ -603,6 +603,11 @@ def agent_body(m: dict, rows: list[dict]) -> str:
              tile(f(s["param_accuracy"]), "파라미터 정확도"), tile(f(s["state_accuracy"]), f"상태(표 키) 정확도 (n={s['n_state']})"),
              tile(f(s["numeric_accuracy"]), f"최종 수치 정확도 (n={s['n_numeric']})"), tile(str(s["unsupported_final_number_turns"]), "근거 없는 숫자가 있는 턴"),
              tile(str(s.get("missing_source_turns", "—")), "출처가 빠진 턴")]
+    if s.get("n_chart_turns"):  # T3-37 (older manifests have no chart metrics)
+        tiles += [tile(f(s["chart_turn_pass"]), f"차트 턴 통과율 (n={s['n_chart_turns']})"),
+                  tile(f(s["chart_data_accuracy"]), f"차트 데이터 일치 (n={s['n_chart_data']})")]
+    if s.get("n_auto_chart"):
+        tiles.append(tile(f(s["auto_chart_agreement"]), f"차트 자동 선택 일치 (n={s['n_auto_chart']})"))
     tools = sorted(set(s["missing_calls"]) | set(s["extra_calls"]))
     calls = (hbars([f"{t} 빠짐" for t in tools] + [f"{t} 불필요" for t in tools],
                    [s["missing_calls"].get(t, 0) for t in tools] + [s["extra_calls"].get(t, 0) for t in tools])

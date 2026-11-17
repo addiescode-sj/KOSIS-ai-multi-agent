@@ -174,6 +174,9 @@ class TurnExpect(BaseModel):
     # rule. calc_qids then belong to the answering (False) sub-questions only, in order. Left out of dumps when None,
     # so files written before T3-38 serialize byte-identically.
     refuse_parts: list[bool] | None = Field(default=None, exclude_if=lambda v: v is None)
+    # T3-37: the chart family make_chart must draw when the user named no chart type (its chart_type arg is None and
+    # phase 1 picks the kind). Derived from the calculation item type (builders.multiturn.AUTO_CHART); None = not graded
+    auto_chart: Literal["bar", "line", "pie"] | None = None
 
     @model_validator(mode="after")
     def _consistent(self) -> TurnExpect:
@@ -191,6 +194,8 @@ class TurnExpect(BaseModel):
                 raise ValueError("with refuse_parts, calc_qids lists one item per answering sub-question")
         if self.refuse and any(c.name == "make_chart" for c in self.tools):
             raise ValueError("a refusing turn draws no chart")
+        if self.auto_chart and not any(c.name == "make_chart" for c in self.tools):
+            raise ValueError("auto_chart needs a make_chart call")
         if self.calc_qid and not any(c.name == "summarize_stat" for c in self.tools):
             raise ValueError("calc_qid needs a summarize_stat call")
         if self.calc_qid and self.calc_qids:
