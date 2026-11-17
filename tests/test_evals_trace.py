@@ -17,7 +17,7 @@ RULES = [  # (row fields, spans, expected stage, expected span)
     ({"errors": ["false_refusal"]}, [span("judge", outcome="refused", final=True)], "understanding", "judge"),
     ({"errors": ["wrong_unit"]}, [span("judge"), span("analyze.rules"), span("analyze.llm_fill"), span("compute")], "understanding", "analyze.llm_fill"),
     ({"errors": ["unsupported_claim"]}, [span("judge"), span("analyze.rules"), span("compute"), span("compose")], "compose", "compose"),
-    ({"errors": ["missing_source"]}, [span("judge"), span("compute"), span("compose")], "compose", "compose"),  # T3-36
+    ({"errors": ["missing_source"]}, [span("judge"), span("compute"), span("compose")], "compose", "compose"),  # T3-40
     ({"errors": ["something_new"]}, [span("judge")], "unknown", None),
 ]
 

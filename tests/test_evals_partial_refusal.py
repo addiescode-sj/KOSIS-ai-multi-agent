@@ -34,7 +34,7 @@ OLD_RULE = scenario(tools=[SEARCH, SEARCH, STAT_X, STAT_Y], calc_qids=["c1"])  #
 
 
 def grade(s: AgentScenario, calls: list[dict]) -> dict:
-    # the answered part names its source like phase 1's text does (T3-36 missing_source); oracle_stat cites "oracle"
+    # the answered part names its source like phase 1's text does (T3-40 missing_source); oracle_stat cites "oracle"
     answer = "출처: KOSIS / oracle / oracle"
     return agent.grade_conversation(s, [{"calls": calls, "answer": answer, "error": None}], CALC, cells_of)[0]
 

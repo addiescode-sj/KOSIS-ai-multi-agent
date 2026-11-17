@@ -15,7 +15,7 @@ alternate-table attempt, set aside and counted in alt_attempts; T3-23):
   turn is graded on its own: its search found no table or its summarize_stat refused (state.refused_parts).
 - numbers: expect.calc_qid grades the turn's last summarize_stat answer with the L3 grader as is
   (evaluators.calculation.grade against the table's Parquet cells).
-- answer (T3-36): every number in the final answer text must come from a question, a summarize_stat fact (rounding
+- answer (T3-40): every number in the final answer text must come from a question, a summarize_stat fact (rounding
   allowed), a combine_values result or a default condition of the conversation so far, else
   unsupported_final_number; the answer must cite survey and table name of each answered summarize_stat, else
   missing_source.
@@ -186,7 +186,7 @@ def _oracle_source(table_key: str | None) -> Source:
 def oracle_stat(item: CalcItem) -> dict:
     """A summarize_stat answer that is right by construction for an L3 item (the oracle's self-check)."""
     source = _oracle_source(item.table_key)
-    cite = f"출처: {source.citation()}"  # the line Phase 1 final_text ends every answer with (T3-36)
+    cite = f"출처: {source.citation()}"  # the line Phase 1 final_text ends every answer with (T3-40)
     if item.kind == "not_answerable":
         answer = StatAnswer(outcome="refused", refusal=Refusal(reason=item.allowed_reasons[0], message="oracle"), source=source,
                             text=cite)

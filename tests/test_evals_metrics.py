@@ -69,7 +69,7 @@ def test_unsupported_text_number_fails():
 
 
 def test_an_answer_without_its_source_is_partial():
-    """T3-36 (KOS-196): every answer cites KOSIS / survey / table; refusals are not checked."""
+    """T3-40 (KOS-196): every answer cites KOSIS / survey / table; refusals are not checked."""
     want = [Fact(id="f1", value=100.0, source_ref=REF)]
     item = calc(kind="answerable", required_facts=want)
     assert calculation.grade(item, answered(want), CELLS).verdict == "PASS"
@@ -108,7 +108,7 @@ def test_ops_tokens_cost_and_failure_rate():
 
 
 def test_read_cells_streams_only_the_wanted_refs(tmp_path):
-    """T3-35: a large table is scanned batch by batch and only the graded cells become Python objects."""
+    """T3-39: a large table is scanned batch by batch and only the graded cells become Python objects."""
     import pyarrow as pa
     import pyarrow.parquet as pq
 
@@ -129,11 +129,11 @@ def test_read_cells_streams_only_the_wanted_refs(tmp_path):
         Fact(id="f2", value=5.0, source_ref="DT_X|T1|11|2005", period="2005")]), parts=[])
     assert calculation.grade_refs(item, answer) == {"DT_X|T1|11|2003", "DT_X|T1|11|2005"}
     assert calculation.grade(item, answer, calculation.read_cells(path, calculation.grade_refs(item, answer)),
-                             cite=False).verdict == "PASS"  # cells only; the source check is tested apart (T3-36)
+                             cite=False).verdict == "PASS"  # cells only; the source check is tested apart (T3-40)
 
 
 def test_ops_cost_is_priced_per_model():
-    """T3-35: a turn that calls two models (follow-up reader + phase 1) is priced per model; a mixed currency or an
+    """T3-39: a turn that calls two models (follow-up reader + phase 1) is priced per model; a mixed currency or an
     unpriced model gives no total, and an old row with models joined by ',' cannot be split."""
     from evals import ops
 
@@ -145,7 +145,7 @@ def test_ops_cost_is_priced_per_model():
     op = ops.summarize([row], pricing=pricing)
     assert op["cost"]["total"] == 1.0 + 1.0 + 20.0 + 10.0 and op["cost"]["currency"] == "KRW" and op["models"] == ["a", "b"]
     assert op["cost"]["by_model"]["b"] == {"input": 2000, "output": 500, "cost": 30.0}
-    old = {**row, "tokens_by_model": {}}  # written before T3-35: totals only, two models joined
+    old = {**row, "tokens_by_model": {}}  # written before T3-39: totals only, two models joined
     assert ops.summarize([old], pricing=pricing)["cost"]["total"] is None
     mixed = {**row, "tokens_by_model": {"a": {"input": 1000, "output": 0}, "usd": {"input": 1000, "output": 0}}}
     assert ops.summarize([mixed], pricing=pricing)["cost"]["total"] is None

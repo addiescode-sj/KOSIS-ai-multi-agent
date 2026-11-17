@@ -33,7 +33,7 @@ def source(key: str) -> Source:
 
 def answered(key: str) -> StatOutput:
     fact = Fact(id="f1", value=100.0, source_ref=f"{key.partition('_')[2]}|T1|11|2024", unit="명", period="2024")
-    # 실전 1 final_text처럼 본문 뒤에 출처 줄을 붙인다(T3-36: 채점기가 최종 답의 출처를 본다)
+    # 실전 1 final_text처럼 본문 뒤에 출처 줄을 붙인다(T3-40: 채점기가 최종 답의 출처를 본다)
     answer = StatAnswer(outcome="answered", text=f"{key}: 100명\n\n출처: {source(key).citation()}", result=StatResult(facts=[fact]),
                         parts=[FactPart(fact_id="f1")], source=source(key))
     return StatOutput(answer=answer)
