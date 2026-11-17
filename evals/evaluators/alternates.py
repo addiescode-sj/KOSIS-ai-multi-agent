@@ -102,6 +102,7 @@ def table_sha(table_key: str) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest() if path.exists() else "missing"
 
 
+@lru_cache(maxsize=1024)  # the agent layer asks the same (table, golden values) on several turns and checks (T3-42)
 def cells_with_values(path: Path, values: frozenset[float]) -> list[Cell]:
     """The cells of one Parquet table whose value is in `values` (one filtered read, any table size)."""
     import pyarrow as pa

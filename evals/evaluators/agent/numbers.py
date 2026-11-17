@@ -1,5 +1,8 @@
 """Numbers of a turn: the summarize_stat answer graded by L3 (calc_qid), each multi-query sub-answer (calc_qids)
-and the combine_values result (combine_value). No LLM: evaluators.calculation against the table's Parquet cells."""
+and the combine_values result (combine_value). No LLM: evaluators.calculation against the table's Parquet cells.
+
+T3-42: an answer read from another table that holds every golden cell value (evaluators.alternates, the T3-41 rule)
+is graded against that table's cells, as e2e does; it replaced T3-27's same_values (any equal value anywhere passed)."""
 
 from __future__ import annotations
 
@@ -7,9 +10,12 @@ from typing import Callable
 
 from kosis_ai.schemas import StatAnswer
 
-from evals.evaluators import calculation
+from evals.evaluators import alternates, calculation
 from evals.evaluators.agent.state import sub_calls
 from evals.schemas import CalcItem, TurnExpect
+
+# (golden item, table key, refs the answer cited) -> the item moved to that table, or None when it is no alternate
+AlternateOf = Callable[[CalcItem, "str | None", frozenset], "CalcItem | None"]
 
 
 def _as_answer(call: dict) -> StatAnswer | None:
@@ -43,53 +49,56 @@ def combined_value(calls: list[dict]) -> float | None:
 
 
 
-def same_values(item: CalcItem, answer: StatAnswer | None) -> bool:
-    """Every required fact's value is among the answer's facts (rounded as the golden fact says)."""
-    if answer is None or answer.outcome != "answered":
-        return False
-    got = [f.value for f in answer.result.facts if f.value is not None]
-    for fact in item.required_facts:
-        if fact.value is None:
-            return False
-        digits = fact.round if fact.round is not None else (len(str(fact.value).split(".")[1].rstrip("0"))
-                                                            if "." in str(fact.value) else 0)
-        if not any(calculation.close(fact.value, v, digits) for v in got):
-            return False
-    return True
+def table_key(call: dict | None) -> str | None:
+    """The table a summarize_stat answer's numbers came from: its source (tables.csv keys are '<org_id>_<tbl_id>'),
+    else the call's table_key argument. Source first: the argument can name one table while the facts cite another
+    (the oracle answers an L1 alternate turn with the golden table's facts)."""
+    if not call:
+        return None
+    src = (call.get("result") or {}).get("source") if isinstance(call.get("result"), dict) else None
+    if src and src.get("org_id") and src.get("tbl_id"):
+        return f"{src['org_id']}_{src['tbl_id']}"
+    return (call.get("args") or {}).get("table_key")
 
 
-def grade_numbers(expect: TurnExpect, record: dict, calls: list[dict], key: str | None, calc: dict[str, CalcItem],
-                  cells_of: Callable[[str, frozenset[str]], dict]) -> tuple[dict, list[str]]:
+def grade_one(item: CalcItem, call: dict | None, error: str | None, cells_of: Callable[[str, frozenset[str]], dict],
+              alternate_of: AlternateOf = alternates.alternate_item) -> dict:
+    """L3 grade of one summarize_stat call: against the golden table, or against the table it answered from when
+    that table is an alternate (via_alternate = passed there; graded_table names it)."""
+    answer = _as_answer(call) if call else None
+    cited = frozenset(f.source_ref for f in answer.result.facts if f.source_ref) if answer is not None else frozenset()
+    alt = alternate_of(item, table_key(call), cited) if answer is not None else None
+    graded = alt or item
+    g = calculation.grade(graded, answer, cells_of(graded.table_key, calculation.grade_refs(graded, answer)), error, cite=False)
+    out = {"verdict": g.verdict, "errors": g.errors}
+    if alt is not None:
+        out |= {"graded_table": alt.table_key, "via_alternate": g.verdict == "PASS"}
+    return out
+
+
+def grade_numbers(expect: TurnExpect, record: dict, calls: list[dict], calc: dict[str, CalcItem],
+                  cells_of: Callable[[str, frozenset[str]], dict],
+                  alternate_of: AlternateOf = alternates.alternate_item) -> tuple[dict, list[str]]:
     """One wrong_numbers per failing check (calc_qid, calc_qids, combine_value), so a turn can carry it more than once
     and the summary error counts stay as they were before the split (T3-29). cells_of(table_key, refs) returns the
-    cells of those refs (calculation.read_cells)."""
+    cells of those refs (calculation.read_cells); alternate_of decides alternate tables (tests inject it)."""
     errors = []
     calc_grade = None
+    stats = [c for c in calls if c["name"] == "summarize_stat"]
     if expect.calc_qid:
-        item = calc[expect.calc_qid]
-        answer = stat_answer(calls)
-        g = calculation.grade(item, answer, cells_of(item.table_key, calculation.grade_refs(item, answer)), record.get("error"), cite=False)
-        calc_grade = {"verdict": g.verdict, "errors": g.errors}
-        if g.verdict != "PASS" and key in expect.alt_table_keys and same_values(item, answer):
-            # an alternate gold table: the L3 grader checks cells of the golden table only, so the same numbers read
-            # from another table fail on dims / support. Equal values pass, counted apart (T3-27).
-            calc_grade = {"verdict": "PASS", "errors": [], "via_alternate": True, "l3": g.verdict}
+        last_ok = next((c for c in reversed(stats) if c.get("status", "ok") == "ok"), None)  # = stat_answer(calls)
+        calc_grade = grade_one(calc[expect.calc_qid], last_ok, record.get("error"), cells_of, alternate_of)
         if calc_grade["verdict"] != "PASS":
             errors.append("wrong_numbers")
     sub_grades = []
     if expect.calc_qids:  # T3-28: one L3 grade per sub-question, in summarize_stat call order
-        answers = stat_answers(calls)
+        parts: list[dict | None] = stats
         if expect.refuse_parts is not None and (subs := sub_calls(calls, len(expect.refuse_parts))) is not None:
             # T3-38: a sub-question that must refuse has no calc_qid; calc_qids are the answering sub-questions' items
-            answers = [_as_answer(s) if s else None for s, refuse in zip(subs, expect.refuse_parts) if not refuse]
+            parts = [s for s, refuse in zip(subs, expect.refuse_parts) if not refuse]
         for i, qid in enumerate(expect.calc_qids):
-            item = calc[qid]
-            answer = answers[i] if i < len(answers) else None
-            g = calculation.grade(item, answer, cells_of(item.table_key, calculation.grade_refs(item, answer)), record.get("error"), cite=False)
-            verdict = g.verdict
-            if verdict != "PASS" and same_values(item, answer):  # alternate table holding the same numbers
-                verdict = "PASS"
-            sub_grades.append({"qid": qid, "verdict": verdict, "errors": g.errors})
+            g = grade_one(calc[qid], parts[i] if i < len(parts) else None, record.get("error"), cells_of, alternate_of)
+            sub_grades.append({"qid": qid, **g})
         if any(g["verdict"] != "PASS" for g in sub_grades):
             errors.append("wrong_numbers")
     combine_ok = None
@@ -99,3 +108,13 @@ def grade_numbers(expect: TurnExpect, record: dict, calls: list[dict], key: str 
         if not combine_ok:
             errors.append("wrong_numbers")
     return {"calc": calc_grade, "sub_calc": sub_grades, "combine_ok": combine_ok}, errors
+
+
+def turn_alternates(expect: TurnExpect, calls: list[dict], calc: dict[str, CalcItem],
+                    alternate_of: AlternateOf = alternates.alternate_item) -> list[str]:
+    """The tables this turn's summarize_stat calls answered from that are alternates of its calc_qid / calc_qids
+    (T3-41 rule): grade_turn adds them to the expected tables, so state and tool-argument grading accept the same
+    tables the numbers are graded on."""
+    qids = [q for q in [expect.calc_qid, *expect.calc_qids] if q and q in calc]
+    keys = {table_key(c) for c in calls if c["name"] == "summarize_stat"} - {None, expect.table_key}
+    return sorted(k for k in keys if any(alternate_of(calc[q], k, frozenset()) for q in qids))

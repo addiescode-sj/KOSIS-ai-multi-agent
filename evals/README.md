@@ -629,6 +629,10 @@ python -m evals.builders.alternates     # data/values 전수 스캔(약 1분) �
 - 라벨 상태: `auto`(값이 모두 정수 ≥ 100) / `needs_review`(작은 값·비율, 우연 일치 위험) / 사람이 바꾸는 `accepted`·`rejected`(재생성해도 유지).
   정답 표 집합(`locate()`, ragas ID 지표)은 auto·accepted만 쓴다. `self_check` 줄 = 대표 표를 규칙이 다시 찾았는지.
 - 숫자 채점: e2e 답이 대표 표가 아닌 표에서 왔고 그 표가 규칙을 만족하면, 골든 사실의 source_ref를 그 표 셀(답이 인용한 셀 우선)로 옮겨 같은 채점기로 채점한다
-  (`graded_table` 열). L3(대표 표 오라클)는 경로가 바뀌지 않는다. agent 계층은 T3-27의 값 비교(`same_values`)를 그대로 쓴다.
+  (`graded_table` 열). L3(대표 표 오라클)는 경로가 바뀌지 않는다.
+- agent 계층 (T3-42): 같은 규칙. 숫자(calc_qid·calc_qids 하위 답)는 답의 **출처 표**(`source`, 없으면 호출의 `table_key`)가 대체 표면 그 셀로 채점하고
+  (`calc.graded_table`·`via_alternate`), 상태·툴 인자 판정도 그 턴의 대체 표를 정답에 더한다(`value_alternates` 열). 같은 대화에서 인정된 대체 표는
+  같은 표를 기대하는 다음 턴(calc_qid 없는 "그 표로 그려줘")에도 이어진다. T3-27 `same_values`(값만 같으면 통과)는 없앴다.
+  agent 표 키 판정은 라벨 status가 아니라 규칙만 본다(e2e 숫자 채점과 같고, e2e 정답 표 판정은 auto·accepted 라벨).
 - 라벨 파일 hash는 l3·e2e manifest의 `alternates`와 ragas 게이트 비교 키에 들어간다. 라벨이 바뀌면 기준선을 다시 promote한다.
 
