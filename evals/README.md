@@ -423,7 +423,7 @@ uv run python -m evals.run_eval --layer agent --stage <이름> --split dev --age
 | 턴 통과율 | 오류가 하나도 없는 턴의 비율 | 결정적 |
 | 대화 성공률 | 모든 턴이 통과한 대화(실행)의 비율. 리포트에 처음 실패한 턴 분포 | 결정적 |
 | pass^k | `--repeat k`번 모두 성공한 시나리오의 비율 | 결정적 |
-| 요청당 비용·지연 | 턴 = 요청 1건. `ops.json`의 p50·p95 지연, LLM 호출 수, 토큰, 비용 (`ops_history.jsonl`에 누적). 비용은 턴의 **모델별 토큰**(`tokens_by_model`: 해석기 gpt-4o-mini + 실전 1 HCX + rerank2)에 `evals/pricing.json` 단가를 모델마다 곱한다(T3-35). 단가 없는 모델이 하나라도 있거나 통화가 섞이면 합계는 없음으로 두고 모델별 토큰만 보인다. HCX 단가(KRW)는 아직 null: 공식 가격표(ncloud.com CLOVA Studio `#pricing`)가 스크립트로 그려져 자동으로 읽지 못했다(T3-38, 출처는 `pricing.json` `_note`). 브라우저로 확인해 `_source`와 함께 채운다. Gemma(자체 호스팅)는 0원 vs GPU 시간 환산을 팀이 정할 때까지 null | 결정적 |
+| 요청당 비용·지연 | 턴 = 요청 1건. `ops.json`의 p50·p95 지연, LLM 호출 수, 토큰, 비용 (`ops_history.jsonl`에 누적). 비용은 턴의 **모델별 토큰**(`tokens_by_model`: 해석기 gpt-4o-mini + 실전 1 HCX + rerank2)에 `evals/pricing.json` 단가를 모델마다 곱한다(T3-39). 단가 없는 모델이 하나라도 있거나 통화가 섞이면 합계는 없음으로 두고 모델별 토큰만 보인다. HCX 단가(KRW)는 아직 null: 공식 가격표(ncloud.com CLOVA Studio `#pricing`)가 스크립트로 그려져 자동으로 읽지 못했다(T3-38, 출처는 `pricing.json` `_note`). 브라우저로 확인해 `_source`와 함께 채운다. Gemma(자체 호스팅)는 0원 vs GPU 시간 환산을 팀이 정할 때까지 null | 결정적 |
 
 턴 오류: `run_failure` 실행 실패 · `missing_call` · `extra_call` · `wrong_order` · `wrong_args` · `lost_state`(지시어·조건 이월 실패 포함) · `missed_refusal` · `false_refusal`
 (거절 = 검색 `route` `refuse` 또는 `summarize_stat` `outcome` `refused`, 또는 툴을 하나도 안 부름. `refuse_parts`가 있으면 하위 질문마다) · `wrong_numbers` · `unsupported_final_number` · `missing_source`.
