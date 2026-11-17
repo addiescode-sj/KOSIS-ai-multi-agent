@@ -81,7 +81,7 @@ def _among(value: float, pool) -> bool:
 
 @lru_cache(maxsize=32)
 def table_numbers(key: str) -> frozenset[float]:
-    """Every number of a table: its Parquet `value` column only (cheap even for large tables, T3-35), {} when the
+    """Every number of a table: its Parquet `value` column only (cheap even for large tables, T3-39), {} when the
     file cannot be read."""
     import pyarrow.parquet as pq
 
