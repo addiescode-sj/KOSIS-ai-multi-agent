@@ -253,8 +253,10 @@ def single_turns(graph, questions: list[tuple[str, str]], telemetry: tuple[Trace
     return rows
 
 
-def link_questions(provider: TracerProvider, rows: list[dict], layer: str) -> None:
-    """One `eval.question` span per graded row, linked to the row's turn root, with the verdict and failure (T3-32)."""
+def link_questions(provider: TracerProvider, rows: list[dict], layer: str, name: str = "eval.question",
+                   attributes=None) -> None:
+    """One `eval.question` span per graded row, linked to the row's turn root, with the verdict and failure (T3-32).
+    T3-19: the ragas layer names it `eval.ragas` and adds its scores through attributes(row) -> dict."""
     tracer = provider.get_tracer("kosis-evals")
     for r in rows:
         if not r.get("trace_id") or not r.get("span_id"):
@@ -262,10 +264,11 @@ def link_questions(provider: TracerProvider, rows: list[dict], layer: str) -> No
         f = r.get("failure") or {}
         link = Link(SpanContext(int(r["trace_id"], 16), int(r["span_id"], 16), is_remote=True,
                                 trace_flags=TraceFlags(TraceFlags.SAMPLED)))
-        with tracer.start_as_current_span("eval.question", links=[link], attributes={
+        with tracer.start_as_current_span(name, links=[link], attributes={
                 "kosis.eval.qid": r["qid"], "kosis.eval.layer": layer, "kosis.verdict": r.get("verdict") or "",
                 "kosis.errors": ",".join(r.get("errors") or []),
-                **{f"kosis.failure.{k}": v for k, v in f.items() if v is not None and k != "label"}}) as span:
+                **{f"kosis.failure.{k}": v for k, v in f.items() if v is not None and k != "label"},
+                **(attributes(r) if attributes else {})}) as span:
             if f:
                 span.set_status(StatusCode.ERROR, f"{f['label']}: {f['reason']}")
     provider.force_flush()

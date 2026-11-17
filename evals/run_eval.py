@@ -12,6 +12,7 @@
     python -m evals.run_eval --layer l012 --stage T2-28-l012                           # L0 + L1 filter (gold, pred) + L2, dev
     python -m evals.run_eval --layer agent --stage T3-06-oracle --oracle --split all   # agent metrics self-check (1.000)
     python -m evals.run_eval --layer agent --stage T3-07-react --agent <module:function> --repeat 3   # live, pass^3
+    python -m evals.run_eval --layer ragas --stage T3-19-ragas --from-run <e2e run folder>          # Ragas judge (T3-19)
 
 L1 runs every item (BM25 is fast) so the no-answer threshold tau is chosen on dev and applied to the split shown.
 Every run writes results.jsonl, manifest.json, ops.json (latency, tokens, cost, tool failure rate), report.md and
@@ -33,14 +34,15 @@ from pathlib import Path
 
 from kosis_agent.observability.tracing import SERVICE
 
-from evals import ops, report_html, trace
+from evals import ops, quality, report_html, trace
+from evals.evaluators import alternates
 from evals.schemas import AGENT_SCENARIOS, DATASETS, GOLDEN, QUERY_GOLDEN, ROOT, TABLES
-from evals.tasks import ablation, agent, common, l0_metadata, l1_retrieval, l2_query, l3_calculation, l4_e2e, l012
+from evals.tasks import ablation, agent, common, l0_metadata, l1_retrieval, l2_query, l3_calculation, l4_e2e, l012, ragas
 
 # T3-29: one module per evaluation task, each with run(args) -> (rows, summary, report) and, where it has them,
 # owners(rows, summary) for the "고칠 담당" section and target(args, op) for its ops_history line.
 TASKS = {"l0": l0_metadata, "l1": l1_retrieval, "l2": l2_query, "ablation": ablation, "l012": l012, "l3": l3_calculation,
-         "e2e": l4_e2e, "agent": agent}
+         "e2e": l4_e2e, "agent": agent, "ragas": ragas}
 REPORTS = ROOT / "evals" / "reports"
 CALC_GOLDEN = DATASETS / "calculation_golden.jsonl"
 POOL = DATASETS / "retrieval_pool.csv"
@@ -97,11 +99,11 @@ def owner_section(layer: str, rows: list[dict], summary: dict) -> str:
 def main(argv: list[str] | None = None) -> Path:
     """Run one layer; returns the run folder (evals.suite reads it)."""
     parser = argparse.ArgumentParser(description="Run one evaluation layer (L1 retrieval, L3 calculation, e2e).")
-    parser.add_argument("--layer", choices=("l0", "l1", "l2", "ablation", "l012", "l3", "e2e", "agent"), required=True)  # e2e: first part of L4
+    parser.add_argument("--layer", choices=("l0", "l1", "l2", "ablation", "l012", "l3", "e2e", "agent", "ragas"), required=True)  # e2e: first part of L4
     parser.add_argument("--stage", required=True, help="what this run measures, e.g. T2-04-bm25")
     parser.add_argument("--split", choices=("dev", "test", "all"), help="default: dev for l012 (the slot baselines), test otherwise")
     parser.add_argument("--retriever", default="bm25-catalog", help="l1, e2e: oracle (l1 only) | bm25-catalog | bm25-record | chroma")
-    parser.add_argument("--k", type=int, default=10)
+    parser.add_argument("--k", type=int, help="default 10; ragas: 5 (tables given to the judge as contexts)")
     parser.add_argument("--tau", type=float, help="l1: fixed no-answer threshold (default: best F1 on dev)")
     parser.add_argument("--from-run", type=Path, help="l1, l3, e2e, agent: grade a past run folder instead of searching / calling the model (l1 reuses its retriever, k and tau)")
     parser.add_argument("--slot-source", choices=("gold", "pred"), default="pred", help="ablation: query_golden labels or parse_query")
@@ -120,6 +122,8 @@ def main(argv: list[str] | None = None) -> Path:
                         "(l3 default: evals.runners.multiturn_dev:build with the oracle search; e2e default: backend.app.main:build_agent)")
     parser.add_argument("--oracle", action="store_true", help="agent: grade the perfect run (self-check, all 1.000)")
     parser.add_argument("--repeat", type=int, default=1, help="agent: runs per scenario for pass^k")
+    parser.add_argument("--no-judge-cache", action="store_true", help="ragas: call the judge again (judge noise runs)")
+    parser.add_argument("--no-record", action="store_true", help="ragas: keep this run out of quality_history.jsonl (experiments)")
     settings = parser.add_argument_group("settings (argument > shell > .env > default)")
     settings.add_argument("--env-file", type=Path, default=None, help="default: <repo>/.env (skipped when KOSIS_DOTENV=off)")
     settings.add_argument("--no-env-file", action="store_true", help="do not read any .env")
@@ -129,6 +133,7 @@ def main(argv: list[str] | None = None) -> Path:
     args = parser.parse_args(argv)
     apply_settings(args)
     args.split = args.split or ("dev" if args.layer == "l012" else "test")
+    args.k = args.k or (5 if args.layer == "ragas" else 10)
 
     args.telemetry = None  # set by a task that ran live (l1 / l3 / e2e: evals.runners.agent.tracing)
     rows, summary, report = TASKS[args.layer].run(args)
@@ -146,6 +151,11 @@ def main(argv: list[str] | None = None) -> Path:
         from evals.runners.agent import link_questions
 
         link_questions(args.telemetry[0], rows, args.layer)
+    if args.layer == "ragas" and os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT"):  # scores onto each question's saved trace
+        from evals.runners.agent import link_questions, tracing
+
+        link_questions(tracing("ragas")[0], rows, "ragas", name="eval.ragas", attributes=ragas.span_attributes)
+        exported = True
     if owners := owner_section(args.layer, rows, summary):  # right under the title: the first thing a teammate reads
         head, _, rest = report.partition("\n\n")
         report = f"{head}\n\n{owners}{rest}"
@@ -167,15 +177,17 @@ def main(argv: list[str] | None = None) -> Path:
     manifest = {
         "run_id": run_id, "layer": args.layer, "stage": args.stage, "split": args.split,
         "golden": {"l0·l1": ref(args.golden), "l2": ref(args.query_golden)} if args.layer == "l012"
-        else calc_ref(args.calc_golden) if args.layer in ("l3", "e2e") else calc_ref(args.scenarios) if args.layer == "agent"
+        else calc_ref(args.calc_golden) if args.layer in ("l3", "e2e", "ragas") else calc_ref(args.scenarios) if args.layer == "agent"
         else ref(golden),
         "source_snapshot": {"tables.jsonl": sha256(TABLES)},
+        # T3-41: the alternate gold tables e2e grading and locate() read (a label change moves e2e and ragas numbers)
+        "alternates": ref(alternates.ALTERNATES) if args.layer in ("l3", "e2e") else None,
         "git": git("rev-parse", "HEAD"), "git_dirty": bool(git("status", "--porcelain")),
         "vendor_phase1": git("-C", "vendor/phase1", "rev-parse", "HEAD"),
         # phase 2 too: its search code and stage 2 prompt (e.g. v3 -> v4 at 3f76487) move L1 / L2 / e2e numbers
         "vendor_phase2": git("-C", "vendor/phase2", "rev-parse", "HEAD"),
         "retriever": args.retriever if args.layer in ("l1", "ablation", "l012") else None,
-        "top_k": args.k if args.layer in ("l1", "ablation", "l012") else None,
+        "top_k": args.k if args.layer in ("l1", "ablation", "l012", "ragas") else None,
         "slot_source": "gold,pred" if args.layer == "l012" else args.slot_source if slotted else None,
         "slots": args.slots if slotted else None,
         "from_run": str(args.from_run) if args.from_run else None,
@@ -189,6 +201,8 @@ def main(argv: list[str] | None = None) -> Path:
     (out / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
     (out / "ops.json").write_text(json.dumps(op, ensure_ascii=False, indent=2), encoding="utf-8")
     (out / "report.md").write_text(report, encoding="utf-8")
+    if args.layer == "ragas" and not args.no_record:  # T3-19: gate metrics for tests/test_quality_gate.py (CI)
+        quality.record(run_id, args.stage, summary)
     if args.llm == "mock" and live_llm:
         pass  # a mock run checks the path; its numbers stay out of the committed history
     elif args.from_run:

@@ -24,6 +24,7 @@
 | `l3` | L3 | 에이전트 그래프 한 턴, 검색은 정답 표(oracle) → `summarize_stat` 실호출 → Parquet 대조 (T3-32). **해석기·멀티쿼리 분해 LLM도 같이 돈다**(hybrid, gpt-4o-mini): 실전 1만 보는 순수 oracle이 아니라 "정답 표를 준 에이전트 한 턴"이다. 실전 1만 떼어 보려면 `INTERPRETER=rules`로 돌린다 | 데이터·HCX 키 (+ `OPENAI_API_KEY`) | **HCX 90문항** (재시도 포함 약 135회로 추정) + 해석기 호출 |
 | `e2e` | L4 | 서비스 에이전트 그래프(`build_agent`) 한 턴: 검색 → `summarize_stat` (T3-32) | 데이터·Chroma·`RERANK_CKPT`·HCX 키 | **HCX 90문항 + 2차 리랭커** |
 | `agent` | 종합 | 멀티턴 시나리오 → 에이전트 → 툴 (§6) | `--agent`·시나리오 파일 | 에이전트가 부르는 LLM |
+| `ragas` | 심판 | 저장된 e2e run의 Faithfulness·Response Relevancy·Context Precision·Recall + 코드 ID P/R, 저점 → 그래프 노드, CI 게이트 기록 (§9) | e2e run 폴더·`OPENAI_API_KEY`·`--group ragas` | 심판 약 350회 (gpt-4.1-mini, 디스크 캐시) |
 
 - L3·e2e는 `--llm mock`으로 **비용 없이 경로만** 확인할 수 있다. mock은 모델 대신 코드 템플릿이 답해서 점수가 그럴듯하게 나온다(예: L3 PASS 85/90).
   **점수로 쓰지 않는다**: 리포트에 "llm mock: 경로 확인용, 점수 아님"이 붙고, `ops_history.jsonl`에는 기록되지 않는다.
@@ -563,4 +564,71 @@ LLM 호출 = `gen_ai.operation.name == "chat"`인 span 하나. agent 리포트�
 | rerank2가 실패했나 | `chat <stage2 모델>` span 상태·`error.type` | `ChatResult.degraded=true`면 1차 순서로 답한 것 |
 
 - 테스트: `tests/test_llm_metrics.py`(세 LLM 경로의 chat span, 메트릭 합 = 원본 usage, 종료 이유·예외), `tests/test_api.py`(서비스 trace, 평가 provider와 분리).
+
+## 9. Ragas 평가 파이프라인 — 골든셋 + Ragas + pytest (T3-19, KOS-116)
+
+Ragas를 따로 돌리는 도구로 쓰지 않고 기존 계층의 하나로 둔다. 역할 분담:
+
+| 구성 | 맡는 일 |
+|---|---|
+| 골든셋 | 질문, 정답 표 ID(L1 슬롯), 필요한 사실(기간·분류) → Ragas reference를 **코드가** 만든다 |
+| e2e run | 질문 → 검색 → `summarize_stat` 한 턴의 답·순위·trace (`results.jsonl`) |
+| Ragas (`--layer ragas`) | 심판이 답 문장·검색 상위 표를 채점. 그래프·검색은 다시 돌리지 않는다 |
+| pytest | 샘플 생성·노드 귀속·게이트 로직 고정(`tests/test_evals_ragas.py`), CI 회귀 게이트(`tests/test_quality_gate.py`) |
+
+```bash
+uv sync --group embed --group ragas
+python -m evals.run_eval --layer e2e --stage <ID>-e2e                       # 또는 기존 e2e run을 그대로 쓴다
+python -m evals.run_eval --layer ragas --stage <ID>-ragas --from-run evals/reports/<e2e run>
+python -m evals.quality                                                    # 기준선 대비 (CI와 같은 비교)
+python -m evals.quality --promote evals/reports/<ragas run>                # 의도한 변화일 때만 기준선 갱신, PR에 같이 커밋
+```
+
+### 9.1 지표와 입력
+
+| 지표 | user_input | response | retrieved_contexts | reference |
+|---|---|---|---|---|
+| Faithfulness | 질문 | 답 문장 | pandas가 계산한 사실 줄(`f1: 2025 · 시도별=경기도 = 76,309 명`) + 출처 + 사용한 표 텍스트 | — |
+| Response Relevancy (`AnswerRelevancy`) | 질문 | 답 문장(출처 줄 제외) | — | — |
+| Context Precision (`ContextPrecisionWithReference`) | 질문 | — | 검색 상위 k(기본 5)개 표 텍스트, 순위대로 | 골든 → 코드 |
+| Context Recall | 질문 | — | 같음 | 같음 |
+| ID Precision@k · ID Recall@k | — | — | 상위 k개 표 ID | 정답 표 ID (코드 계산, 심판 교차 확인용) |
+
+- 표 텍스트 = 실전 2 `build_doc(record, "n2-L60")["bm25_text"]` 앞 2,000자. reference = 정답 표(대체 표 포함)의 조사명·표명 + 기간 + 필요한 분류 값(숫자·단위·합계 값 없음).
+- 거절·되묻기·오류 행은 생성 지표에서, 정답 표가 없는 문항(not_answerable·clarify)은 검색 지표에서 뺀다. 대신 **답한 문항 수**와 PASS율을 게이트에 넣어
+  "거절이 늘어 Faithfulness 평균이 오르는" 생존 편향을 막는다.
+- 심판은 생성 모델(HCX)·파이프라인 LLM(gpt-4o-mini)과 다른 `RAGAS_JUDGE_MODEL`(기본 gpt-4.1-mini), 임베딩 `RAGAS_EMBED_MODEL`(기본 text-embedding-3-small).
+  응답은 `data/cache/ragas`에 캐시되어 같은 입력 재채점은 호출 0. `--no-judge-cache`는 심판 흔들림을 잴 때만.
+- Ragas 0.4.3은 `langchain_community.chat_models.vertexai`를 import해서 그대로는 실패한다. `ragas_metrics.load_ragas()`가 빈 모듈을 넣고 import한다(버전 고정).
+
+### 9.2 노드 trace 연결
+
+- 점수 < 0.5인 지표마다 담당 노드를 정한다: 검색 지표 → `search/<정답 표를 밀어낸 검색 노드>`(`trace.lost_at`), Faithfulness →
+  `statistics/<답 문장을 쓴 실전 1 span>`(fallback_chatbot · compose_llm · template · answer_final), Response Relevancy → 정답 아닌 표로 답했으면 검색 노드, 아니면 문장 span.
+- report.md·html: 지표 × 노드 저점 수, 가장 낮은 문항 10(trace_id), 원 e2e와 같은 문항별 워터폴.
+- `OTEL_EXPORTER_OTLP_ENDPOINT`가 있으면 문항마다 `eval.ragas` span이 원래 턴 trace에 link되고 `kosis.ragas.<지표>`·`kosis.ragas.node.<지표>` 속성이 붙는다
+  (Jaeger 태그 검색 예: `kosis.ragas.node.faithfulness=statistics/fallback_chatbot`).
+
+### 9.3 CI 회귀 게이트
+
+- ragas run마다 `evals/reports/quality_history.jsonl`에 집계 한 줄(커밋). `evals/quality_baseline.json`(커밋)과 **비교 키**(골든·split·tables.jsonl hash,
+  e2e 그래프+모델, 심판·임베딩, ragas 버전, 컨텍스트 포맷, k)가 같은 기록 중 run_id가 가장 큰 것을 지표별로 비교한다. 다른 그래프·모델 실험은 키가 달라 게이트에 안 걸린다.
+- 허용폭: 심판 지표는 기준선 파일의 `tolerance`(심판 흔들림 실측) 또는 0.03, 코드 비율 지표는 2문항(2/n), 답한 수는 2.
+- CI에는 데이터·키가 없어 평가를 **실행하지 못한다**. PR이 `src/`·`backend/`·`vendor/`를 바꾸고 기록을 안 올리면 경고만 뜬다.
+
+### 9.4 대체 정답 표 (T3-41)
+
+수치 골든 문항은 대표 표 하나로 만들었지만 같은 숫자를 가진 표가 여럿이다(예: 2025년 경기도 출생아 76,309명은 `DT_1B8000H`에도 `DT_1B81A12`에도 있음).
+
+```bash
+python -m evals.builders.alternates     # data/values 전수 스캔(약 1분) → evals/datasets/calculation_alternates.jsonl, 자기검증 실패 시 exit 1
+```
+
+- 규칙(`evaluators/alternates.py`): 골든의 **모든** 셀 사실(required + aux)이 한 표 안에서 같은 기간·같은 값·같은 시도(전국 문항은 지역 없는 셀)·
+  골든 분류 라벨 또는 합계·그 밖의 분류는 합계뿐·단위 호환이고, 골든에서 한 항목인 사실은 대체 표에서도 한 항목. LLM 없음, 숫자는 골든 그대로.
+- 라벨 상태: `auto`(값이 모두 정수 ≥ 100) / `needs_review`(작은 값·비율, 우연 일치 위험) / 사람이 바꾸는 `accepted`·`rejected`(재생성해도 유지).
+  정답 표 집합(`locate()`, ragas ID 지표)은 auto·accepted만 쓴다. `self_check` 줄 = 대표 표를 규칙이 다시 찾았는지.
+- 숫자 채점: e2e 답이 대표 표가 아닌 표에서 왔고 그 표가 규칙을 만족하면, 골든 사실의 source_ref를 그 표 셀(답이 인용한 셀 우선)로 옮겨 같은 채점기로 채점한다
+  (`graded_table` 열). L3(대표 표 오라클)는 경로가 바뀌지 않는다. agent 계층은 T3-27의 값 비교(`same_values`)를 그대로 쓴다.
+- 라벨 파일 hash는 l3·e2e manifest의 `alternates`와 ragas 게이트 비교 키에 들어간다. 라벨이 바뀌면 기준선을 다시 promote한다.
 

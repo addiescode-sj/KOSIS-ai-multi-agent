@@ -417,7 +417,7 @@ def rows_table(layer: str, rows: list[dict]) -> str:
 
 LAYER_TITLES = {"l0": "L0 메타데이터", "l1": "L1 검색", "l1-gold": "L1 슬롯 필터 (정답 슬롯)", "l1-pred": "L1 슬롯 필터 (파서 슬롯)",
                 "l2": "L2 질의 이해", "ablation": "L1 슬롯 ablation", "l012": "L0 + L1 필터 + L2", "l3": "L3 계산",
-                "e2e": "L4 종단 간 (e2e)", "agent": "에이전트 (멀티턴 · 멀티쿼리)"}
+                "e2e": "L4 종단 간 (e2e)", "agent": "에이전트 (멀티턴 · 멀티쿼리)", "ragas": "Ragas 심판 지표"}
 NO_TRACE = "이 계층은 모델·그래프를 부르지 않아 trace가 없다(지연은 함수 실행 시간)."
 GUIDE = {  # layer -> how to read this page, one line per item
     "l0": ["채움률: 필터가 쓰는 메타데이터 필드가 채워진 표의 비율. 높을수록 좋다(골든 정답 표 기준이 더 중요).",
@@ -439,6 +439,10 @@ GUIDE = {  # layer -> how to read this page, one line per item
               "툴 선택: 툴 이름·순서가 정답과 정확히 같은 턴 비율. 빠진·불필요 호출은 툴별로 따로 센다.",
               "대화별 화면: 실패한 대화가 위에 펼쳐져 있다. 툴 칩에 마우스를 올리면 인자와 결과가 보인다.",
               "trace(워터폴): 턴 안의 노드(파랑)·툴(초록)·LLM 호출(주황) 시작과 길이. 빨간 테두리 = error span. --agent로 실제 실행한 run에만 있다."],
+    "ragas": ["저장된 e2e run을 다시 돌리지 않고 심판(LLM)이 채점한다. Faithfulness·Response Relevancy = 답 문장, Context Precision·Recall = 검색 상위 표.",
+              "ID Precision·Recall은 같은 검색 지표를 정답 표 ID로 코드가 계산한 값이다. LLM 값과 많이 다르면 심판을 의심한다.",
+              "저점(< 0.5) 문항은 trace의 담당 노드(search/… = 검색 그래프, statistics/… = 실전 1)로 묶는다. 문항 trace 워터폴은 원 e2e run과 같다.",
+              "CI 게이트: 이 run의 지표가 evals/quality_baseline.json보다 허용폭 넘게 떨어지면 tests/test_quality_gate.py가 실패한다."],
 }
 ROW_CAP = 200  # rows shown in the result table; problem rows first, the rest are in results.jsonl
 
@@ -501,6 +505,9 @@ def summary_tiles(layer: str, s: dict) -> str:
                  *[tile(pct(a[f]), f) for f in ("regions", "period_start", "cycle") if a.get(f) is not None]]
     elif layer in ("ablation", "l1-gold", "l1-pred") and (c := (s.get("combos") or {})):
         tiles = [tile(pct(c[k]["filter_recall"]), f"filter recall · {k}") for k in ("none", "all") if k in c]
+    elif layer == "ragas":
+        tiles = [tile("—" if v["mean"] is None else f"{v['mean']:.3f}", f"{name} (n={v['n']})")
+                 for name, v in (s.get("metrics") or {}).items() if not name.startswith("id_")]
     return f'<div class="tiles">{"".join(tiles)}</div>' if tiles else ""
 
 
@@ -699,7 +706,7 @@ def render(run: Path, questions: dict[str, str] | None = None) -> str:
         dedicated = {"l1": l1_body, "l3": l3_body, "e2e": e2e_body, "agent": agent_body}
         body = (dedicated[layer](m, rows) if layer in dedicated else summary_tiles(layer, m["summary"]) + md_html(report))
         body += failures_body(m, rows) + search_failures_body(m, rows)
-        if layer in ("l1", "l3", "e2e"):
+        if layer in ("l1", "l3", "e2e", "ragas"):
             body += traces_body(m, rows)
         ops = ops_body(m["ops"], rows, history_of(layer))
         table = rows_table(layer, rows) if layer in ("l1", "l3", "e2e") else "" if layer == "agent" else generic_rows_table(rows)

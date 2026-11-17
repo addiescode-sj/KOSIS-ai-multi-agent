@@ -12,6 +12,17 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: true # vendor/phase1, vendor/phase2 (not recursive: phase 2's own phase1 copy is not needed)
+          fetch-depth: 0 # the quality record check below diffs against the PR base
+      # T3-19: CI cannot run the evals (no data, golden sets or keys here), so the quality gate (tests/test_quality_gate.py,
+      # inside verify.sh) compares the committed ragas record with the committed baseline. Warn when a PR changes the
+      # pipeline without a new record: the gate then has nothing new to compare.
+      - name: Quality record present for pipeline changes
+        if: github.event_name == 'pull_request'
+        run: |
+          changed="$(git diff --name-only "origin/${{ github.base_ref }}...HEAD")"
+          if echo "$changed" | grep -qE '^(src/|backend/|vendor/)' && ! echo "$changed" | grep -qx 'evals/reports/quality_history.jsonl'; then
+            echo "::warning::Pipeline code changed without a new ragas record. Run e2e then 'python -m evals.run_eval --layer ragas --from-run <e2e run>' and commit evals/reports/quality_history.jsonl."
+          fi
       - uses: astral-sh/setup-uv@v6
       - uses: actions/setup-node@v4
         with:
