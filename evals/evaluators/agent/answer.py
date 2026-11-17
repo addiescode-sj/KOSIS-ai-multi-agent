@@ -1,4 +1,4 @@
-"""Answer quality of a turn (T3-36, KOS-196 · KOS-198). No LLM.
+"""Answer quality of a turn (T3-40, KOS-196 · KOS-198). No LLM.
 
 - unsupported_final_number: every number in the final answer text must be grounded in the conversation so far:
   a number of a question, a summarize_stat fact value (rounding allowed) or a digit connecting text may hold

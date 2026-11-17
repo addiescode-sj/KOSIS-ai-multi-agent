@@ -69,7 +69,7 @@ def test_unsupported_text_number_fails():
 
 
 def test_an_answer_without_its_source_is_partial():
-    """T3-36 (KOS-196): every answer cites KOSIS / survey / table; refusals are not checked."""
+    """T3-40 (KOS-196): every answer cites KOSIS / survey / table; refusals are not checked."""
     want = [Fact(id="f1", value=100.0, source_ref=REF)]
     item = calc(kind="answerable", required_facts=want)
     assert calculation.grade(item, answered(want), CELLS).verdict == "PASS"
@@ -129,7 +129,7 @@ def test_read_cells_streams_only_the_wanted_refs(tmp_path):
         Fact(id="f2", value=5.0, source_ref="DT_X|T1|11|2005", period="2005")]), parts=[])
     assert calculation.grade_refs(item, answer) == {"DT_X|T1|11|2003", "DT_X|T1|11|2005"}
     assert calculation.grade(item, answer, calculation.read_cells(path, calculation.grade_refs(item, answer)),
-                             cite=False).verdict == "PASS"  # cells only; the source check is tested apart (T3-36)
+                             cite=False).verdict == "PASS"  # cells only; the source check is tested apart (T3-40)
 
 
 def test_ops_cost_is_priced_per_model():
