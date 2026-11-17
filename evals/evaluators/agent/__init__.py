@@ -11,7 +11,8 @@ alternate-table attempt, set aside and counted in alt_attempts; T3-23):
   (evaluators.query.field_correct: lists as sets, the rest exactly). Predicted scalars are compared as text.
 - state: the table the turn ends on (state_key) vs expect.table_key. This is how "이거" / "그 표" are graded.
 - refusal: a turn refuses when a tool said so (search route "refuse", summarize_stat outcome "refused") or no tool
-  ran. missed_refusal / false_refusal as in L3.
+  ran. missed_refusal / false_refusal as in L3. With expect.refuse_parts (T3-38) each sub-question of a multi-query
+  turn is graded on its own: its search found no table or its summarize_stat refused (state.refused_parts).
 - numbers: expect.calc_qid grades the turn's last summarize_stat answer with the L3 grader as is
   (evaluators.calculation.grade against the table's Parquet cells).
 - answer (T3-36): every number in the final answer text must come from a question, a summarize_stat fact (rounding
@@ -35,12 +36,12 @@ from kosis_ai.schemas import FactPart, Refusal, Source, StatAnswer, StatResult
 
 from evals.evaluators.agent.answer import Grounds, grade_answer, grounding, missing_sources, unsupported_final_numbers
 from evals.evaluators.agent.numbers import combined_value, grade_numbers, same_values, stat_answer, stat_answers
-from evals.evaluators.agent.state import STATE_TOOLS, first_key, grade_state, refused, state_key
+from evals.evaluators.agent.state import STATE_TOOLS, first_key, grade_state, refused, refused_parts, state_key
 from evals.evaluators.agent.tools import final_calls, grade_tools
 from evals.schemas import AgentScenario, CalcItem, TurnExpect
 
 __all__ = ["ERRORS", "Grounds", "STATE_TOOLS", "aggregate", "combined_value", "final_calls", "first_key", "grade_conversation",
-           "grade_turn", "oracle_records", "oracle_stat", "refused", "same_values", "stat_answer", "stat_answers",
+           "grade_turn", "oracle_records", "oracle_stat", "refused", "refused_parts", "same_values", "stat_answer", "stat_answers",
            "missing_sources", "state_key", "unsupported_final_numbers"]
 
 ERRORS = {  # error -> what it means (report legend)
@@ -182,11 +183,24 @@ def oracle_records(scenario: AgentScenario, calc: dict[str, CalcItem]) -> list[d
         sub_qids = iter(e.calc_qids)  # T3-28: one L3 item per summarize_stat, in call order
         stat_keys = iter([c.args.get("table_key") for c in e.tools if c.name == "summarize_stat"])
         next_key = None
+        parts = e.refuse_parts
+        if parts is not None:  # T3-38: sub-question k = k-th search; refusing ones stop at search unless they have a stat
+            keys = [c.args.get("table_key") for c in e.tools if c.name == "summarize_stat"]
+            stat_parts = list(range(len(parts))) if len(keys) == len(parts) else [k for k, r in enumerate(parts) if not r]
+            part_key, searches, stat_part = dict(zip(stat_parts, keys)), iter(range(len(parts))), iter(stat_parts)
         for call in e.tools:
             args = dict(call.args)
             if call.name in STATE_TOOLS and e.table_key and "table_key" not in args:
                 args["table_key"] = e.table_key
-            if call.name == "search_tables":
+            if parts is not None and call.name == "search_tables":
+                k = next(searches)
+                result = ({"route": "found", "picked": [{"key": part_key[k] or e.table_key}]} if k in part_key
+                          else {"route": "refuse", "picked": []})
+            elif parts is not None and call.name == "summarize_stat":
+                k = next(stat_part)
+                qid = None if parts[k] else next(sub_qids, None)
+                result = {"outcome": "refused"} if parts[k] else (oracle_stat(calc[qid]) if qid else {"outcome": "answered"})
+            elif call.name == "search_tables":
                 next_key = next(stat_keys, None)  # the table of the summarize_stat this search leads to
                 key = (next_key if e.calc_qids else None) or e.table_key or args.get("table_key")
                 result: Any = {"route": "refuse", "picked": []} if e.refuse else {"route": "found", "picked": [{"key": key}]}
