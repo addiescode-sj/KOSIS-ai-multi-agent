@@ -17,7 +17,8 @@ REF = "DT_X|T1|11|2024"
 CELLS = {REF: SimpleNamespace(value=100.0)}
 CALC = {"c1": CalcItem(qid="c1", question="q", table_key="101_DT_X", table_sha256="0", kind="answerable",
                        required_facts=[Fact(id="f1", value=100.0, source_ref=REF, unit="명", period="2024")])}
-cells_of = lambda key: CELLS  # noqa: E731
+cells_of = lambda key, refs=None: CELLS  # noqa: E731
+table_of = lambda key: frozenset(c.value for c in CELLS.values())  # noqa: E731  (chart context rows, T3-37)
 
 
 def scenario(*turns, sid="s1") -> AgentScenario:
@@ -34,7 +35,7 @@ CHAT = scenario(
 
 
 def grade(s: AgentScenario, records: list[dict]) -> list[dict]:
-    return agent.grade_conversation(s, records, CALC, cells_of)
+    return agent.grade_conversation(s, records, CALC, cells_of, table_of)
 
 
 def test_oracle_self_check_is_all_ones():
@@ -190,19 +191,19 @@ def test_a_chart_number_that_is_no_fact_is_chart_data_mismatch():
     assert same_turn["chart_data_ok"] is True and same_turn["errors"] == ["extra_call"]
     empty = {**stat, "result": {"outcome": "answered"}}
     records = _oracle_with(0, calls=[search, empty])
-    no_cells = agent.grade_conversation(CHAT, records, CALC, lambda key: {})  # 100 is no fact and no cell then
+    no_cells = agent.grade_conversation(CHAT, records, CALC, cells_of, lambda key: ())  # 100: no fact, no cell then
     assert no_cells[1]["errors"] == ["chart_data_mismatch"]  # turn 0 had no facts to draw
     assert grade(CHAT, records)[1]["passed"]  # with the table read, 100 is one of its cells (context row)
 
 
 def test_context_rows_phase_1_draws_beside_the_facts_pass_when_they_are_table_data():
     """ChartPoint without fact_id: another period of the table (a cell) or a pie's rest slice (total fact - parts)."""
-    cells = {REF: SimpleNamespace(value=100.0), "DT_X|T1|11|2023": SimpleNamespace(value=80.0)}
+    table = lambda key: frozenset({100.0, 80.0})  # noqa: E731  (the 2024 cell and a 2023 cell of 101_DT_X)
     context = agent.grade_conversation(CHAT, _oracle_with(1, calls=[_chart((80.0, None), (100.0, "f1"))]), CALC,
-                                       lambda key: cells)[1]
+                                       cells_of, table)[1]
     assert context["passed"] and context["chart_context_values"] == 1
     other = agent.grade_conversation(CHAT, _oracle_with(1, calls=[_chart((77.0, None), (100.0, "f1"))]), CALC,
-                                     lambda key: cells)[1]
+                                     cells_of, table)[1]
     assert other["errors"] == ["chart_data_mismatch"]
     pie = {**_chart((60.0, "f1"), (40.0, None), kind="pie", chart_type="line"), "result": {"kind": "pie", "drawn": True,
                                                                                          "note": "fell back"}}
@@ -211,7 +212,7 @@ def test_context_rows_phase_1_draws_beside_the_facts_pass_when_they_are_table_da
     search, stat = agent.oracle_records(CHAT, CALC)[0]["calls"]
     parts = {**stat, "result": {**stat["result"], "result": {"facts": [total, part]}}}
     rows = agent.grade_conversation(CHAT, [{"calls": [search, parts], "answer": "", "error": None},
-                                           {"calls": [pie], "answer": "", "error": None}], CALC, lambda key: {})
+                                           {"calls": [pie], "answer": "", "error": None}], CALC, cells_of, lambda key: ())
     assert rows[1]["chart_data_ok"] is True and rows[1]["chart_context_values"] == 1  # 40 = 100 - 60
 
 

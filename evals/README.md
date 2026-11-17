@@ -21,7 +21,7 @@
 | `l1-graph` | L1 | 실제 LangGraph 검색 그래프 | 데이터·Chroma·`RERANK_CKPT` | 0 |
 | `ablation` | L1 | 슬롯 필터 on/off별 검색 (dev) | 데이터·Chroma | 0 |
 | `l2-v1` · `l2-v2` | L2 | 질의 파서(규칙) | 데이터 | 0 |
-| `l3` | L3 | 에이전트 그래프 한 턴, 검색은 정답 표(oracle) → `summarize_stat` 실호출 → Parquet 대조 (T3-32) | 데이터·HCX 키 | **HCX 90문항** (재시도 포함 약 135회로 추정) |
+| `l3` | L3 | 에이전트 그래프 한 턴, 검색은 정답 표(oracle) → `summarize_stat` 실호출 → Parquet 대조 (T3-32). **해석기·멀티쿼리 분해 LLM도 같이 돈다**(hybrid, gpt-4o-mini): 실전 1만 보는 순수 oracle이 아니라 "정답 표를 준 에이전트 한 턴"이다. 실전 1만 떼어 보려면 `INTERPRETER=rules`로 돌린다 | 데이터·HCX 키 (+ `OPENAI_API_KEY`) | **HCX 90문항** (재시도 포함 약 135회로 추정) + 해석기 호출 |
 | `e2e` | L4 | 서비스 에이전트 그래프(`build_agent`) 한 턴: 검색 → `summarize_stat` (T3-32) | 데이터·Chroma·`RERANK_CKPT`·HCX 키 | **HCX 90문항 + 2차 리랭커** |
 | `agent` | 종합 | 멀티턴 시나리오 → 에이전트 → 툴 (§6) | `--agent`·시나리오 파일 | 에이전트가 부르는 LLM |
 
@@ -102,6 +102,7 @@ uv run python -m evals.run_eval --layer l3 --llm mock --stage $S-l3-mock        
 uv run python -m evals.run_eval --layer l3 --interval 5 --stage $S-l3                                 # HCX
 uv run python -m evals.run_eval --layer l3 --from-run <과거 L3 run 폴더> --stage $S-l3-regrade        # 저장된 답 재채점, 호출 0
 uv run python -m evals.run_eval --layer e2e --interval 5 --stage $S-e2e                               # 서비스 그래프, 검색 설정 = .env
+uv run python -m evals.run_eval --layer e2e --from-run <과거 e2e run 폴더> --stage $S-e2e-regrade      # 저장된 답·검색 순위 재채점, 호출 0 (T3-35)
 uv run python -m evals.run_eval --layer agent --oracle --scenarios <시나리오.jsonl> --split all --stage $S-agent-oracle   # 채점기 자기검증
 ```
 
@@ -111,7 +112,8 @@ L1 프리셋(`retrieval.STAGED`): `hybrid` · `hybrid+cond` · `staged` · `clov
 ### 0.6 결과 읽기
 
 - run 폴더: `report.html`(맨 위 읽는 법 → 결과 → 실패 단계·trace → 운영 지표·추이 → 행별 결과), `report.md`, `results.jsonl`(질문 원문 포함, git에 안 올림), `manifest.json`(조건·해시), `ops.json`.
-- 운영 지표: 지연 p50·p95, 입력·출력 토큰, 비용(`evals/pricing.json` 단가), 실패율. 실행 간 추이는 `ops_history.jsonl`(집계만, 커밋함).
+- 운영 지표: 지연 p50·p95, 입력·출력 토큰, 비용(`evals/pricing.json` 단가 × 모델별 토큰, T3-35), 실패율. 실행 간 추이는 `ops_history.jsonl`(집계만, 커밋함).
+  T3-35 이전 run은 행에 모델 이름이 `HCX-DASH-002,gpt-4o-mini`처럼 합쳐 있고 토큰이 모델별로 없어 단가를 채워도 비용이 나오지 않는다(`--from-run` 재채점도 그 행을 그대로 복사).
 - trace: l1·l3·e2e는 문항별 span 경로 + **trace 카드**(span 이름별 횟수·지연 p50·p95·비중 표, 문항별 워터폴 60건까지·문제 문항 먼저, T3-32), agent는 턴별 span 워터폴. `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317`과 `docker compose --profile obs up -d jaeger`면 Jaeger 링크가 생긴다(아래 "Jaeger로 보기").
 - 스위트: `suite.html`의 비교 표에서 차이(이번 − 기준)를 본다. "무엇을 바꿔서 몇 → 몇"은 이 표에서 뽑는다.
 
@@ -154,6 +156,13 @@ uv run python -m evals.run_eval --layer e2e --agent <module:function> --stage <�
 - 검색 gate가 거절한 질문은 실전 1까지 가지 않는다. 그 거절(`out_of_scope`·`no_item`)을 실전 1 거절처럼 채점한다.
 - `--llm mock`은 실전 1 mock·stage 2 끔·해석기 규칙으로 바꿔 어떤 모델도 부르지 않는다(`.env`가 `STAGE2=hcx`여도).
 - T3-32 이전 l3·e2e run과 수치를 비교하지 않는다(계층 정의가 바뀜). l3는 같은 mock 입력에서 판정·답이 90/90 같았다(`plans/T3-32.md`).
+- **재채점** (T3-35): `--from-run <run 폴더>`는 l3·e2e 모두 그 run의 `results.jsonl`(답·검색 순위·span)을 다시 채점한다. 채점 규칙을 고친 뒤 HCX를 다시 부르지 않고 전→후를 잰다.
+  T3-32 이전 형식(`question_id`·`stat_answer`, 실전 1 하네스)도 읽는다. T3-35 이전 e2e run은 상위 5개 순위(`top_keys`)만 저장돼 정답 순위가 5 밖이면 "밖"으로 나온다. 재채점은 `ops_history.jsonl`에 쓰지 않는다.
+- **정답 표 판정** (§6.3, e2e): 수치 골든 문항과 같은 질문의 검색 골든 항목을 qid → `phase1_id` → 질문 원문 순으로 찾아, 그 정답 슬롯의 표 **전부**를 정답 표로 본다.
+  실전 1 골든(v1, `S-*`)은 qid가 달라 T3-35 전에는 연결이 0이었다(리포트 "L1 정답 슬롯과 연결된 문항"). 지금은 검색 골든이 실전 1 질문을 가져온 10문항이 연결된다(대체 표가 있는 문항 5).
+  다른 정답 표로 맞게 답하면 `right_alternate`로 세고 검색 성공이다. 연결 안 된 문항은 여전히 L3 대표 표만 정답이다 → 검색 골든에 `phase1_id`를 더 달면 연결이 늘어난다.
+- **큰 표** (T3-35): 채점기는 표 전체가 아니라 골든 사실과 답의 셀(`calculation.grade_refs`)만 Parquet에서 스트리밍으로 읽는다(`read_cells(path, refs)`).
+  10 MB 표 하나가 4 GB·70초였던 것이 25 MB 표에서 0.4 GB·1.2초. 10 MB 넘는 표 7개(29문항)를 빼던 이유가 없어졌다. 실전 2의 초대형 표 청킹(KOS-179)은 Chroma 색인 쪽이라 이것과 무관하다.
 
 ```bash
 ```
@@ -360,7 +369,8 @@ uv run python -m evals.run_eval --layer agent --stage <이름> --agent <module:f
 uv run python -m evals.run_eval --layer agent --stage <이름> --from-run evals/reports/<run>          # 과거 실행 재채점
 ```
 
-**멀티턴 dev 시나리오 (T3-27, `plans/T3-27.md`)**: T3-05 정식 평가셋 전까지 쓰는 dev 세트다. `calculation_golden`의 같은 표 문항을 이어 붙여 6유형(R 지시어 · E 생략 이월 · X 정정 · S 주제 전환 · C 차트 후속 · M 한 턴 여러 요청)을 코드로 만든다. E·X의 정답은 원천 문항의 셀 키에서 지역 코드·연도만 바꿔 Parquet에서 읽는다(합성 정답, 셀이 없거나 기호면 만들지 않음).
+**멀티턴 dev 시나리오 (T3-27, `plans/T3-27.md`)**: T3-05 정식 평가셋 전까지 쓰는 dev 세트다. 빌더가 만드는 시나리오는 **전부 `split=dev`**다(T3-35):
+표현이 빌더 템플릿이고 해석 규칙을 이 세트로 고쳤으므로 held-out이 아니다(그전에는 검색 골든의 test split을 물려받아 50개가 test로 보였다). 아키텍처 비교(T3-07~10)의 test는 사람이 쓴 T3-05 파일만 쓴다. `calculation_golden`의 같은 표 문항을 이어 붙여 6유형(R 지시어 · E 생략 이월 · X 정정 · S 주제 전환 · C 차트 후속 · M 한 턴 여러 요청)을 코드로 만든다. E·X의 정답은 원천 문항의 셀 키에서 지역 코드·연도만 바꿔 Parquet에서 읽는다(합성 정답, 셀이 없거나 기호면 만들지 않음).
 
 ```bash
 uv run python -m evals.builders.multiturn     # → agent_scenarios_multiturn_dev(_structure).jsonl, calculation_golden_multiturn.jsonl
@@ -405,7 +415,7 @@ uv run python -m evals.run_eval --layer agent --stage <이름> --split dev --age
 
 | 지표 | 정의 | 채점 |
 |---|---|---|
-| 툴 선택 정확도 | 부른 툴 이름 순서 == 정답 순서인 턴의 비율 | 결정적 |
+| 툴 선택 정확도 | 부른 툴 이름 순서 == 정답 순서인 턴의 비율. **지금 메인 흐름(결정적 워크플로)에서는 코드가 순서를 정하므로 이 값과 툴 순서 일치는 거의 1.000 고정이다** — 해석(상태·인자)·수치가 실제 신호이고, 툴 선택은 LLM이 툴을 고르는 변형(T3-07~09)에서 값이 생긴다 | 결정적 |
 | 툴 순서 일치 | 정답 툴이 그 순서대로 나타난 턴의 비율 (불필요 호출 허용) | 결정적 |
 | 빠진 호출 · 불필요 호출 | 툴별 개수 (정답과 실제 호출의 다중집합 차) | 결정적 |
 | 파라미터 정확도 | 정답 인자 필드(`table_key`·`period_start`·`period_end`·`regions`·`dimensions`·`chart_type`)별 일치 비율. 같은 툴의 k번째 호출과 비교, L2 규칙(`query.field_correct`: 목록은 집합, 나머지는 문자열 일치) | 결정적 |
@@ -419,7 +429,7 @@ uv run python -m evals.run_eval --layer agent --stage <이름> --split dev --age
 | 턴 통과율 | 오류가 하나도 없는 턴의 비율 | 결정적 |
 | 대화 성공률 | 모든 턴이 통과한 대화(실행)의 비율. 리포트에 처음 실패한 턴 분포 | 결정적 |
 | pass^k | `--repeat k`번 모두 성공한 시나리오의 비율 | 결정적 |
-| 요청당 비용·지연 | 턴 = 요청 1건. `ops.json`의 p50·p95 지연, LLM 호출 수, 토큰, 비용 (`ops_history.jsonl`에 누적) | 결정적 |
+| 요청당 비용·지연 | 턴 = 요청 1건. `ops.json`의 p50·p95 지연, LLM 호출 수, 토큰, 비용 (`ops_history.jsonl`에 누적). 비용은 턴의 **모델별 토큰**(`tokens_by_model`: 해석기 gpt-4o-mini + 실전 1 HCX + rerank2)에 `evals/pricing.json` 단가를 모델마다 곱한다(T3-35). 단가 없는 모델이 하나라도 있거나 통화가 섞이면 합계는 없음으로 두고 모델별 토큰만 보인다. HCX 단가(KRW)는 아직 null → 팀이 채운다 | 결정적 |
 
 턴 오류: `run_failure` 실행 실패 · `missing_call` · `extra_call` · `wrong_order` · `wrong_args` · `lost_state`(지시어·조건 이월 실패 포함) · `missed_refusal` · `false_refusal`
 (거절 = 검색 `route` `refuse` 또는 `summarize_stat` `outcome` `refused`, 또는 툴을 하나도 안 부름) · `wrong_numbers` · `unsupported_final_number` ·

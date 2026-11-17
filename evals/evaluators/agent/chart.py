@@ -18,13 +18,14 @@ here the way the tool draws it (kosis_chat.chart.vega.to_vega with the drawn kin
 from __future__ import annotations
 
 import math
-from typing import Callable
+from functools import lru_cache
+from typing import Callable, Iterable
 
 from kosis_ai.schemas import ChartSpec
 from kosis_chat.chart.vega import to_vega
 
 from evals.evaluators.agent.numbers import stat_answers
-from evals.schemas import TurnExpect
+from evals.schemas import ROOT, TurnExpect
 
 # phase 1 ChartSpec.kind -> the chart family a user names (kosis_ai.schemas.ChartKind; kosis_agent phase1_kind)
 FAMILY = {"bar": "bar", "timeline": "bar", "grouped_bar": "bar", "line": "line", "multi_line": "line", "pie": "pie"}
@@ -78,19 +79,36 @@ def _among(value: float, pool) -> bool:
     return any(math.isclose(value, p, rel_tol=1e-9, abs_tol=1e-9) for p in pool)
 
 
-def table_values(key: str | None, cells_of: Callable[[str], dict] | None) -> list[float]:
-    """Every number of the chart's table (its Parquet cells); [] when the table cannot be read."""
-    if not key or cells_of is None:
-        return []
+@lru_cache(maxsize=32)
+def table_numbers(key: str) -> frozenset[float]:
+    """Every number of a table: its Parquet `value` column only (cheap even for large tables, T3-35), {} when the
+    file cannot be read."""
+    import pyarrow.parquet as pq
+
     try:
-        cells = cells_of(key)
+        column = pq.read_table(ROOT / "data" / "values" / f"{key}.parquet", columns=["value"]).column("value")
+    except (OSError, KeyError, ValueError):
+        return frozenset()
+    return frozenset(v for v in column.drop_null().to_pylist() if isinstance(v, (int, float)))
+
+
+def table_values(key: str | None, values_of: Callable[[str], Iterable[float]] | None) -> Iterable[float]:
+    if not key or values_of is None:
+        return ()
+    try:
+        return values_of(key)
     except (OSError, ValueError):
-        return []
-    return [c.value for c in cells.values() if getattr(c, "value", None) is not None]
+        return ()
 
 
-def unmatched_values(vega: dict, key: str | None, facts: list[float], cells_of: Callable[[str], dict] | None
-                     ) -> tuple[list[float], int]:
+def _in_table(value: float, numbers: Iterable[float]) -> bool:
+    if isinstance(numbers, (set, frozenset)) and value in numbers:  # exact hit without a scan
+        return True
+    return _among(value, numbers)
+
+
+def unmatched_values(vega: dict, key: str | None, facts: list[float],
+                     values_of: Callable[[str], Iterable[float]] | None) -> tuple[list[float], int]:
     """(drawn numbers that are not data, numbers drawn as context). A drawn number is data when it is a fact value;
     phase 1 also draws context that is not a fact (ChartPoint without fact_id: the other periods of a series, the
     other candidates of a ranking = cells of the same table, and a pie's rest slice = the total fact minus the
@@ -100,17 +118,17 @@ def unmatched_values(vega: dict, key: str | None, facts: list[float], cells_of: 
     others = [v for v in values if not _among(v, facts)]
     if not others:
         return [], 0
-    cells = table_values(key, cells_of)
     pie = any("theta" in (enc or {}) for enc in [vega.get("encoding"), *[l.get("encoding") for l in vega.get("layer") or []]])
     rest_ok = pie and _among(sum(values), facts)  # the slices add up to a total fact
-    unmatched = [v for v in others if not _among(v, cells) and not rest_ok]
+    numbers = table_values(key, values_of) if not rest_ok else ()
+    unmatched = [v for v in others if not rest_ok and not _in_table(v, numbers)]
     return unmatched, len(others) - len(unmatched)
 
 
 def grade_chart(expect: TurnExpect, calls: list[dict], facts: list[float],
-                cells_of: Callable[[str], dict] | None = None) -> tuple[dict, list[str]]:
+                values_of: Callable[[str], Iterable[float]] | None = None) -> tuple[dict, list[str]]:
     """facts = the fact values a chart of this turn may draw (turn_values of this turn, else the latest turn's);
-    cells_of(table_key) = the table's Parquet cells, for the context rows phase 1 draws beside the facts."""
+    values_of(table_key) = every number of the table, for the context rows phase 1 draws beside the facts."""
     charts = [c for c in calls if c["name"] == "make_chart"]
     checked, unmatched, context = False, [], 0
     for call in charts:
@@ -118,7 +136,7 @@ def grade_chart(expect: TurnExpect, calls: list[dict], facts: list[float],
         if not vega or not drawn_values(vega):
             continue
         checked = True
-        bad, ctx = unmatched_values(vega, (call.get("args") or {}).get("table_key"), facts, cells_of)
+        bad, ctx = unmatched_values(vega, (call.get("args") or {}).get("table_key"), facts, values_of)
         unmatched += bad
         context += ctx
     kind = drawn_family(charts[-1]) if charts else None

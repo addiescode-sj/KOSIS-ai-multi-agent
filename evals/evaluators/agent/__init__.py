@@ -30,12 +30,12 @@ chart choice, T3-37), answer.py (answer quality: unsupported numbers). grade_tur
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 
 from kosis_ai.schemas import ChartPoint, ChartSeries, ChartSpec, Fact, FactPart, Refusal, Source, StatAnswer, StatResult
 
 from evals.evaluators.agent.answer import grade_answer, grounding, unsupported_final_numbers
-from evals.evaluators.agent.chart import grade_chart, turn_values
+from evals.evaluators.agent.chart import grade_chart, table_numbers, turn_values
 from evals.evaluators.agent.numbers import combined_value, grade_numbers, same_values, stat_answer, stat_answers
 from evals.evaluators.agent.state import STATE_TOOLS, first_key, grade_state, refused, state_key
 from evals.evaluators.agent.tools import final_calls, grade_tools
@@ -65,19 +65,21 @@ TASK_METRICS = ("n_turns", "n_conversations", "conversation_success", "pass^k", 
                 "chart_turn_pass", "n_chart_turns", "auto_chart_agreement", "n_auto_chart")
 
 
-def grade_turn(expect: TurnExpect, record: dict, calc: dict[str, CalcItem], cells_of: Callable[[str], dict],
-               grounded: set[str], facts: list[Fact], chart_facts: list[float] | None = None) -> dict:
+def grade_turn(expect: TurnExpect, record: dict, calc: dict[str, CalcItem], cells_of: Callable[[str, frozenset[str]], dict],
+               grounded: set[str], facts: list[Fact], chart_facts: list[float] | None = None,
+               values_of: Callable[[str], Iterable[float]] = table_numbers) -> dict:
     """One turn's metrics and errors. grounded / facts = numbers and facts of the conversation so far (this turn's
     question and tool results included). chart_facts = the fact values this turn's charts may draw (default: this
-    turn's summarize_stat answers). Graded on final_calls: alternate-table attempts are set aside and counted in
-    alt_attempts, not as errors."""
+    turn's summarize_stat answers); values_of(table_key) = every number of a table, for the context rows phase 1
+    draws beside the facts (default: the Parquet value column). Graded on final_calls: alternate-table attempts are
+    set aside and counted in alt_attempts, not as errors."""
     every = record.get("calls") or []
     calls = final_calls(every)
     tools, tool_errors = grade_tools(expect, calls)
     state, state_errors = grade_state(expect, calls)
     numbers, number_errors = grade_numbers(expect, record, calls, state["state_key"], calc, cells_of)
     chart, chart_errors = grade_chart(expect, calls, chart_facts if chart_facts is not None else turn_values(calls) or [],
-                                      cells_of)
+                                      values_of)
     answer, answer_errors = grade_answer(record, grounded, facts)
     errors = (["run_failure"] * bool(record.get("error")) + tool_errors + state_errors + number_errors + chart_errors
               + answer_errors)
@@ -86,9 +88,11 @@ def grade_turn(expect: TurnExpect, record: dict, calc: dict[str, CalcItem], cell
 
 
 def grade_conversation(scenario: AgentScenario, records: list[dict], calc: dict[str, CalcItem],
-                       cells_of: Callable[[str], dict]) -> list[dict]:
+                       cells_of: Callable[[str, frozenset[str]], dict],
+                       values_of: Callable[[str], Iterable[float]] = table_numbers) -> list[dict]:
     """Graded rows, one per scenario turn, for one run of the scenario (records in turn order; a missing turn —
-    the run stopped — is a run_failure). Each row keeps its record (the transcript) for --from-run."""
+    the run stopped — is a run_failure). Each row keeps its record (the transcript) for --from-run.
+    values_of: every number of a table (chart context rows, T3-37; see grade_turn)."""
     grounded: set[str] = set()
     facts: list[Fact] = []
     latest: list[float] = []  # fact values of the latest turn that called summarize_stat (a chart-only turn draws them)
@@ -100,7 +104,7 @@ def grade_conversation(scenario: AgentScenario, records: list[dict], calc: dict[
         facts += new_facts
         own = turn_values(final_calls(record.get("calls") or []))
         latest = own if own is not None else latest
-        g = grade_turn(turn.expect, record, calc, cells_of, grounded, facts, latest)
+        g = grade_turn(turn.expect, record, calc, cells_of, grounded, facts, latest, values_of)
         rows.append({**record, "sid": scenario.sid, "split": scenario.split, "turn": i, "question": turn.question, **g})
     return rows
 
