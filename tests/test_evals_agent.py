@@ -429,21 +429,83 @@ def _answer_from(key: str, value: float) -> dict:
         "source": {"org_id": "101", "tbl_id": key.split("_", 1)[1], "survey_nm": "조사", "tbl_nm": "표"}}}
 
 
-def test_an_alternate_gold_table_with_the_same_values_passes_and_is_counted_apart():
-    """T3-27: live search ends on another L1 gold table; the same numbers pass (via_alternate), other numbers fail."""
+ALT_REF = "DT_ALT|T9|11|2024"
+ALT_CELLS = {**CELLS, ALT_REF: SimpleNamespace(value=100.0)}
+alt_cells_of = lambda key, refs=None: ALT_CELLS  # noqa: E731
+
+
+def holds_golden(*keys):
+    """An alternate judgement for tests (the real one reads Parquet, evaluators.alternates): `keys` hold every golden
+    cell of c1 at ALT_REF-shaped refs; other tables do not."""
+    def alternate_of(item, key, cited):
+        if key not in keys:
+            return None
+        ref = f"{key.split('_', 1)[1]}|T9|11|2024"
+        return item.model_copy(update={"table_key": key, "required_facts": [f.model_copy(update={"source_ref": ref})
+                                                                          for f in item.required_facts]})
+    return alternate_of
+
+
+def test_an_alternate_gold_table_is_graded_on_its_own_cells_and_counted_apart():
+    """T3-42 (was T3-27 same_values): an answer from a table holding the golden values is graded against that table's
+    cells; a wrong number there still fails; a table that is no alternate fails state, arguments and numbers."""
     s = _alt_scenario()
     search = {"name": "search_tables", "args": {}, "result": {"route": "found", "picked": [{"key": "101_DT_ALT"}]}}
-    (same,) = agent.grade_conversation(s, [{"calls": [search, _answer_from("101_DT_ALT", 100.0)],
-                                            "answer": f"100명 {ALT_CITE}", "error": None}], CALC, cells_of)
+    run = lambda value, key="101_DT_ALT": agent.grade_conversation(  # noqa: E731
+        s, [{"calls": [search, _answer_from(key, value)], "answer": f"{value:g}명 {ALT_CITE}", "error": None}],
+        CALC, alt_cells_of, alternate_of=holds_golden("101_DT_ALT"))[0]
+    same = run(100.0)
     assert same["passed"], same["errors"]
-    assert same["state_ok"] and same["calc"]["via_alternate"] and same["calc"]["l3"] != "PASS"
+    assert same["state_ok"] and same["calc"]["via_alternate"] and same["calc"]["graded_table"] == "101_DT_ALT"
     assert agent.aggregate([same])["numeric_pass_via_alternate"] == 1
-    (other,) = agent.grade_conversation(s, [{"calls": [search, _answer_from("101_DT_ALT", 90.0)],
-                                             "answer": f"90명 {ALT_CITE}", "error": None}], CALC, cells_of)
-    assert other["state_ok"] and "wrong_numbers" in other["errors"]
-    (outside,) = agent.grade_conversation(s, [{"calls": [search, _answer_from("101_DT_ZZZ", 100.0)],
-                                               "answer": f"100명 {ALT_CITE}", "error": None}], CALC, cells_of)
-    assert "lost_state" in outside["errors"] and "wrong_args" in outside["errors"]
+    other = run(90.0)
+    assert other["state_ok"] and "wrong_numbers" in other["errors"] and not other["calc"]["via_alternate"]
+    outside = run(100.0, "101_DT_ZZZ")  # equal value, but the table does not hold the golden cells: same_values passed it
+    assert {"lost_state", "wrong_args", "wrong_numbers"} <= set(outside["errors"])
+
+
+def test_a_value_alternate_counts_for_state_and_carries_to_the_next_turn():
+    """T3-42: a table outside the scenario's alt_table_keys that the T3-41 rule accepts is right for state and tool
+    arguments, and stays right on a later turn that expects the same table without a calc_qid ("그 표로 그려줘")."""
+    s = AgentScenario.model_validate({"sid": "s1", "turns": [
+        {"question": "2024년 서울 출생아 수", "expect": {"tools": [SEARCH, {"name": "summarize_stat", "args": {"table_key": "101_DT_X"}}],
+                                                   "table_key": "101_DT_X", "calc_qid": "c1"}},
+        {"question": "그 표로 그려줘", "expect": {"tools": [{"name": "make_chart", "args": {"table_key": "101_DT_X"}}],
+                                             "table_key": "101_DT_X"}}]})
+    chart = {"name": "make_chart", "status": "ok", "args": {"table_key": "101_DT_NEW"}, "result": {"table_key": "101_DT_NEW"}}
+    records = [{"calls": [SEARCH, _answer_from("101_DT_NEW", 100.0)], "answer": f"100명 {ALT_CITE}", "error": None},
+               {"calls": [chart], "answer": "", "error": None}]
+    cells = lambda key, refs=None: {**CELLS, "DT_NEW|T9|11|2024": SimpleNamespace(value=100.0)}  # noqa: E731
+    first, second = agent.grade_conversation(s, records, CALC, cells, alternate_of=holds_golden("101_DT_NEW"))
+    assert first["value_alternates"] == ["101_DT_NEW"] and first["state_ok"] and "wrong_args" not in first["errors"]
+    assert second["value_alternates"] == ["101_DT_NEW"] and second["state_ok"]
+    first, second = agent.grade_conversation(s, records, CALC, cells, alternate_of=holds_golden())
+    assert not first["state_ok"] and not second["state_ok"]  # without the rule both turns lose the state
+
+
+def test_numbers_are_graded_on_the_table_the_facts_came_from():
+    """T3-42: the call may name an alternate table while its answer cites the golden table (the oracle on an L1
+    alternate turn): the answer's source decides, so the golden cells grade it (oracle self-check stays 1.000)."""
+    from evals.evaluators.agent.numbers import table_key
+
+    call = {**_answer_from("101_DT_X", 100.0), "args": {"table_key": "101_DT_ALT"}}
+    call["result"]["result"]["facts"][0]["source_ref"] = REF
+    assert table_key(call) == "101_DT_X" and table_key({"args": {"table_key": "101_DT_ALT"}}) == "101_DT_ALT"
+    (row,) = agent.grade_conversation(_alt_scenario(), [{"calls": [SEARCH, call], "answer": f"100명 {ALT_CITE}", "error": None}],
+                                      CALC, alt_cells_of, alternate_of=holds_golden("101_DT_ALT"))
+    assert row["calc"]["verdict"] == "PASS" and "graded_table" not in row["calc"]
+
+
+def test_multi_query_sub_answers_need_an_alternate_table_too():
+    """T3-42: a sub-answer (calc_qids) with the golden value from a table that is no alternate used to pass on the
+    value alone (same_values, no table check); now it passes only from the golden table or an alternate."""
+    s = AgentScenario.model_validate({"sid": "MQ-1", "turns": [{"question": "q", "expect": {
+        "tools": [SEARCH, {"name": "summarize_stat", "args": {}}], "calc_qids": ["c1"]}}]})
+    rec = lambda key: [{"calls": [SEARCH, _answer_from(key, 100.0)], "answer": f"100명 {ALT_CITE}", "error": None}]  # noqa: E731
+    (no,) = agent.grade_conversation(s, rec("101_DT_ZZZ"), CALC, alt_cells_of, alternate_of=holds_golden("101_DT_ALT"))
+    assert no["sub_calc"][0]["verdict"] != "PASS" and "wrong_numbers" in no["errors"]
+    (yes,) = agent.grade_conversation(s, rec("101_DT_ALT"), CALC, alt_cells_of, alternate_of=holds_golden("101_DT_ALT"))
+    assert yes["sub_calc"][0]["verdict"] == "PASS" and yes["sub_calc"][0]["via_alternate"]
 
 
 def test_layer_agent_by_task_over_several_scenario_files(tmp_path):
