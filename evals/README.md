@@ -398,6 +398,12 @@ uv run python -m evals.run_eval --layer agent --stage <이름> --split dev --age
 - 시나리오: `evals/datasets/agent_scenarios.jsonl` (T3-05, `--scenarios`로 바꿈). 계약은 `evals/schemas.py`의 `AgentScenario`.
   턴마다 `expect`에 부를 툴(순서대로, 채점할 인자 필드만), 턴이 끝날 표(`table_key`), 거절 여부(`refuse`), L3 문항(`calc_qid`)을 적는다.
   한 턴에 여러 요청("찾아서, 계산해서, 그려줘")은 `tools`에 여러 개를 적고, "이거"·"그 표"는 다음 턴의 `table_key`로 채점된다.
+  **부분 거절 (T3-38, KOS-199)**: 멀티쿼리 턴("A 그리고 B")에서 하위 질문 일부만 자료가 없으면 `refuse_parts`(하위 질문 순서의 bool 목록, 예: `[false, true]`)를 적는다.
+  k번째 하위 질문 = k번째 `search_tables`. 그 하위 질문의 거절 = 검색이 표를 못 찾음(그래프는 그 하위 질문의 `summarize_stat`을 부르지 않음) 또는 그 `summarize_stat`이 `refused`.
+  틀린 하위 질문마다 `missed_refusal`/`false_refusal` 하나, 행의 `refusal_errors`에 하위 질문 번호(`part`)가 남는다. 턴이 나뉘지 않았거나(검색 수 ≠ 하위 질문 수) 같은 표로 되돌려 원문 한 번 물었으면 하위 질문마다 턴 전체 거절 여부를 쓴다.
+  이때 `calc_qids`는 답하는 하위 질문(false)에만 순서대로 붙는다. `refuse_parts`가 없으면 지금 규칙(턴 전체 `refuse`) 그대로다.
+  한계: 하위 질문 1이 실전 1에서 거절되고 바로 다른 표로 하위 질문 2를 물으면 `final_calls`가 1을 대체 표 시도로 접는다(T3-23 규칙). 빌더 R 유형은 답하는 하위 질문을 앞에 둔다.
+  빌더: `python -m evals.builders.multiquery` → `agent_scenarios_multiquery_dev_refusal.jsonl`(R: 답할 수 있는 문항 + `not_answerable` 문항, 20개. 기존 B·K·N·P 파일은 바이트 그대로).
   `summarize_stat`의 인자는 `question`·`table_key`와 조건 4개(`period_start`·`period_end`·`regions`·`dimensions`)다. 조건 이름은 L2 라벨(`QueryItem`)·실전 2 `ParsedQuery`와 같으므로, 시나리오 `args`에는 L2 라벨 값을 그대로 적으면 된다. 지금 워크플로 그래프는 실전 2 `parse_query`로 조건을 채운다(`src/kosis_agent/graph/main_graph.py`).
 - 실행 기록: 턴마다 그래프를 `thread_id = <sid>#<run>`으로 `invoke`하고, 실행 중 열린 OTel span(`kosis_agent.observability.tracing.LiveSpans`)에서 툴 이름·인자·결과·지연·LLM 호출·토큰을 읽는다.
   span 이름·속성은 OTel GenAI 규약 그대로다: `invoke_agent`(`gen_ai.conversation.id`, `kosis.turn.index`, 턴 종료 이유 `kosis.outcome` 등) · `execute_tool <name>`(`gen_ai.tool.name`, `gen_ai.tool.call.arguments`·`.result`) · LLM 호출(`gen_ai.operation.name=chat`, `gen_ai.request.model`, `gen_ai.usage.input_tokens`·`output_tokens`). 읽는 법은 §8.
@@ -417,14 +423,14 @@ uv run python -m evals.run_eval --layer agent --stage <이름> --split dev --age
 | 턴 통과율 | 오류가 하나도 없는 턴의 비율 | 결정적 |
 | 대화 성공률 | 모든 턴이 통과한 대화(실행)의 비율. 리포트에 처음 실패한 턴 분포 | 결정적 |
 | pass^k | `--repeat k`번 모두 성공한 시나리오의 비율 | 결정적 |
-| 요청당 비용·지연 | 턴 = 요청 1건. `ops.json`의 p50·p95 지연, LLM 호출 수, 토큰, 비용 (`ops_history.jsonl`에 누적). 비용은 턴의 **모델별 토큰**(`tokens_by_model`: 해석기 gpt-4o-mini + 실전 1 HCX + rerank2)에 `evals/pricing.json` 단가를 모델마다 곱한다(T3-39). 단가 없는 모델이 하나라도 있거나 통화가 섞이면 합계는 없음으로 두고 모델별 토큰만 보인다. HCX 단가(KRW)는 아직 null → 팀이 채운다 | 결정적 |
+| 요청당 비용·지연 | 턴 = 요청 1건. `ops.json`의 p50·p95 지연, LLM 호출 수, 토큰, 비용 (`ops_history.jsonl`에 누적). 비용은 턴의 **모델별 토큰**(`tokens_by_model`: 해석기 gpt-4o-mini + 실전 1 HCX + rerank2)에 `evals/pricing.json` 단가를 모델마다 곱한다(T3-39). 단가 없는 모델이 하나라도 있거나 통화가 섞이면 합계는 없음으로 두고 모델별 토큰만 보인다. HCX 단가(KRW)는 아직 null: 공식 가격표(ncloud.com CLOVA Studio `#pricing`)가 스크립트로 그려져 자동으로 읽지 못했다(T3-38, 출처는 `pricing.json` `_note`). 브라우저로 확인해 `_source`와 함께 채운다. Gemma(자체 호스팅)는 0원 vs GPU 시간 환산을 팀이 정할 때까지 null | 결정적 |
 
 턴 오류: `run_failure` 실행 실패 · `missing_call` · `extra_call` · `wrong_order` · `wrong_args` · `lost_state`(지시어·조건 이월 실패 포함) · `missed_refusal` · `false_refusal`
-(거절 = 검색 `route` `refuse` 또는 `summarize_stat` `outcome` `refused`, 또는 툴을 하나도 안 부름) · `wrong_numbers` · `unsupported_final_number` · `missing_source`.
+(거절 = 검색 `route` `refuse` 또는 `summarize_stat` `outcome` `refused`, 또는 툴을 하나도 안 부름. `refuse_parts`가 있으면 하위 질문마다) · `wrong_numbers` · `unsupported_final_number` · `missing_source`.
 에이전트 계층의 `wrong_numbers`(L3 채점)는 출처 검사를 끄고(`grade(..., cite=False)`) 최종 답의 출처는 `missing_source`로 따로 센다. 예외가 난 실행은 거기서 멈추고 남은 턴은 `run_failure`다.
 
 - LLM 호출·토큰 (T3-31부터): 해석기·멀티쿼리(LangChain), 실전 1 HCX 단계, 실전 2 rerank2를 모두 센다(§8.3). T3-31 이전 agent run은 해석기 호출만 세었으므로 `ops_history.jsonl`에서 그 전후의 토큰·비용을 비교하지 않는다.
-- 테스트: `tests/test_evals_agent.py` (oracle 1.000, 빠진·불필요 호출, 인자 불일치, 멀티턴 중간 실패와 pass^k, 거절, L3 연결·근거 없는 숫자, 실제 LangGraph 그래프 → span → 기록 왕복).
+- 테스트: `tests/test_evals_agent.py` (oracle 1.000, 빠진·불필요 호출, 인자 불일치, 멀티턴 중간 실패와 pass^k, 거절, L3 연결·근거 없는 숫자, 실제 LangGraph 그래프 → span → 기록 왕복), `tests/test_evals_partial_refusal.py` (부분 거절 양방향·`refuse_parts` 없을 때 기존 규칙·R 유형 oracle, T3-38).
 
 ## 7. 규칙을 바꿀 때
 
