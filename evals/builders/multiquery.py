@@ -12,6 +12,14 @@ Four kinds, one turn each (plans/T3-28.md):
     P  paraphrase hand-written wordings with hand-labelled tables (PARAPHRASE below), for the live-search run:
                   conditions shared across parts, "와/랑" joins, connective endings, same-table pairs
 
+A fifth kind goes to its own file (T3-38, KOS-199), so the four files above stay byte-identical:
+
+    R  partial    an answerable golden question + a not_answerable one on another table, joined by "그리고"
+                  -> both searched and asked; the second must refuse (refuse_parts [false, true]), the first is
+                  graded by its L3 item (calc_qids holds the answering part only). The answerable part comes first:
+                  a refused summarize_stat followed by one on another table is read as an alternate-table attempt
+                  (evaluators.agent.tools.final_calls), which would hide the refusal
+
 B, K and N are built from golden questions verbatim, so the golden lookup search (evals.runners.multiturn_dev) finds
 each part's table. That makes them a wiring check and an over-split check, not a comparison of split methods: any
 splitter that cuts at the builder's joins scores the same (plans/T3-28.md, review 2). P is the comparison set; the
@@ -33,11 +41,15 @@ CALC = DATASETS / "calculation_golden.jsonl"
 OUT = DATASETS / "agent_scenarios_multiquery_dev.jsonl"
 OUT_STRUCTURE = DATASETS / "agent_scenarios_multiquery_dev_structure.jsonl"
 OUT_PARAPHRASE = DATASETS / "agent_scenarios_multiquery_paraphrase_structure.jsonl"
+OUT_REFUSAL = DATASETS / "agent_scenarios_multiquery_dev_refusal.jsonl"
 
 JOINS = ["{a} 그리고 {b}", "{a}, {b}", "{a} 또 {b}"]
 COMBINE = [("{a} 그리고 {b} 둘을 더하면?", "sum"), ("{a} 그리고 {b} 둘의 차이는?", "diff")]
 SAME_TABLE_JOIN = re.compile(r"(?<=[가-힣])(?:와|과|이랑|랑|하고)\s|,")
 PAIRS = 30  # B scenarios (seeded sample of all different-table pairs)
+REFUSAL_PAIRS = 20  # R scenarios (seeded sample of answerable x not_answerable pairs on different tables)
+# R: a not_answerable question that would not stay one sub-question (a join, a comma or a calculation word) is left out
+SPLITS_ITSELF = re.compile(r"(?<=[가-힣])(?:와|과|이랑|랑|하고)\s|[,?？].|그리고|\s또\s|\s및\s|더하|합치|합하|빼|나누|몇\s*배|차이")
 
 # P: written by Claude before the split rules were tuned (plans/T3-28.md Decision), reviewed by the user.
 # Each part lists its acceptable tables (first = expected, rest = alternates). "op" = expected combine_values call.
@@ -125,6 +137,24 @@ def build(calc_path=CALC, seed: int = 0) -> list[AgentScenario]:
     return out
 
 
+def partial_refusals(calc_path=CALC, seed: int = 0) -> list[AgentScenario]:
+    """R: "answerable 그리고 not_answerable" -> the second sub-question must refuse (T3-38)."""
+    rng = random.Random(seed)
+    items = [CalcItem.model_validate_json(line) for line in calc_path.read_text(encoding="utf-8").splitlines()
+             if line.strip()]
+    answerable = [i for i in items if i.kind == "answerable" and not SPLITS_ITSELF.search(i.question)]
+    refusing = [i for i in items if i.kind == "not_answerable" and not SPLITS_ITSELF.search(i.question)]
+    alt = alternates()
+    pairs = [(a, b) for a in answerable for b in refusing if a.table_key != b.table_key]
+    out = []
+    for n, (a, b) in enumerate(rng.sample(pairs, min(REFUSAL_PAIRS, len(pairs))), 1):
+        out.append(scenario(f"MQ-R-{n:03d}", "R", f"{a.question} 그리고 {b.question}", {
+            "tools": part_calls([a.table_key, b.table_key]), "table_key": None,
+            "alt_table_keys": sorted(alt.get(a.qid, set()) - {a.table_key}), "calc_qids": [a.qid],
+            "refuse_parts": [False, True]}))
+    return out
+
+
 def paraphrased() -> list[AgentScenario]:
     out = []
     for n, p in enumerate(PARAPHRASE, 1):
@@ -155,8 +185,10 @@ def main(argv: list[str] | None = None) -> None:
     write(rows, OUT)
     write([without_numbers(s) for s in rows], OUT_STRUCTURE)
     write(paraphrased(), OUT_PARAPHRASE)
+    refusals = partial_refusals(seed=args.seed)
+    write(refusals, OUT_REFUSAL)
     kinds = {k: sum(s.notes == k for s in rows) for k in ("B", "K", "N")}
-    print(f"{OUT.name}: {len(rows)} {kinds}; {OUT_PARAPHRASE.name}: {len(PARAPHRASE)}")
+    print(f"{OUT.name}: {len(rows)} {kinds}; {OUT_PARAPHRASE.name}: {len(PARAPHRASE)}; {OUT_REFUSAL.name}: {len(refusals)}")
 
 
 if __name__ == "__main__":

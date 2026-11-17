@@ -68,3 +68,24 @@ def test_turns_carry_the_other_l1_gold_tables_of_their_question(built):
     assert with_alt and all(e.table_key not in e.alt_table_keys for e in with_alt)
     first = next(s for s in scenarios if s.sid == "MT-E-001").turns  # 2025년 경기도 출생 (S-VAL-03)
     assert set(first[1].expect.alt_table_keys) == alt["S-VAL-03"] - {first[1].expect.table_key}
+
+
+def test_auto_chart_scenarios_name_no_chart_type_and_expect_the_family_of_the_calc_type():
+    """T3-37: C / M turns whose wording names no chart type; the expected family comes from the calc item type."""
+    from kosis_agent.graph.context import chart_request
+
+    from evals.schemas import CalcItem
+
+    if not DATA:
+        pytest.skip("needs data/values and evals/datasets/calculation_golden.jsonl")
+    lines = (DATASETS / "calculation_golden.jsonl").read_text(encoding="utf-8").splitlines()
+    calc = {c.qid: c for c in (CalcItem.model_validate_json(line) for line in lines if line.strip())}
+    auto = multiturn.build_auto()
+    assert {s.notes for s in auto} == {"C", "M"} and all(s.sid.startswith(f"MT-{s.notes}-A") for s in auto)
+    assert {s.turns[-1].expect.auto_chart for s in auto} == {"bar", "line", "pie"}  # every family is drawn
+    for s in auto:
+        last = s.turns[-1]
+        assert chart_request(last.question) == (True, None), last.question  # asks for a chart, names no type
+        chart = next(c for c in last.expect.tools if c.name == "make_chart")
+        assert "chart_type" not in chart.args
+        assert last.expect.auto_chart == multiturn.AUTO_CHART[calc[s.turns[0].expect.calc_qid].type]

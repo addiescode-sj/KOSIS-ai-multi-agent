@@ -297,6 +297,10 @@ def ops_body(op: dict, rows: list[dict], history: list[dict]) -> str:
         tl, tc = histogram(tok)
         tok_chart = f'<div class="card"><h2>문항당 토큰 분포</h2><p class="note">x축은 구간 시작값(토큰).</p>{vbars(tl, tc, ["--series-1"] * len(tl))}</div>'
     note = "" if no_llm or c["total"] is not None else f'<p class="note">비용: 단가 미설정 모델 {esc(", ".join(c["unpriced_models"]) or "-")} → evals/pricing.json에 1K 토큰 단가를 넣으면 계산된다.</p>'
+    if by_model := c.get("by_model"):  # T3-39: a turn may call two models; tokens and cost per model
+        note += '<p class="note">모델별: ' + " · ".join(
+            f'{esc(m)} 입력 {t["input"]:,} / 출력 {t["output"]:,}' + (f' / {t["cost"]:.4f}' if t.get("cost") is not None else " / 단가 없음")
+            for m, t in by_model.items()) + "</p>"
     trends = "".join([
         f'<div class="card"><h2>{title}</h2>{trend([(h["stage"], h[key] or 0) for h in history], fmt)}</div>'
         for title, key, fmt in [("Latency p95 추이 (ms)", "latency_p95_ms", lambda v: f"{v:.0f}"),
@@ -597,7 +601,13 @@ def agent_body(m: dict, rows: list[dict]) -> str:
     tiles = [tile(f(s["conversation_success"]), f"대화 성공률 ({s['n_conversations']}대화)"), tile(f(s["pass^k"]), f"pass^{s['repeats']}"),
              tile(f(s["turn_pass"]), f"턴 통과율 ({s['n_turns']}턴)"), tile(f(s["tool_selection"]), "툴 선택 정확도"),
              tile(f(s["param_accuracy"]), "파라미터 정확도"), tile(f(s["state_accuracy"]), f"상태(표 키) 정확도 (n={s['n_state']})"),
-             tile(f(s["numeric_accuracy"]), f"최종 수치 정확도 (n={s['n_numeric']})"), tile(str(s["unsupported_final_number_turns"]), "근거 없는 숫자가 있는 턴")]
+             tile(f(s["numeric_accuracy"]), f"최종 수치 정확도 (n={s['n_numeric']})"), tile(str(s["unsupported_final_number_turns"]), "근거 없는 숫자가 있는 턴"),
+             tile(str(s.get("missing_source_turns", "—")), "출처가 빠진 턴")]
+    if s.get("n_chart_turns"):  # T3-37 (older manifests have no chart metrics)
+        tiles += [tile(f(s["chart_turn_pass"]), f"차트 턴 통과율 (n={s['n_chart_turns']})"),
+                  tile(f(s["chart_data_accuracy"]), f"차트 데이터 일치 (n={s['n_chart_data']})")]
+    if s.get("n_auto_chart"):
+        tiles.append(tile(f(s["auto_chart_agreement"]), f"차트 자동 선택 일치 (n={s['n_auto_chart']})"))
     tools = sorted(set(s["missing_calls"]) | set(s["extra_calls"]))
     calls = (hbars([f"{t} 빠짐" for t in tools] + [f"{t} 불필요" for t in tools],
                    [s["missing_calls"].get(t, 0) for t in tools] + [s["extra_calls"].get(t, 0) for t in tools])

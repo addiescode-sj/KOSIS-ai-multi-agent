@@ -181,4 +181,7 @@ def blame(row: dict) -> dict | None:
     if "unsupported_claim" in errors:
         return _failure("compose", last(lambda s: s["name"] == "compose") or STAT_TOOL,
                         "근거 없는 숫자를 문장에 씀 (unsupported_claim)", errors - {"unsupported_claim"})
+    if "missing_source" in errors:  # T3-40: Phase 1 writes the source line after composing the answer
+        return _failure("compose", last(lambda s: s["name"] == "compose") or STAT_TOOL,
+                        "답에 출처(조사명·통계표명)가 없음 (missing_source)", errors - {"missing_source"})
     return _failure("unknown", None, "규칙에 안 맞음", errors)
