@@ -2,7 +2,9 @@
 
 from types import SimpleNamespace
 
-from kosis_ai.schemas import Fact
+import pytest
+
+from kosis_ai.schemas import Fact, Source
 from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
 from langchain_core.messages import AIMessage
 from langchain_core.tools import tool
@@ -18,6 +20,8 @@ CELLS = {REF: SimpleNamespace(value=100.0)}
 CALC = {"c1": CalcItem(qid="c1", question="q", table_key="101_DT_X", table_sha256="0", kind="answerable",
                        required_facts=[Fact(id="f1", value=100.0, source_ref=REF, unit="명", period="2024")])}
 cells_of = lambda key, refs=None: CELLS  # noqa: E731
+CITE = "출처: KOSIS / oracle / oracle"  # what oracle_stat cites (T3-40: every answer names its source)
+ALT_CITE = "출처: KOSIS / 조사 / 표"
 
 
 def scenario(*turns, sid="s1") -> AgentScenario:
@@ -100,12 +104,95 @@ def test_numbers_use_the_l3_grader_and_the_final_text_must_be_grounded():
         {"id": "f1", "value": 90.0, "source_ref": REF, "unit": "명", "period": "2024"}]}}}
     row = grade(CHAT, _oracle_with(0, calls=[calls[0], wrong_value]))[0]
     assert row["calc"]["verdict"] == "FAIL" and "wrong_numbers" in row["errors"]
-    ok = grade(CHAT, _oracle_with(0, answer="2024년 서울 출생아는 100명입니다. (KOSIS)"))[0]
+    ok = grade(CHAT, _oracle_with(0, answer=f"2024년 서울 출생아는 100명입니다.\n\n{CITE} (101_DT_X)"))[0]
     assert ok["passed"], ok["errors"]
-    made_up = grade(CHAT, _oracle_with(0, answer="2024년 100명, 전년보다 12.5% 늘었습니다."))[0]
+    made_up = grade(CHAT, _oracle_with(0, answer=f"2024년 100명, 전년보다 12.5% 늘었습니다. {CITE}"))[0]
     assert made_up["unsupported_numbers"] == ["12.5"] and made_up["errors"] == ["unsupported_final_number"]
     later = grade(CHAT, _oracle_with(1, answer="2024년 값 100명을 꺾은선으로 그렸습니다."))[1]
     assert later["passed"]  # a number from an earlier turn's tool result is grounded
+
+
+def test_search_results_cell_refs_and_codes_do_not_ground_a_number():
+    """T3-40 (KOS-198): only questions, facts, combine results and the cited source ground a number."""
+    search, stat = agent.oracle_records(CHAT, CALC)[0]["calls"]
+    noisy = {**search, "result": {"route": "found", "picked": [{"key": "101_DT_1B8000H", "score": 0.64}],
+                                  "candidates": [{"key": "101_DT_7777", "period": "년 (1990 ~ 2025)"}]}}
+    row = grade(CHAT, _oracle_with(0, calls=[noisy, stat], answer=f"100명, 7777명, 1990년 이후. {CITE}"))[0]
+    assert row["unsupported_numbers"] == ["7777", "1990"] and row["errors"] == ["unsupported_final_number"]
+    source = Source(org_id="101", tbl_id="DT_1B83A03", survey_nm="인구동향조사", tbl_nm="시도/연령(각세)별 혼인",
+                    url="http://kosis.kr/statHtml/statHtml.do?orgId=101&tblId=DT_1B83A03&list_id=A23_1&conn_path=I4")
+    grounds = agent.Grounds(facts=CALC["c1"].required_facts, sources=[source])
+    text = f"2024년 100명 (표 101_DT_1B83A03).\n\n출처: {source.citation()}"
+    assert agent.unsupported_final_numbers(text, grounds) == []  # url and table id digits belong to the cited source
+    assert agent.unsupported_final_numbers(text, agent.Grounds(facts=CALC["c1"].required_facts)) != []
+
+
+@pytest.mark.parametrize("answer, unsupported", [
+    ("약 100명", []),
+    ("2024년 3천 명", ["3천"]),  # 3 alone is a period digit in no fact here; 3,000 is no fact value
+    ("약 10만 명", ["10만"]),
+    ("1억 2천만 명", ["1억 2천만"]),
+])
+def test_korean_magnitudes_are_read_as_one_number(answer, unsupported):
+    assert agent.unsupported_final_numbers(answer, agent.Grounds(facts=CALC["c1"].required_facts)) == unsupported
+
+
+def test_korean_magnitudes_round_to_a_fact_value():
+    grounds = agent.Grounds(facts=[Fact(id=f"f{i}", value=v, unit=u, source_ref=f"DT_X|T{i}|00|2024")
+                                   for i, (v, u) in enumerate([(103_412.0, "명"), (1_234.0, "억원"), (123_456_789.0, "원")])])
+    ok = "약 10만 명, 1,234억 원, 1억 2천만 원, 약 1.2억 원"
+    assert agent.unsupported_final_numbers(ok, grounds) == []
+    assert agent.unsupported_final_numbers("약 20만 명, 1억 5천만 원", grounds) == ["20만", "1억 5천만"]
+
+
+def test_combine_values_result_grounds_its_rounded_value():
+    calls = [{"name": "combine_values", "args": {"op": "ratio"}, "result": {"op": "ratio", "value": 41.2857}, "status": "ok"}]
+    assert agent.unsupported_final_numbers("두 값의 계산 결과(비율): 41.3%", agent.grounding("", calls)) == []
+    assert agent.unsupported_final_numbers("두 값의 계산 결과(비율): 45.0%", agent.grounding("", calls)) == ["45.0"]
+
+
+def test_an_answer_must_cite_every_answered_source():
+    """T3-40 (KOS-196): survey and table name of each answered summarize_stat, each multi-query sub-answer too."""
+    uncited = grade(CHAT, _oracle_with(0, answer="2024년 서울 출생아는 100명입니다."))[0]
+    assert uncited["missing_sources"] == ["101_DT_X"] and uncited["errors"] == ["missing_source"]
+    s = agent.aggregate(grade(CHAT, _oracle_with(0, answer="100명")))
+    assert s["missing_source_turns"] == 1 and s["errors"] == {"missing_source": 1}
+    a, b = (agent.oracle_stat(CALC["c1"]) | {"source": {"org_id": "101", "tbl_id": t, "survey_nm": "조사", "tbl_nm": n}}
+            for t, n in (("DT_A", "표 A"), ("DT_B", "표 B")))
+    calls = [{"name": "summarize_stat", "args": {}, "result": r, "status": "ok"} for r in (a, b)]
+    assert agent.missing_sources("KOSIS / 조사 / 표 A", agent.stat_answers(calls)) == ["101_DT_B"]
+    assert agent.missing_sources("KOSIS / 조사 / 표 A\n\nKOSIS / 조사 / 표 B", agent.stat_answers(calls)) == []
+
+
+def test_phase1_code_lines_and_fact_units_are_not_claims():
+    """Measured on saved runs (T3-40): caveat lines, the refusal message and digits of a fact's unit are code's text."""
+    caveat = "참고: '코로나19 유행 직전'은(는) 사건 달력의 시작 시점 2020년 1월 기준입니다."
+    stat = agent.oracle_stat(CALC["c1"])
+    stat = {**stat, "text": f"100명\n{caveat}\n\n{CITE}",
+            "result": {"facts": [{**stat["result"]["facts"][0], "unit": "가임여자 1명당 명"}]}}
+    calls = [{"name": "summarize_stat", "args": {}, "result": stat, "status": "ok"}]
+    grounds = agent.grounding("2025년 출생아 수", calls)
+    assert agent.unsupported_final_numbers(f"100명 가임여자 1명당 명\n{caveat}\n\n{CITE}", grounds) == []
+    assert agent.unsupported_final_numbers("2020년 1월 기준 100명", grounds) == ["2020"]  # not the verbatim line ("1" is a unit digit)
+    refusal = {"outcome": "refused", "refusal": {"reason": "no_period", "message": "이 통계표에는 2019년 자료가 없어 답할 수 없습니다."},
+               "source": agent.oracle_stat(CALC["c1"])["source"]}
+    grounds = agent.grounding("코로나19 직전 해", [{"name": "summarize_stat", "args": {}, "result": refusal, "status": "ok"}])
+    assert agent.unsupported_final_numbers("이 통계표에는 2019년 자료가 없어 답할 수 없습니다.", grounds) == []
+
+
+def test_a_turn_that_raised_is_run_failure_not_missing_source():
+    row = grade(CHAT, _oracle_with(0, answer="", error="RuntimeError: model down"))[0]
+    assert "run_failure" in row["errors"] and "missing_source" not in row["errors"]
+
+
+def test_refused_and_clarify_answers_need_no_source():
+    refused = {"name": "summarize_stat", "args": {}, "status": "ok",
+               "result": {"outcome": "refused", "refusal": {"reason": "no_period", "message": "없음"},
+                          "source": agent.oracle_stat(CALC["c1"])["source"]}}
+    clarify = {**refused, "result": {**refused["result"], "outcome": "clarify", "refusal": None, "clarify_options": ["서울", "부산"]}}
+    assert None not in agent.stat_answers([refused, clarify])
+    assert agent.missing_sources("그 시점 자료는 없어요.", agent.stat_answers([refused, clarify])) == []
+    assert agent.missing_sources("", []) == []  # no summarize_stat answer in the turn
 
 
 def _attempt(key: str, status: str = "ok") -> dict:
@@ -169,8 +256,10 @@ def summarize_stat(question: str, table_key: str) -> dict:
 
 
 def fake_agent():
+    # one message object per turn: add_messages gives a message an id, so a reused object would replace the last one
     model = FakeMessagesListChatModel(responses=[
-        AIMessage("2024년 100명", usage_metadata={"input_tokens": 7, "output_tokens": 3, "total_tokens": 10})] * 4)
+        AIMessage(f"2024년 100명\n\n{CITE}", usage_metadata={"input_tokens": 7, "output_tokens": 3, "total_tokens": 10})
+        for _ in range(4)])
 
     def step(state: MessagesState, config) -> dict:
         question = state["messages"][-1].content
@@ -195,7 +284,7 @@ def test_live_run_reads_turns_from_spans_and_links_verdicts():
     assert [c["name"] for c in first["calls"]] == ["search_tables", "summarize_stat"]
     assert first["calls"][0]["args"] == {"query": "2024년 서울 출생아 수"} and first["calls"][0]["result"]["route"] == "found"
     assert first["calls"][1]["result"]["outcome"] == "answered"
-    assert (first["llm_calls"], first["input_tokens"], first["output_tokens"]) == (1, 7, 3) and first["answer"] == "2024년 100명"
+    assert (first["llm_calls"], first["input_tokens"], first["output_tokens"]) == (1, 7, 3) and first["answer"] == f"2024년 100명\n\n{CITE}"
     assert first["latency_ms"] > 0 and len(first["trace_id"]) == 32
     kinds = {s["kind"]: s for s in first["spans"]}  # T3-20 waterfall: root, graph node, tools, chat model
     assert set(kinds) == {"turn", "node", "tool", "llm"} and kinds["turn"]["depth"] == 0 and kinds["tool"]["depth"] == 2
@@ -258,15 +347,15 @@ def test_an_alternate_gold_table_with_the_same_values_passes_and_is_counted_apar
     s = _alt_scenario()
     search = {"name": "search_tables", "args": {}, "result": {"route": "found", "picked": [{"key": "101_DT_ALT"}]}}
     (same,) = agent.grade_conversation(s, [{"calls": [search, _answer_from("101_DT_ALT", 100.0)],
-                                            "answer": "100명", "error": None}], CALC, cells_of)
+                                            "answer": f"100명 {ALT_CITE}", "error": None}], CALC, cells_of)
     assert same["passed"], same["errors"]
     assert same["state_ok"] and same["calc"]["via_alternate"] and same["calc"]["l3"] != "PASS"
     assert agent.aggregate([same])["numeric_pass_via_alternate"] == 1
     (other,) = agent.grade_conversation(s, [{"calls": [search, _answer_from("101_DT_ALT", 90.0)],
-                                             "answer": "90명", "error": None}], CALC, cells_of)
+                                             "answer": f"90명 {ALT_CITE}", "error": None}], CALC, cells_of)
     assert other["state_ok"] and "wrong_numbers" in other["errors"]
     (outside,) = agent.grade_conversation(s, [{"calls": [search, _answer_from("101_DT_ZZZ", 100.0)],
-                                               "answer": "100명", "error": None}], CALC, cells_of)
+                                               "answer": f"100명 {ALT_CITE}", "error": None}], CALC, cells_of)
     assert "lost_state" in outside["errors"] and "wrong_args" in outside["errors"]
 
 

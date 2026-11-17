@@ -327,6 +327,7 @@ L3·e2e 채점기가 붙이는 오류다. 정답 표의 Parquet 셀과 골든 �
 | `missing_clarification` | 되묻기는 했지만 선택지가 2개 미만이다 | FAIL | 질문 이해 |
 | `disallowed_default` | 기본값이 허용된 질문에서 답하지 않았거나, 허용되지 않은 기본값을 적용했다 | FAIL | 질문 이해 |
 | `unstated_default` | 기본값을 적용했는데 무엇을 적용했는지 밝히지 않았다 | PARTIAL | 질문 이해 |
+| `missing_source` | 답했는데 출처가 없다: `source`가 비었거나 답 문장(`text`)에 조사명·통계표명이 없다 (T3-40). 실전 1은 `final_text`가 본문 뒤에 `출처: KOSIS / 조사명 / 통계표명 (url)`을 붙이고, `parts`에는 출처가 없으므로 `text`를 본다. 거절·되묻기는 검사하지 않는다 | PARTIAL | 문장 생성 (`compose`) |
 | `run_failure` | 답이 없다: 예외, 모델 호출 실패, 검색 결과 없음 | FAIL | 도구 호출 실패 (e2e에서 검색 결과가 없으면 검색 실패) |
 
 e2e에서는 1위 표가 틀리면 위 오류와 상관없이 1번 규칙(검색 실패)이 먼저 걸린다.
@@ -410,7 +411,8 @@ uv run python -m evals.run_eval --layer agent --stage <이름> --split dev --age
 | 파라미터 정확도 | 정답 인자 필드(`table_key`·`period_start`·`period_end`·`regions`·`dimensions`·`chart_type`)별 일치 비율. 같은 툴의 k번째 호출과 비교, L2 규칙(`query.field_correct`: 목록은 집합, 나머지는 문자열 일치) | 결정적 |
 | 상태(표 키) 정확도 | 턴이 끝난 표 == 정답 `table_key`. 끝난 표 = 마지막 `summarize_stat`/`make_chart`의 `table_key`, 없으면 마지막 검색 1위 | 결정적 |
 | 최종 수치 정확도 | `calc_qid` 턴의 `summarize_stat` 답을 L3 채점기(`calculation.grade`, Parquet 셀 대조) 그대로 채점해 PASS인 비율 | 결정적 |
-| 근거 없는 숫자 | 최종 답 문장의 숫자 중 이 대화의 툴 결과·질문에 없고 사실 값의 반올림도 아닌 것이 있는 턴 수 (0이 목표) | 결정적 |
+| 근거 없는 숫자 | 최종 답 문장의 숫자 중 근거가 없는 것이 있는 턴 수 (0이 목표, T3-40). 근거 = 이 대화의 질문 숫자 · `summarize_stat` 사실 값(반올림 허용, 증감은 크기로 비교) · 사실의 시점·라벨·단위 숫자 · `combine_values` 결과(반올림 허용) · 기본값 조건(`default_applied`) 숫자. 출처(인용 문자열·url·조사명·통계표명·표 ID)와 실전 1 코드 줄(`참고:` 줄, 거절 메시지)은 문장에서 그대로 지운 뒤 센다. 검색 결과(`picked`·`candidates`)·셀 참조·항목 코드·툴 인자는 근거가 아니다. "약 10만"·"3천 명"·"1억 2천만"은 한 숫자로 읽고 단위 반올림(10만 → ±5,000)을 허용한다 | 결정적 |
+| 출처 빠진 턴 | 답한 `summarize_stat`(멀티쿼리면 하위 답마다)의 조사명·통계표명이 최종 답에 없는 턴 수 (`missing_source`, T3-40). 거절·되묻기 답, 답이 없는 턴, 예외로 끝난 턴(`run_failure`)은 뺀다 | 결정적 |
 | 대체 표 시도 | `summarize_stat`이 거절(또는 툴 오류)된 뒤 바로 **다른** `table_key`로 다시 부른 호출 수(`alt_attempts`)와 그런 턴 수. 시도는 감점하지 않고 위 지표에서 모두 뺀다. 툴·인자·상태·거절·수치는 **최종 호출**로만 채점하므로, 최종 표가 정답 표와 다르면 `lost_state`, 최종 답이 틀리면 `wrong_numbers`다 (T3-23). 같은 표를 다시 부르거나 답한 뒤 다시 부른 호출은 시도가 아니라 불필요 호출이다 | 결정적 |
 | 턴 통과율 | 오류가 하나도 없는 턴의 비율 | 결정적 |
 | 대화 성공률 | 모든 턴이 통과한 대화(실행)의 비율. 리포트에 처음 실패한 턴 분포 | 결정적 |
@@ -418,7 +420,8 @@ uv run python -m evals.run_eval --layer agent --stage <이름> --split dev --age
 | 요청당 비용·지연 | 턴 = 요청 1건. `ops.json`의 p50·p95 지연, LLM 호출 수, 토큰, 비용 (`ops_history.jsonl`에 누적). 비용은 턴의 **모델별 토큰**(`tokens_by_model`: 해석기 gpt-4o-mini + 실전 1 HCX + rerank2)에 `evals/pricing.json` 단가를 모델마다 곱한다(T3-39). 단가 없는 모델이 하나라도 있거나 통화가 섞이면 합계는 없음으로 두고 모델별 토큰만 보인다. HCX 단가(KRW)는 아직 null → 팀이 채운다 | 결정적 |
 
 턴 오류: `run_failure` 실행 실패 · `missing_call` · `extra_call` · `wrong_order` · `wrong_args` · `lost_state`(지시어·조건 이월 실패 포함) · `missed_refusal` · `false_refusal`
-(거절 = 검색 `route` `refuse` 또는 `summarize_stat` `outcome` `refused`, 또는 툴을 하나도 안 부름) · `wrong_numbers` · `unsupported_final_number`. 예외가 난 실행은 거기서 멈추고 남은 턴은 `run_failure`다.
+(거절 = 검색 `route` `refuse` 또는 `summarize_stat` `outcome` `refused`, 또는 툴을 하나도 안 부름) · `wrong_numbers` · `unsupported_final_number` · `missing_source`.
+에이전트 계층의 `wrong_numbers`(L3 채점)는 출처 검사를 끄고(`grade(..., cite=False)`) 최종 답의 출처는 `missing_source`로 따로 센다. 예외가 난 실행은 거기서 멈추고 남은 턴은 `run_failure`다.
 
 - LLM 호출·토큰 (T3-31부터): 해석기·멀티쿼리(LangChain), 실전 1 HCX 단계, 실전 2 rerank2를 모두 센다(§8.3). T3-31 이전 agent run은 해석기 호출만 세었으므로 `ops_history.jsonl`에서 그 전후의 토큰·비용을 비교하지 않는다.
 - 테스트: `tests/test_evals_agent.py` (oracle 1.000, 빠진·불필요 호출, 인자 불일치, 멀티턴 중간 실패와 pass^k, 거절, L3 연결·근거 없는 숫자, 실제 LangGraph 그래프 → span → 기록 왕복).
@@ -429,7 +432,7 @@ uv run python -m evals.run_eval --layer agent --stage <이름> --split dev --age
   `owners()`(고칠 담당), `target()`(ops_history 대상)을 갖는다 — `l0_metadata` · `l1_retrieval` · `l2_query` · `ablation` · `l012` · `l3_calculation` · `l4_e2e` · `agent`, 공용 조각은 `common`.
   새 계층은 파일 하나를 만들고 `run_eval.TASKS`에 한 줄 넣는다(헤드라인 지표는 `suite.metrics`, HTML 본문은 `report_html`).
 - 에이전트 채점기 `evaluators/agent/`: `tools.py`(툴 선택·순서·인자) · `state.py`(멀티턴 상태·거절) · `numbers.py`(L3 수치·멀티쿼리 하위 답·합산) ·
-  `answer.py`(답변 품질: 근거 없는 숫자). `__init__.py`의 `grade_turn`이 이 순서로 오류를 이어 붙이고 `aggregate`가 `by_task`를 더한다.
+  `answer.py`(답변 품질: 근거 없는 숫자·출처). `__init__.py`의 `grade_turn`이 이 순서로 오류를 이어 붙이고 `aggregate`가 `by_task`를 더한다.
 
 - 판정 규칙: `trace.py`의 `blame()`. 단계를 추가하면 `STAGES`에도 넣는다. 리포트 표기와 판정 순서 표시가 여기서 나온다.
 - 오류 유형: `evaluators/calculation.py`의 `grade()`·`fact_errors()`. 새 오류를 만들면 `ERROR_INFO`와 이 문서 4절에 설명을 추가한다.
