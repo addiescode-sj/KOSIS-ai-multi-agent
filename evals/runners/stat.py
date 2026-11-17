@@ -51,7 +51,7 @@ def read_rows(path: Path, items: list[CalcItem]) -> list[dict]:
                          "spans": [], "search_spans": [], **OPS_DEFAULTS, "failed": True})
             continue
         answer = _answer(r["answer"]) if r.get("answer") else None
-        keys = r.get("keys") or r.get("top_keys") or []  # top_keys (5) in rows written before T3-35
+        keys = r.get("keys") or r.get("top_keys") or []  # top_keys (5) in rows written before T3-39
         rows.append({"qid": item.qid, "answer": answer, "error": r.get("error"), "keys": keys,
                      "used_table": r.get("used_table") or r.get("table_key"),
                      "spans": r.get("spans") or [], "search_spans": r.get("search_spans") or [],

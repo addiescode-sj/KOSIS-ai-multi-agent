@@ -262,7 +262,7 @@ def build(calc_path: Path = CALC, seed: int = 0) -> tuple[list[AgentScenario], l
 
     def split_of(*xs: RetrievalItem) -> str:
         # Every built scenario is dev: the wordings are the builder's templates, and the follow-up rules were tuned
-        # on them (T3-27). Inheriting the retrieval items' test split made 50 of them look held out (T3-35 review).
+        # on them (T3-27). Inheriting the retrieval items' test split made 50 of them look held out (T3-39 review).
         # The held-out set is the hand-written T3-05 file (split=test).
         return "dev"
 
