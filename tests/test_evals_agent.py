@@ -22,6 +22,7 @@ CALC = {"c1": CalcItem(qid="c1", question="q", table_key="101_DT_X", table_sha25
 cells_of = lambda key, refs=None: CELLS  # noqa: E731
 CITE = "출처: KOSIS / oracle / oracle"  # what oracle_stat cites (T3-40: every answer names its source)
 ALT_CITE = "출처: KOSIS / 조사 / 표"
+table_of = lambda key: frozenset(c.value for c in CELLS.values())  # noqa: E731  (chart context rows, T3-37)
 
 
 def scenario(*turns, sid="s1") -> AgentScenario:
@@ -38,7 +39,7 @@ CHAT = scenario(
 
 
 def grade(s: AgentScenario, records: list[dict]) -> list[dict]:
-    return agent.grade_conversation(s, records, CALC, cells_of)
+    return agent.grade_conversation(s, records, CALC, cells_of, table_of)
 
 
 def test_oracle_self_check_is_all_ones():
@@ -238,6 +239,92 @@ def test_alternate_attempts_are_counted_in_the_summary():
     rows = grade(CHAT, _oracle_with(0, calls=[search, _attempt("101_DT_W"), stat]))
     s = agent.aggregate(rows)
     assert s["alt_attempts"] == 1 and s["alt_attempt_turns"] == 1 and s["turn_pass"] == 1.0
+
+
+# T3-37: chart data vs the facts, and the automatic chart choice
+
+
+def _chart(*points: tuple[float, str | None], kind: str = "line", chart_type: str | None = "line") -> dict:
+    """A make_chart call as the span records it: the phase 1 ChartSpec in args, the tool's content as the result."""
+    spec = {"kind": kind, "title": "t", "fact_ids": ["f1"], "series": [{"name": "s", "points": [
+        {"label": f"p{n}", "value": v, "display": str(v), "fact_id": fid} for n, (v, fid) in enumerate(points)]}]}
+    return {"name": "make_chart", "status": "ok", "args": {"table_key": "101_DT_X", "chart": spec, "chart_type": chart_type},
+            "result": {"table_key": "101_DT_X", "chart_type": chart_type, "kind": kind, "drawn": True, "note": None}}
+
+
+def test_oracle_chart_draws_the_latest_facts_and_its_spec_is_checked():
+    rows = grade(CHAT, agent.oracle_records(CHAT, CALC))
+    assert rows[1]["chart_turn"] and rows[1]["chart_data_ok"] is True and rows[1]["chart_kind"] == "line"
+    s = agent.aggregate(rows)
+    assert s["chart_turn_pass"] == 1.0 and s["n_chart_turns"] == 1 and s["chart_data_accuracy"] == 1.0
+    assert s["by_task"]["other"]["n_chart_turns"] == 1 and s["auto_chart_agreement"] is None
+
+
+def test_a_chart_number_that_is_no_fact_is_chart_data_mismatch():
+    """A chart-only turn draws the previous answer's facts: 100 is the fact, 999 is from nowhere."""
+    ok = grade(CHAT, _oracle_with(1, calls=[_chart((100.0, "f1"))]))[1]
+    assert ok["passed"], ok["errors"]
+    rows = grade(CHAT, _oracle_with(1, calls=[_chart((100.0, "f1"), (999.0, None))]))
+    wrong = rows[1]
+    assert wrong["errors"] == ["chart_data_mismatch"] and wrong["chart_unmatched"] == [999.0]
+    assert wrong["chart_data_ok"] is False and agent.aggregate(rows)["chart_turn_pass"] == 0.0
+    # a result that carries its own Vega-Lite is read as is (data.values of the quantitative y field)
+    vega = {"data": {"values": [{"값": 5.0}]}, "mark": "bar", "encoding": {"y": {"field": "값", "type": "quantitative"}}}
+    own = {**_chart((100.0, "f1")), "result": {"kind": "bar", "drawn": True, "vega_lite": vega}}
+    assert grade(CHAT, _oracle_with(1, calls=[own]))[1]["chart_unmatched"] == [5.0]
+    # the facts of the same turn count, and a turn with its own summarize_stat does not draw an older turn's facts
+    search, stat = agent.oracle_records(CHAT, CALC)[0]["calls"]
+    same_turn = grade(CHAT, _oracle_with(0, calls=[search, stat, _chart((100.0, "f1"))]))[0]
+    assert same_turn["chart_data_ok"] is True and same_turn["errors"] == ["extra_call"]
+    empty = {**stat, "result": {"outcome": "answered"}}
+    records = _oracle_with(0, calls=[search, empty])
+    no_cells = agent.grade_conversation(CHAT, records, CALC, cells_of, lambda key: ())  # 100: no fact, no cell then
+    assert no_cells[1]["errors"] == ["chart_data_mismatch"]  # turn 0 had no facts to draw
+    assert grade(CHAT, records)[1]["passed"]  # with the table read, 100 is one of its cells (context row)
+
+
+def test_context_rows_phase_1_draws_beside_the_facts_pass_when_they_are_table_data():
+    """ChartPoint without fact_id: another period of the table (a cell) or a pie's rest slice (total fact - parts)."""
+    table = lambda key: frozenset({100.0, 80.0})  # noqa: E731  (the 2024 cell and a 2023 cell of 101_DT_X)
+    context = agent.grade_conversation(CHAT, _oracle_with(1, calls=[_chart((80.0, None), (100.0, "f1"))]), CALC,
+                                       cells_of, table)[1]
+    assert context["passed"] and context["chart_context_values"] == 1
+    other = agent.grade_conversation(CHAT, _oracle_with(1, calls=[_chart((77.0, None), (100.0, "f1"))]), CALC,
+                                     cells_of, table)[1]
+    assert other["errors"] == ["chart_data_mismatch"]
+    pie = {**_chart((60.0, "f1"), (40.0, None), kind="pie", chart_type="line"), "result": {"kind": "pie", "drawn": True,
+                                                                                         "note": "fell back"}}
+    total = {"id": "f1", "value": 100.0, "source_ref": REF, "unit": "명", "period": "2024"}
+    part = {"id": "f2", "value": 60.0, "source_ref": REF, "unit": "명", "period": "2024"}
+    search, stat = agent.oracle_records(CHAT, CALC)[0]["calls"]
+    parts = {**stat, "result": {**stat["result"], "result": {"facts": [total, part]}}}
+    rows = agent.grade_conversation(CHAT, [{"calls": [search, parts], "answer": "", "error": None},
+                                           {"calls": [pie], "answer": "", "error": None}], CALC, cells_of, lambda key: ())
+    assert rows[1]["chart_data_ok"] is True and rows[1]["chart_context_values"] == 1  # 40 = 100 - 60
+
+
+AUTO = scenario(
+    ("2015년부터 2024년까지 서울 출생아 수 추이", {"tools": [SEARCH, STAT], "table_key": "101_DT_X", "calc_qid": "c1"}),
+    ("그래프로 보여줘", {"tools": [{"name": "make_chart", "args": {"table_key": "101_DT_X"}}], "table_key": "101_DT_X",
+                   "auto_chart": "line"}), sid="MT-C-A001")
+
+
+def test_automatic_chart_choice_is_graded_on_the_family_of_the_drawn_kind():
+    oracle = agent.oracle_records(AUTO, CALC)
+    rows = grade(AUTO, oracle)
+    assert rows[1]["passed"] and rows[1]["auto_chart_ok"] and oracle[1]["calls"][0]["args"].get("chart_type") is None
+    as_lines = grade(AUTO, [oracle[0], {"calls": [_chart((100.0, "f1"), kind="multi_line", chart_type=None)],
+                                         "answer": "", "error": None}])[1]
+    assert as_lines["passed"] and as_lines["chart_kind"] == "line"  # one line per series is still a line chart
+    as_bars = grade(AUTO, [oracle[0], {"calls": [_chart((100.0, "f1"), kind="timeline", chart_type=None)],
+                                        "answer": "", "error": None}])
+    assert as_bars[1]["errors"] == ["wrong_chart_type"] and as_bars[1]["chart_kind"] == "bar"
+    s = agent.aggregate([*rows, *[{**r, "run": 1} for r in as_bars]])
+    assert s["auto_chart_agreement"] == 0.5 and s["n_auto_chart"] == 2 and s["chart_turn_pass"] == 0.5
+    assert s["auto_chart_confusion"] == {"line→bar": 1, "line→line": 1}
+    assert s["by_task"]["multiturn"]["auto_chart_agreement"] == 0.5
+    missing = grade(AUTO, [oracle[0], {"calls": [], "answer": "", "error": None}])[1]
+    assert missing["auto_chart_ok"] is False and "wrong_chart_type" not in missing["errors"]  # missing_call says it
 
 
 # Live run: a real LangGraph graph with a checkpointer, tools and a chat model, read back from the spans
