@@ -170,11 +170,32 @@ class TurnExpect(BaseModel):
     # and the value combine_values must return (computed by the builder from the golden facts)
     calc_qids: list[str] = Field(default_factory=list)
     combine_value: float | None = None
+    # T3-38 partial refusal: per sub-question (search order), whether it must refuse. None = the turn-level `refuse`
+    # rule. calc_qids then belong to the answering (False) sub-questions only, in order. Left out of dumps when None,
+    # so files written before T3-38 serialize byte-identically.
+    refuse_parts: list[bool] | None = Field(default=None, exclude_if=lambda v: v is None)
+    # T3-37: the chart family make_chart must draw when the user named no chart type (its chart_type arg is None and
+    # phase 1 picks the kind). Derived from the calculation item type (builders.multiturn.AUTO_CHART); None = not graded
+    auto_chart: Literal["bar", "line", "pie"] | None = None
 
     @model_validator(mode="after")
     def _consistent(self) -> TurnExpect:
+        if self.refuse_parts is not None:
+            n, answering = len(self.refuse_parts), self.refuse_parts.count(False)
+            n_stat = sum(c.name == "summarize_stat" for c in self.tools)
+            if self.refuse or n < 2:
+                raise ValueError("refuse_parts is for a multi-query turn (two or more parts) with refuse=false")
+            if sum(c.name == "search_tables" for c in self.tools) != n:
+                raise ValueError("refuse_parts needs one search_tables call per sub-question")
+            if n_stat not in (n, answering):
+                raise ValueError("refuse_parts needs one summarize_stat per sub-question, or one per answering "
+                                 "sub-question (the refusing ones stop at search)")
+            if self.calc_qid or len(self.calc_qids) not in (0, answering):
+                raise ValueError("with refuse_parts, calc_qids lists one item per answering sub-question")
         if self.refuse and any(c.name == "make_chart" for c in self.tools):
             raise ValueError("a refusing turn draws no chart")
+        if self.auto_chart and not any(c.name == "make_chart" for c in self.tools):
+            raise ValueError("auto_chart needs a make_chart call")
         if self.calc_qid and not any(c.name == "summarize_stat" for c in self.tools):
             raise ValueError("calc_qid needs a summarize_stat call")
         if self.calc_qid and self.calc_qids:
