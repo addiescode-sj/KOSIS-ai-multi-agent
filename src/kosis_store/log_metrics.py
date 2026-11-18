@@ -35,7 +35,7 @@ METRICS: dict[str, str] = {
         GROUP BY picked_key ORDER BY n DESC, picked_key LIMIT 20""",
     "turns_per_conversation": f"""
         SELECT CASE WHEN turns >= 4 THEN '4+' ELSE turns::text END AS turns, count(*) AS n
-        FROM (SELECT conversation_id, count(DISTINCT turn) AS turns FROM request_logs
+        FROM (SELECT conversation_id, count(DISTINCT turn_index) AS turns FROM request_logs
               WHERE {_DAY} GROUP BY conversation_id) c
         GROUP BY 1 ORDER BY 1""",
     "stage_latency": f"""
@@ -48,11 +48,18 @@ METRICS: dict[str, str] = {
         SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY first_token_ms) AS p50,
                percentile_cont(0.95) WITHIN GROUP (ORDER BY first_token_ms) AS p95
         FROM request_logs WHERE {_DAY} AND first_token_ms IS NOT NULL""",
-    # cost = tokens x the unit price of llm_model; the price list is configuration, not a column
     "llm_usage": f"""
         SELECT round(avg(llm_calls), 2) AS calls, round(avg(input_tokens), 2) AS input_tokens,
                round(avg(output_tokens), 2) AS output_tokens
         FROM request_logs WHERE {_DAY}""",
+    # cost = tokens x the unit price of each model; one turn can call several models (interpreter, rerank, phase 1),
+    # so the model is per llm step, and the price list is configuration (evals pricing.json), not a column
+    "llm_by_model": f"""
+        SELECT span->>'model' AS model, count(*) AS calls,
+               sum(coalesce((span->>'input_tokens')::int, 0)) AS input_tokens,
+               sum(coalesce((span->>'output_tokens')::int, 0)) AS output_tokens
+        FROM request_logs, jsonb_array_elements(spans) AS span
+        WHERE {_DAY} AND span->>'kind' = 'llm' GROUP BY 1 ORDER BY 1""",
 }
 
 # Retention: the text goes, the row stays. Returns the rows it changed.

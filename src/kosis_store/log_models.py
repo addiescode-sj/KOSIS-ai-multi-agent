@@ -1,4 +1,8 @@
-"""User request log, draft (plans/T3-36.md, docs/log-schema.md): one row per question.
+"""User request log, draft (plans/T3-36.md, docs/log-schema.md): one row per question (one agent turn).
+
+The row key is the OTel trace id of the turn (32 hex): the service already sends it in the first SSE event (`meta`),
+so screen events and feedback attach to it without a second id. kosis_store.log_rows.row_from_turn builds a row from
+the turn's spans and its ChatResult.
 
 Draft: `request_logs` has no Alembic migration yet (the number is agreed with the backend task KOS-158 first), so it
 sits on its own LogBase and the migration check of T3-18 (Base.metadata) does not see it.
@@ -18,11 +22,15 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from kosis_store.models import JSONType
 
-OUTCOMES = ("answered", "refused", "clarify", "error", "aborted")  # aborted: the user left before the answer ended
+# the four ChatResult outcomes, error (an exception) and aborted (the user left before the answer ended)
+OUTCOMES = ("answered", "refused", "clarify", "failed", "error", "aborted")
 INPUT_METHODS = ("typed", "suggestion")
 SPAN_STATUSES = ("ok", "refused", "error")
-# stage: search | stat | chart | agent, set by the writer; kind: node | tool | llm
-SPAN_KEYS = ("name", "kind", "stage", "ms", "status", "error_type", "input_tokens", "output_tokens")
+# stage: search | stat | chart | agent; kind: node | tool | llm; model: the LLM of an llm span (cost = tokens x price)
+SPAN_KEYS = ("name", "kind", "stage", "ms", "status", "error_type", "input_tokens", "output_tokens", "model")
+UNKNOWN_REASON = "unknown"  # a refusal the agent gave no reason for (multi-query turns, a failed reason lookup)
+NO_TRACE = "0" * 32  # trace id of a no-op tracer: tracing was off, the row would have no usable key
+LOG_VERSION = 2  # 2: trace id key, string conversation id, 0-based turn index, failed outcome, model per span
 
 
 def _in(column: str, values: tuple[str, ...]) -> str:
@@ -41,17 +49,17 @@ class RequestLog(LogBase):
         # golden questions sent by the eval harness never reach the log as text
         CheckConstraint("NOT is_internal OR question IS NULL", name="ck_request_logs_internal_no_text"),
         CheckConstraint("outcome <> 'refused' OR reason_code IS NOT NULL", name="ck_request_logs_refusal_reason"),
-        CheckConstraint("turn >= 1", name="ck_request_logs_turn"),
-        Index("ix_request_logs_conversation_turn", "conversation_id", "turn"),  # not unique: a turn can be retried
+        CheckConstraint("turn_index >= 0", name="ck_request_logs_turn_index"),
+        CheckConstraint(f"length(request_id) = 32 AND request_id <> '{NO_TRACE}'", name="ck_request_logs_request_id"),
+        Index("ix_request_logs_conversation_turn", "conversation_id", "turn_index"),  # not unique: a turn can be retried
     )
 
-    request_id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)  # made by the server
-    trace_id: Mapped[str | None] = mapped_column(String(32))  # OTel trace id, when tracing is on
-    # A value, not a foreign key: guest conversations have no conversations row, and a member's log outlives the
-    # deleted conversation until the retention period ends
-    conversation_id: Mapped[uuid.UUID] = mapped_column()
-    turn: Mapped[int] = mapped_column(Integer)
-    prev_request_id: Mapped[uuid.UUID | None] = mapped_column()  # the request before this one in the conversation
+    request_id: Mapped[str] = mapped_column(String(32), primary_key=True)  # OTel trace id of the turn (Jaeger search)
+    # thread_id = gen_ai.conversation.id. A value, not a foreign key: guest conversations have no conversations row,
+    # and a member's log outlives the deleted conversation until the retention period ends
+    conversation_id: Mapped[str] = mapped_column(String(64))
+    turn_index: Mapped[int] = mapped_column(Integer)  # kosis.turn.index: 0 for the first question, as in the trace
+    prev_request_id: Mapped[str | None] = mapped_column(String(32))  # the request before this one in the conversation
     session_id: Mapped[uuid.UUID | None] = mapped_column(index=True)  # random browser session id, not a person
     is_member: Mapped[bool] = mapped_column(Boolean, default=False)
     is_internal: Mapped[bool] = mapped_column(Boolean, default=False)  # team or eval harness traffic
@@ -73,14 +81,13 @@ class RequestLog(LogBase):
     llm_calls: Mapped[int] = mapped_column(Integer, default=0)
     input_tokens: Mapped[int] = mapped_column(Integer, default=0)
     output_tokens: Mapped[int] = mapped_column(Integer, default=0)
-    llm_model: Mapped[str | None] = mapped_column(String(64))  # cost = tokens x the unit price of this model
     spans: Mapped[list] = mapped_column(JSONType, default=list)  # clean_spans(...)
 
     # Filled by the multi-turn quality detection (KOS-176) while the text still exists
-    rephrase_of: Mapped[uuid.UUID | None] = mapped_column()
+    rephrase_of: Mapped[str | None] = mapped_column(String(32))
     negative_reaction: Mapped[bool | None] = mapped_column(Boolean)
 
-    log_version: Mapped[int] = mapped_column(Integer, default=1)
+    log_version: Mapped[int] = mapped_column(Integer, default=LOG_VERSION)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
 
 

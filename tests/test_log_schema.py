@@ -15,63 +15,72 @@ from sqlalchemy import create_engine, func, select
 
 from kosis_store.db import session_scope
 from kosis_store.log_metrics import METRICS, metric, purge_questions
-from kosis_store.log_models import SPAN_KEYS, LogBase, RequestLog, clean_spans, failed_stage
+from kosis_store.log_models import NO_TRACE, SPAN_KEYS, LogBase, RequestLog, clean_spans, failed_stage
 
 offline = pytest.mark.offline
 DAY = date(2026, 11, 20)  # KST
-A, B, C, D, E, F = (uuid.uuid4() for _ in range(6))
+A, B, C, D, E, F = (uuid.uuid4().hex for _ in range(6))  # thread ids as the service makes them
+
+
+def _log(**kw) -> RequestLog:
+    """A row with a fresh trace-id-shaped key (32 hex)."""
+    return RequestLog(request_id=uuid.uuid4().hex, **kw)
 
 
 def _at(day: int, hour: int, minute: int = 0) -> datetime:
     return datetime(2026, 11, day, hour, minute, tzinfo=timezone.utc)
 
 
-def _span(name, ms, status="ok", stage="search", **more):
-    return {"name": name, "kind": "node", "stage": stage, "ms": ms, "status": status, **more}
+def _span(name, ms, status="ok", stage="search", kind="node", **more):
+    return {"name": name, "kind": kind, "stage": stage, "ms": ms, "status": status, **more}
 
 
 def _rows() -> list[RequestLog]:
     """Nine user questions on 11/20 KST in five conversations, one harness request, one question on 11/21 KST and one
     40 days old. Hand counts for each metric are in test_metrics_match_hand_counts."""
-    ok = dict(outcome="answered", has_numbers=True, llm_model="HCX-DASH-002")
+    ok = dict(outcome="answered", has_numbers=True)
     return [
         # 15:30 UTC on 11/19 is 00:30 on 11/20 in KST: counted on 11/20
-        RequestLog(conversation_id=A, turn=1, question="2023년 출생아 수", question_len=11, created_at=_at(19, 15, 30),
+        _log(conversation_id=A, turn_index=0, question="2023년 출생아 수", question_len=11, created_at=_at(19, 15, 30),
                    picked_key="K1", survey_name="S1", latency_ms=1000, first_token_ms=200, llm_calls=2,
                    input_tokens=100, output_tokens=50,
-                   spans=[_span("retrieve", 300), _span("compute", 500, stage="stat")], **ok),
-        RequestLog(conversation_id=A, turn=2, question="그 표에서 서울만", question_len=9, created_at=_at(20, 1),
+                   spans=[_span("retrieve", 300), _span("compute", 500, stage="stat"),
+                          _span("chat HCX-005", 400, stage="stat", kind="llm", model="HCX-005", input_tokens=100,
+                                output_tokens=50)], **ok),
+        _log(conversation_id=A, turn_index=1, question="그 표에서 서울만", question_len=9, created_at=_at(20, 1),
                    picked_key="K1", survey_name="S1", latency_ms=3000, first_token_ms=400, llm_calls=2,
                    input_tokens=100, output_tokens=50,
                    spans=[_span("retrieve", 500), _span("compute", 700, stage="stat")], **ok),
-        RequestLog(conversation_id=B, turn=1, question="2031년 인구", question_len=8, created_at=_at(20, 2),
+        _log(conversation_id=B, turn_index=0, question="2031년 인구", question_len=8, created_at=_at(20, 2),
                    outcome="refused", reason_code="no_period", failed_stage="stat", latency_ms=2000, llm_calls=1,
                    input_tokens=100,
                    spans=[_span("retrieve", 400), _span("compute", 100, status="refused", stage="stat")]),
-        RequestLog(conversation_id=C, turn=1, question="오늘 날씨", question_len=5, created_at=_at(20, 3),
+        _log(conversation_id=C, turn_index=0, question="오늘 날씨", question_len=5, created_at=_at(20, 3),
                    outcome="refused", reason_code="no_table", failed_stage="search", latency_ms=500,
                    spans=[_span("retrieve", 200), _span("gate", 10, status="refused")]),
-        RequestLog(conversation_id=D, turn=1, question="시도별 혼인 건수", question_len=9, created_at=_at(20, 4),
+        _log(conversation_id=D, turn_index=0, question="시도별 혼인 건수", question_len=9, created_at=_at(20, 4),
                    picked_key="K2", survey_name="S2", latency_ms=4000, first_token_ms=600, llm_calls=3,
                    input_tokens=300, output_tokens=150,
-                   spans=[_span("retrieve", 600), _span("compute", 900, stage="stat")], **ok),
-        RequestLog(conversation_id=D, turn=2, question="그거 말고", question_len=5, created_at=_at(20, 5),
+                   spans=[_span("retrieve", 600), _span("compute", 900, stage="stat"),
+                          _span("chat gpt-4o-mini", 200, stage="agent", kind="llm", model="gpt-4o-mini",
+                                input_tokens=300, output_tokens=150)], **ok),
+        _log(conversation_id=D, turn_index=1, question="그거 말고", question_len=5, created_at=_at(20, 5),
                    outcome="clarify", reason_code="ambiguous", latency_ms=800, llm_calls=1, input_tokens=100,
                    output_tokens=20, spans=[_span("retrieve", 100)]),
-        RequestLog(conversation_id=D, turn=3, question="출생아 수로", question_len=6, created_at=_at(20, 6),
+        _log(conversation_id=D, turn_index=2, question="출생아 수로", question_len=6, created_at=_at(20, 6),
                    picked_key="K1", survey_name="S1", latency_ms=2000, first_token_ms=300, llm_calls=2,
                    input_tokens=100, output_tokens=50, spans=[], **ok),
-        RequestLog(conversation_id=D, turn=4, question="전년 대비", question_len=5, created_at=_at(20, 7),
+        _log(conversation_id=D, turn_index=3, question="전년 대비", question_len=5, created_at=_at(20, 7),
                    outcome="error", failed_stage="search",
                    spans=[_span("retrieve", 50, status="error", error_type="TimeoutError")]),
-        RequestLog(conversation_id=E, turn=1, question="인구 추이", question_len=5, created_at=_at(20, 8),
+        _log(conversation_id=E, turn_index=0, question="인구 추이", question_len=5, created_at=_at(20, 8),
                    outcome="aborted"),
         # left out of every metric: harness traffic (no text), the next KST day, and an old row for the purge
-        RequestLog(conversation_id=F, turn=1, is_internal=True, created_at=_at(20, 9), picked_key="K2",
+        _log(conversation_id=F, turn_index=0, is_internal=True, created_at=_at(20, 9), picked_key="K2",
                    latency_ms=9000, **ok),
-        RequestLog(conversation_id=F, turn=2, question="다음 날 질문", question_len=7, created_at=_at(20, 15, 30),
+        _log(conversation_id=F, turn_index=1, question="다음 날 질문", question_len=7, created_at=_at(20, 15, 30),
                    picked_key="K2", latency_ms=7000, **ok),
-        RequestLog(conversation_id=F, turn=3, question="오래된 질문", question_len=6,
+        _log(conversation_id=F, turn_index=2, question="오래된 질문", question_len=6,
                    created_at=datetime(2026, 10, 1, tzinfo=timezone.utc), picked_key="K2", latency_ms=7000, **ok),
     ]
 
@@ -88,12 +97,14 @@ def _sqlite(tmp_path):
     dict(outcome="refused"),  # a refusal says why
     dict(outcome="done"),  # not an outcome
     dict(outcome="answered", input_method="voice"),
-    dict(outcome="answered", turn=0),
+    dict(outcome="answered", turn_index=-1),  # the trace counts turns from 0
+    dict(outcome="answered", request_id=NO_TRACE),  # tracing was off: no usable key
+    dict(outcome="answered", request_id="abc"),  # not a trace id
 ])
 def test_rows_that_break_a_rule_are_rejected(tmp_path, bad):
     engine = _sqlite(tmp_path)
     with pytest.raises(Exception), session_scope(engine) as s:
-        s.add(RequestLog(**{"conversation_id": A, "turn": 1, **bad}))
+        s.add(RequestLog(**{"request_id": uuid.uuid4().hex, "conversation_id": A, "turn_index": 0, **bad}))
     with session_scope(engine) as s:
         assert s.scalar(select(func.count()).select_from(RequestLog)) == 0
 
@@ -102,12 +113,12 @@ def test_rows_that_break_a_rule_are_rejected(tmp_path, bad):
 def test_guest_row_needs_no_conversation_and_keeps_defaults(tmp_path):
     engine = _sqlite(tmp_path)
     with session_scope(engine) as s:  # no conversations table at all here: conversation_id is a plain value
-        s.add(RequestLog(conversation_id=A, turn=1, outcome="aborted"))
+        s.add(_log(conversation_id="c0ffee", turn_index=0, outcome="failed"))  # any client thread id, failed turn
     with session_scope(engine) as s:
         row = s.scalars(select(RequestLog)).one()
-        assert isinstance(row.request_id, uuid.UUID) and row.created_at is not None
-        assert (row.is_member, row.is_internal, row.input_method, row.spans, row.llm_calls) == (
-            False, False, "typed", [], 0)
+        assert len(row.request_id) == 32 and row.created_at is not None
+        assert (row.is_member, row.is_internal, row.input_method, row.spans, row.llm_calls, row.log_version) == (
+            False, False, "typed", [], 0, 2)
 
 
 @offline
@@ -130,6 +141,115 @@ def test_failed_stage_is_the_first_span_that_did_not_end_ok():
                          _span("chart", 1, status="error", stage="chart")]) == "stat"
     assert failed_stage([{"name": "x", "status": "error"}]) == "unknown"
     assert failed_stage([]) is None
+
+
+# ---------------------------------------------------------------- a real service turn -> one row (log_rows)
+
+def _service_turn(outcome: str = "refused", fail: bool = False):
+    """One turn traced the way the service traces it (start_turn + LiveSpans, T3-30~32), on made-up nodes:
+    search node -> search_tables tool, statistics node -> one chat model call. Returns (finished spans, root)."""
+    from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+    from langchain_core.messages import AIMessage
+    from langchain_core.runnables import RunnableLambda
+    from langchain_core.tools import tool
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    from kosis_agent.observability.tracing import start_turn
+
+    memory = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(memory))
+    root, spans = start_turn(provider.get_tracer("test"), "thread-1", 2)
+
+    @tool
+    def search_tables(question: str) -> str:
+        """Find tables."""
+        if fail:
+            raise TimeoutError("2023년 출생아 수")  # the message carries the question: it must not reach the log
+        return "K1"
+
+    chat = GenericFakeChatModel(messages=iter([AIMessage("{}", usage_metadata={
+        "input_tokens": 120, "output_tokens": 30, "total_tokens": 150})]))
+
+    def node(name, fn, x, config):
+        return RunnableLambda(fn, name=name).invoke(
+            x, {**config, "metadata": {**(config.get("metadata") or {}), "langgraph_node": name}})
+
+    def turn(x, config):
+        node("search", lambda y, config: search_tables.invoke({"question": y}, config), x, config)
+        node("statistics", lambda y, config: chat.invoke("해석", config), x, config)
+        return {"outcome": outcome}
+
+    try:
+        RunnableLambda(turn, name="LangGraph").invoke("2023년 출생아 수", {"callbacks": [spans]})
+    except TimeoutError:
+        pass
+    root.end()
+    return memory.get_finished_spans(), root
+
+
+@offline
+def test_log_rows_uses_the_tracing_names():
+    from kosis_agent.observability import tracing
+    from kosis_store import log_rows
+
+    assert (log_rows.ROOT_SPAN, log_rows.TOOL_PREFIX, log_rows.CHAT) == (
+        tracing.ROOT_SPAN, tracing.TOOL_PREFIX, tracing.CHAT)
+
+
+@offline
+def test_a_service_turn_becomes_one_valid_row(tmp_path):
+    from kosis_agent.observability.tracing import trace_id
+    from kosis_store.log_rows import row_from_turn
+
+    finished, root = _service_turn("refused")
+    result = {"outcome": "refused", "answer_origin": "refusal", "table_key": None, "picked": [], "chart": None}
+    row = row_from_turn(finished, result, question="2023년 출생아 수", first_token_ms=40)
+
+    assert row["request_id"] == trace_id(root) and row["conversation_id"] == "thread-1" and row["turn_index"] == 2
+    # no reason on the trace (the made-up graph has no ChatResult): unknown, not a rejected row
+    assert (row["outcome"], row["reason_code"], row["failed_stage"]) == ("refused", "unknown", "search")
+    steps = {s["name"]: s for s in row["spans"]}
+    chat_name = next(n for n in steps if n.startswith("chat "))
+    assert {n: (s["kind"], s["stage"]) for n, s in steps.items()} == {
+        "search": ("node", "search"), "execute_tool search_tables": ("tool", "search"),
+        "statistics": ("node", "stat"), chat_name: ("llm", "stat")}
+    assert all(set(s) <= set(SPAN_KEYS) for s in row["spans"])
+    assert (row["llm_calls"], row["input_tokens"], row["output_tokens"]) == (1, 120, 30)
+    assert row["latency_ms"] is not None and row["question_len"] == len("2023년 출생아 수")
+
+    engine = _sqlite(tmp_path)
+    with session_scope(engine) as s:  # the row passes every CHECK of the table as it is
+        s.add(RequestLog(**row))
+    with session_scope(engine) as s:
+        assert s.get(RequestLog, row["request_id"]).question == "2023년 출생아 수"
+
+
+@offline
+def test_an_error_turn_keeps_the_error_type_and_drops_its_message():
+    from kosis_store.log_rows import row_from_turn
+
+    finished, _ = _service_turn(fail=True)
+    row = row_from_turn(finished, None, question="2023년 출생아 수")
+    assert (row["outcome"], row["reason_code"], row["failed_stage"]) == ("error", "TimeoutError", "search")
+    assert "출생아" not in str(row["spans"])  # the exception message never reaches the steps
+
+
+@offline
+def test_aborted_and_harness_turns():
+    from kosis_store.log_rows import row_from_turn
+
+    finished, _ = _service_turn("answered")
+    picked = [{"key": "K0", "survey_name": "S0"}, {"key": "K1", "survey_name": "인구동향조사"}]
+    answered = {"outcome": "answered", "answer_origin": "stat", "table_key": "K1", "picked": picked,
+                "stat_answer": {"outcome": "answered"}, "chart": {"mark": "bar"}}
+    row = row_from_turn(finished, answered, question="2023년 출생아 수", is_internal=True)
+    assert (row["outcome"], row["picked_key"], row["survey_name"], row["has_numbers"], row["has_chart"]) == (
+        "answered", "K1", "인구동향조사", True, True)
+    assert row["question"] is None and row["is_internal"]  # harness text is never kept
+    assert row_from_turn(finished, answered, aborted=True)["outcome"] == "aborted"
 
 
 PG_URL = os.environ.get("TEST_DATABASE_URL", "").strip()
@@ -164,9 +284,13 @@ def test_metrics_match_hand_counts(pg):
     assert got["top_tables"] == [{"picked_key": "K1", "survey_name": "S1", "n": 3},
                                  {"picked_key": "K2", "survey_name": "S2", "n": 1}]
     assert got["turns_per_conversation"] == [{"turns": "1", "n": 3}, {"turns": "2", "n": 1}, {"turns": "4+", "n": 1}]
-    # retrieve ms: 50, 100, 200, 300, 400, 500, 600 · compute ms: 100, 500, 700, 900 · gate: 10
+    # retrieve ms: 50, 100, 200, 300, 400, 500, 600 · compute ms: 100, 500, 700, 900 · gate: 10 · one call per model
     assert {r["name"]: (float(r["p50"]), float(r["p95"])) for r in got["stage_latency"]} == {
-        "compute": (600, pytest.approx(870)), "gate": (10, 10), "retrieve": (300, pytest.approx(570))}
+        "compute": (600, pytest.approx(870)), "gate": (10, 10), "retrieve": (300, pytest.approx(570)),
+        "chat HCX-005": (400, 400), "chat gpt-4o-mini": (200, 200)}
+    assert got["llm_by_model"] == [
+        {"model": "HCX-005", "calls": 1, "input_tokens": 100, "output_tokens": 50},
+        {"model": "gpt-4o-mini", "calls": 1, "input_tokens": 300, "output_tokens": 150}]
     # first_token_ms: 200, 300, 400, 600
     assert (got["first_token"][0]["p50"], got["first_token"][0]["p95"]) == (350, pytest.approx(570))
     usage = got["llm_usage"][0]  # calls 11, input 800, output 320 over 9 questions
