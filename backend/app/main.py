@@ -20,7 +20,7 @@ from fastapi import Depends, FastAPI, HTTPException
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 from langchain_core.messages import HumanMessage
 from langchain_core.tools import BaseTool
-from opentelemetry.trace import Span, StatusCode, Tracer
+from opentelemetry.trace import Span, Tracer
 from pydantic import BaseModel, Field
 
 import kosis_agent  # noqa: F401  (sets KOSIS_WORKSPACE before phase 1 / phase 2 modules load)
@@ -28,7 +28,7 @@ from backend.app import telemetry
 from kosis_agent.envfile import load_env_file
 from kosis_agent.graph.main_graph import build_graph, call_tool
 from kosis_agent.graph.state import ChatResult, chat_result, new_checkpointer
-from kosis_agent.observability.tracing import LiveSpans, start_turn, trace_id
+from kosis_agent.observability.tracing import LiveSpans, record_error, start_turn, trace_id
 from kosis_agent.retrieval.search import make_search_tables_tool
 from kosis_agent.services.chart import make_chart_tool, to_vega_lite
 from kosis_agent.services.statistics import make_summarize_stat_tool
@@ -201,8 +201,7 @@ def _record_turn(root: Span, question: str, result: ChatResult | None = None) ->
 
 
 def _fail(span: Span, error: BaseException) -> None:
-    span.record_exception(error)
-    span.set_status(StatusCode.ERROR, f"{type(error).__name__}: {error}")
+    record_error(span, error)  # T3-44: a cut copy in the trace; the response still carries the full error
 
 
 def _run_tool(tracer: Tracer, name: str, tools: dict[str, BaseTool], args: dict) -> Any:
