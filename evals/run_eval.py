@@ -37,12 +37,13 @@ from kosis_agent.observability.tracing import SERVICE
 from evals import ops, quality, report_html, trace
 from evals.evaluators import alternates
 from evals.schemas import AGENT_SCENARIOS, DATASETS, GOLDEN, QUERY_GOLDEN, ROOT, TABLES
-from evals.tasks import ablation, agent, common, l0_metadata, l1_retrieval, l2_query, l3_calculation, l4_e2e, l012, ragas
+from evals.tasks import ablation, agent, common, l0_metadata, l1_retrieval, l2_query, l3_calculation, l4_e2e, l012, online, ragas
 
 # T3-29: one module per evaluation task, each with run(args) -> (rows, summary, report) and, where it has them,
 # owners(rows, summary) for the "고칠 담당" section and target(args, op) for its ops_history line.
 TASKS = {"l0": l0_metadata, "l1": l1_retrieval, "l2": l2_query, "ablation": ablation, "l012": l012, "l3": l3_calculation,
-         "e2e": l4_e2e, "agent": agent, "ragas": ragas}
+         "e2e": l4_e2e, "agent": agent, "ragas": ragas, "online": online}
+DEGRADED_EXIT = 3  # online: a drop against the earlier online records (T3-43); dev.sh passes it on
 REPORTS = ROOT / "evals" / "reports"
 CALC_GOLDEN = DATASETS / "calculation_golden.jsonl"
 POOL = DATASETS / "retrieval_pool.csv"
@@ -99,7 +100,7 @@ def owner_section(layer: str, rows: list[dict], summary: dict) -> str:
 def main(argv: list[str] | None = None) -> Path:
     """Run one layer; returns the run folder (evals.suite reads it)."""
     parser = argparse.ArgumentParser(description="Run one evaluation layer (L1 retrieval, L3 calculation, e2e).")
-    parser.add_argument("--layer", choices=("l0", "l1", "l2", "ablation", "l012", "l3", "e2e", "agent", "ragas"), required=True)  # e2e: first part of L4
+    parser.add_argument("--layer", choices=("l0", "l1", "l2", "ablation", "l012", "l3", "e2e", "agent", "ragas", "online"), required=True)  # e2e: first part of L4
     parser.add_argument("--stage", required=True, help="what this run measures, e.g. T2-04-bm25")
     parser.add_argument("--split", choices=("dev", "test", "all"), help="default: dev for l012 (the slot baselines), test otherwise")
     parser.add_argument("--retriever", default="bm25-catalog", help="l1, e2e: oracle (l1 only) | bm25-catalog | bm25-record | chroma")
@@ -123,7 +124,12 @@ def main(argv: list[str] | None = None) -> Path:
     parser.add_argument("--oracle", action="store_true", help="agent: grade the perfect run (self-check, all 1.000)")
     parser.add_argument("--repeat", type=int, default=1, help="agent: runs per scenario for pass^k")
     parser.add_argument("--no-judge-cache", action="store_true", help="ragas: call the judge again (judge noise runs)")
-    parser.add_argument("--no-record", action="store_true", help="ragas: keep this run out of quality_history.jsonl (experiments)")
+    parser.add_argument("--no-record", action="store_true", help="ragas: keep this run out of quality_history.jsonl (experiments); "
+                        "online: out of online_history and online_failures")
+    parser.add_argument("--lookback", default="24h", help="online: Jaeger window of service traces (e.g. 24h, 7d)")
+    parser.add_argument("--limit", type=int, default=500, help="online: at most this many service traces")
+    parser.add_argument("--sample", type=int, default=40, help="online: answered turns the Ragas judge scores")
+    parser.add_argument("--seed", type=int, default=0, help="online: sample seed")
     settings = parser.add_argument_group("settings (argument > shell > .env > default)")
     settings.add_argument("--env-file", type=Path, default=None, help="default: <repo>/.env (skipped when KOSIS_DOTENV=off)")
     settings.add_argument("--no-env-file", action="store_true", help="do not read any .env")
@@ -155,6 +161,12 @@ def main(argv: list[str] | None = None) -> Path:
         from evals.runners.agent import link_questions, tracing
 
         link_questions(tracing("ragas")[0], rows, "ragas", name="eval.ragas", attributes=ragas.span_attributes)
+        exported = True
+    if args.layer == "online" and os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT"):  # T3-43: onto the service turn's trace
+        from evals.runners.agent import link_questions, tracing
+
+        link_questions(tracing("online")[0], [r for r in rows if r["failure"] or r["faithfulness"] is not None], "online",
+                       name="eval.online", attributes=online.span_attributes)
         exported = True
     if owners := owner_section(args.layer, rows, summary):  # right under the title: the first thing a teammate reads
         head, _, rest = report.partition("\n\n")
@@ -203,10 +215,12 @@ def main(argv: list[str] | None = None) -> Path:
     (out / "report.md").write_text(report, encoding="utf-8")
     if args.layer == "ragas" and not args.no_record:  # T3-19: gate metrics for tests/test_quality_gate.py (CI)
         quality.record(run_id, args.stage, summary)
+    if args.layer == "online" and not args.no_record:  # T3-43: local online history (traffic, never committed)
+        online.record_history(run_id, summary)
     if args.llm == "mock" and live_llm:
         pass  # a mock run checks the path; its numbers stay out of the committed history
-    elif args.from_run:
-        pass  # a regrade copies the past run's latencies and tokens: they are already in the history once
+    elif args.from_run or args.layer == "online":
+        pass  # a regrade copies the past run's latencies and tokens; online traffic stays out of the committed history
     elif args.layer == "l012":
         for name, o in op.items():
             ops.append_history(run_id, name, args.stage, {"l0": "registry", "l2": "parse_query"}.get(name, args.retriever), o)
@@ -218,5 +232,11 @@ def main(argv: list[str] | None = None) -> Path:
     return out
 
 
+def exit_code(out: Path) -> int:
+    """0, or DEGRADED_EXIT for an online run that found a drop (T3-43)."""
+    m = json.loads((out / "manifest.json").read_text(encoding="utf-8"))
+    return DEGRADED_EXIT if m["layer"] == "online" and m["summary"].get("degraded") else 0
+
+
 if __name__ == "__main__":
-    main()
+    raise SystemExit(exit_code(main()))

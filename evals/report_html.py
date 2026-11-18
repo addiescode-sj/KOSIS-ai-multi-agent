@@ -250,15 +250,28 @@ def l3_body(m: dict, rows: list[dict]) -> str:
     ])
 
 
+def question_of(r: dict, width: int = 60) -> str:
+    """The row's question text, cut to `width` characters (the full text is in the cell's tooltip)."""
+    q = r.get("question") or ""
+    return q if len(q) <= width else q[:width - 1] + "…"
+
+
+def q_cell(r: dict) -> str:
+    return f'<td title="{esc(r.get("question") or "")}">{esc(question_of(r))}</td>'
+
+
 def error_info(errors: list[tuple[str, int]], rows: list[dict]) -> str:
-    """Under the error chart: what each error means, the stage it was blamed on and which questions have it."""
+    """Under the error chart: what each error means, the stage it was blamed on and which questions have it
+    (qid with its question, so a reader sees what was asked without opening results.jsonl)."""
     items = []
     for name, count in errors:
         hit = [r for r in rows if name in r.get("errors", [])]
         stages = sorted({r["failure"]["label"] for r in hit if r.get("failure")})
-        qids = ", ".join(r["qid"] for r in hit[:6]) + (" …" if len(hit) > 6 else "")
+        asked = "".join(f'<li><b>{esc(r["qid"])}</b> {esc(question_of(r))}</li>' for r in hit[:6])
+        more = f"<li>… 외 {len(hit) - 6}건</li>" if len(hit) > 6 else ""
         items.append(f'<li><b>{esc(name)}</b> {count}건 — {esc(ERROR_INFO.get(name, "설명 없음 (evaluators/calculation.py ERROR_INFO)"))}'
-                     f'<div class="tools">{"실패 단계: " + esc(", ".join(stages)) + " · " if stages else ""}문항: {esc(qids)}</div></li>')
+                     f'<div class="tools">{"실패 단계: " + esc(", ".join(stages)) if stages else ""}</div>'
+                     f'<ul class="tools">{asked}{more}</ul></li>')
     return f'<ul class="info">{"".join(items)}</ul>' if items else ""
 
 
@@ -400,15 +413,15 @@ def rows_table(layer: str, rows: list[dict]) -> str:
                        f'<td class="num">{esc(r.get("rank") or ("답 없음" if not r["answerable"] else "-"))}</td><td>{esc(r.get("slot_ranks", ""))}</td>'
                        f'<td>{esc(", ".join(r["keys"][:3]))}</td><td class="num">{r["latency_ms"]:.1f}</td></tr>' for r in rows)
     elif layer == "e2e":
-        head = ["qid", "kind", "판정", "원인", "실패 단계", "쓴 표", "정답 순위", "오류", "ms", "토큰"]
-        body = "".join(f'<tr><td>{esc(r["qid"])}</td><td>{esc(r["kind"])}</td><td>{esc(r["verdict"])}</td><td>{esc(r["cause"])}</td>'
+        head = ["qid", "질문", "kind", "판정", "원인", "실패 단계", "쓴 표", "정답 순위", "오류", "ms", "토큰"]
+        body = "".join(f'<tr><td>{esc(r["qid"])}</td>{q_cell(r)}<td>{esc(r["kind"])}</td><td>{esc(r["verdict"])}</td><td>{esc(r["cause"])}</td>'
                        f'<td>{esc((r.get("failure") or {}).get("label", "-"))}</td>'
                        f'<td>{esc(r["used_table"] or "-")}{"" if r["right_table"] else " ✕"}</td><td class="num">{esc(r["gold_rank"] or "밖")}</td>'
                        f'<td>{esc(", ".join(r["errors"]))}</td><td class="num">{r.get("latency_ms", 0):.0f}</td>'
                        f'<td class="num">{r.get("input_tokens", 0) + r.get("output_tokens", 0):,}</td></tr>' for r in rows)
     else:
-        head = ["qid", "kind", "판정", "실패 단계", "오류", "ms", "토큰"]
-        body = "".join(f'<tr><td>{esc(r["qid"])}</td><td>{esc(r["kind"])}</td><td>{esc(r["verdict"])}</td>'
+        head = ["qid", "질문", "kind", "판정", "실패 단계", "오류", "ms", "토큰"]
+        body = "".join(f'<tr><td>{esc(r["qid"])}</td>{q_cell(r)}<td>{esc(r["kind"])}</td><td>{esc(r["verdict"])}</td>'
                        f'<td>{esc((r.get("failure") or {}).get("label", "-"))}</td><td>{esc(", ".join(r["errors"]))}</td>'
                        f'<td class="num">{r.get("latency_ms", 0):.0f}</td><td class="num">{r.get("input_tokens", 0) + r.get("output_tokens", 0):,}</td></tr>' for r in rows)
     return ('<details class="card"><summary>문항별 결과 표 (' + str(len(rows)) + "건)</summary><table><tr>"
@@ -417,7 +430,8 @@ def rows_table(layer: str, rows: list[dict]) -> str:
 
 LAYER_TITLES = {"l0": "L0 메타데이터", "l1": "L1 검색", "l1-gold": "L1 슬롯 필터 (정답 슬롯)", "l1-pred": "L1 슬롯 필터 (파서 슬롯)",
                 "l2": "L2 질의 이해", "ablation": "L1 슬롯 ablation", "l012": "L0 + L1 필터 + L2", "l3": "L3 계산",
-                "e2e": "L4 종단 간 (e2e)", "agent": "에이전트 (멀티턴 · 멀티쿼리)", "ragas": "Ragas 심판 지표"}
+                "e2e": "L4 종단 간 (e2e)", "agent": "에이전트 (멀티턴 · 멀티쿼리)", "ragas": "Ragas 심판 지표",
+                "online": "온라인 평가 (실제 요청)"}
 NO_TRACE = "이 계층은 모델·그래프를 부르지 않아 trace가 없다(지연은 함수 실행 시간)."
 GUIDE = {  # layer -> how to read this page, one line per item
     "l0": ["채움률: 필터가 쓰는 메타데이터 필드가 채워진 표의 비율. 높을수록 좋다(골든 정답 표 기준이 더 중요).",
@@ -443,6 +457,9 @@ GUIDE = {  # layer -> how to read this page, one line per item
               "ID Precision·Recall은 같은 검색 지표를 정답 표 ID로 코드가 계산한 값이다. LLM 값과 많이 다르면 심판을 의심한다.",
               "저점(< 0.5) 문항은 trace의 담당 노드(search/… = 검색 그래프, statistics/… = 실전 1)로 묶는다. 문항 trace 워터폴은 원 e2e run과 같다.",
               "CI 게이트: 이 run의 지표가 evals/quality_baseline.json보다 허용폭 넘게 떨어지면 tests/test_quality_gate.py가 실패한다."],
+    "online": ["서비스 trace(실제 요청)를 읽어 평가한다. 정답이 없으므로 숫자는 코드가 대화 근거(질문·계산 사실·합산)와 대조하고, 심판은 표본 답 문장만 채점한다.",
+               "저하: 같은 키의 이전 온라인 기록(3개 이상) 중앙값보다 허용폭(심판 흔들림·표본 표준오차 중 큰 값) 넘게 나빠지면 표시한다.",
+               "실패 케이스는 evals/datasets/online_failures.jsonl(로컬 전용)에 쌓인다. 거절은 실패가 아니라 사유별 검토 대상이다."],
 }
 ROW_CAP = 200  # rows shown in the result table; problem rows first, the rest are in results.jsonl
 
@@ -508,6 +525,9 @@ def summary_tiles(layer: str, s: dict) -> str:
     elif layer == "ragas":
         tiles = [tile("—" if v["mean"] is None else f"{v['mean']:.3f}", f"{name} (n={v['n']})")
                  for name, v in (s.get("metrics") or {}).items() if not name.startswith("id_")]
+    elif layer == "online":
+        tiles = [tile("—" if v is None else f"{v:.3f}", name) for name, v in (s.get("metrics") or {}).items()]
+        tiles.append(tile(str((s.get("drift") or {}).get("status", "—")), "품질 저하 판정"))
     return f'<div class="tiles">{"".join(tiles)}</div>' if tiles else ""
 
 
@@ -520,14 +540,19 @@ def generic_rows_table(rows: list[dict]) -> str:
     """Scalar columns of the rows, problem rows first, at most ROW_CAP rows."""
     if not rows:
         return ""
-    cols = [k for k, v in rows[0].items() if k != "layer" and (v is None or isinstance(v, (str, int, float, bool)))][:10]
+    cols = [k for k, v in rows[0].items() if k not in ("layer", "question", "answer")
+            and (v is None or isinstance(v, (str, int, float, bool)))][:10]
+    if any(r.get("question") for r in rows):  # the question right after the id: what was asked, at a glance
+        cols.insert(1, "question")
     shown = sorted(rows, key=lambda r: not _problem(r))[:ROW_CAP]
-    cell = lambda v: f'<td class="num">{v:.1f}</td>' if isinstance(v, float) else f"<td>{esc('' if v is None else v)}</td>"  # noqa: E731
-    body = "".join("<tr>" + "".join(cell(r.get(c)) for c in cols) + "</tr>" for r in shown)
+    num = lambda v: f"{v:.3f}" if abs(v) <= 1 else f"{v:.1f}"  # noqa: E731  (scores and rates keep their decimals)
+    cell = lambda r, c: (q_cell(r) if c == "question" else f'<td class="num">{num(r[c])}</td>' if isinstance(r.get(c), float)  # noqa: E731
+                         else f"<td>{esc('' if r.get(c) is None else r.get(c))}</td>")
+    body = "".join("<tr>" + "".join(cell(r, c) for c in cols) + "</tr>" for r in shown)
     n_bad = sum(map(_problem, rows))
     more = f" · {ROW_CAP}행까지 표시, 전체는 results.jsonl" if len(rows) > ROW_CAP else ""
     return (f'<details class="card"><summary>행별 결과 ({len(rows):,}건, 주의 {n_bad:,}건 먼저{more})</summary><table><tr>'
-            + "".join(f"<th>{esc(c)}</th>" for c in cols) + "</tr>" + body + "</table></details>")
+            + "".join(f"<th>{esc('질문' if c == 'question' else c)}</th>" for c in cols) + "</tr>" + body + "</table></details>")
 
 
 def tool_chips(calls: list[dict]) -> str:

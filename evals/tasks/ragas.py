@@ -109,7 +109,7 @@ def run(args) -> tuple[list[dict], dict, str]:
         nodes = {mt: rm.node_for(mt, r, k) for mt in low}
         worst = min(low, key=low.get) if low else None
         out.append({
-            "qid": r["qid"], "kind": r["kind"], "outcome": r["outcome"], "verdict": r["verdict"],
+            "qid": r["qid"], "question": r["question"], "kind": r["kind"], "outcome": r["outcome"], "verdict": r["verdict"],
             **{mt: scores[mt] for mt in rm.METRICS}, "low_nodes": nodes, "judge_errors": errors[i],
             "used_table": r.get("used_table"), "gold_keys": r["gold_keys"], "keys": r["keys"][:k],
             "failure": {"stage": "ragas", "label": "Ragas 저점", "span": nodes[worst],
@@ -158,8 +158,8 @@ def report(args, s: dict, rows: list[dict]) -> str:
     lines += [f"| {LABELS[mt]} | {', '.join(f'`{n}` {c}' for n, c in nodes.items()) or '없음'} |" for mt, nodes in s["low_nodes"].items()]
     worst = sorted((r for r in rows if r["failure"]), key=lambda r: min(r[mt] for mt in r["low_nodes"]))[:10]
     if worst:
-        lines += ["", "## 가장 낮은 문항 10", "", "| qid | 판정 | 저점 지표 | 담당 노드 | trace |", "|---|---|---|---|---|"]
-        lines += [f"| {r['qid']} | {r['verdict']} | " + ", ".join(f"{mt} {r[mt]:.2f}" for mt in r["low_nodes"])
+        lines += ["", "## 가장 낮은 문항 10", "", "| qid | 질문 | 판정 | 저점 지표 | 담당 노드 | trace |", "|---|---|---|---|---|---|"]
+        lines += [f"| {r['qid']} | {r['question'].replace('|', '/')} | {r['verdict']} | " + ", ".join(f"{mt} {r[mt]:.2f}" for mt in r["low_nodes"])
                   + f" | {r['failure']['span']} | `{(r['trace_id'] or '')[:16]}` |" for r in worst]
     return "\n".join(lines) + "\n"
 

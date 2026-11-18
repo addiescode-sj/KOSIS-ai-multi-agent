@@ -636,3 +636,37 @@ python -m evals.builders.alternates     # data/values 전수 스캔(약 1분) �
   agent 표 키 판정은 라벨 status가 아니라 규칙만 본다(e2e 숫자 채점과 같고, e2e 정답 표 판정은 auto·accepted 라벨).
 - 라벨 파일 hash는 l3·e2e manifest의 `alternates`와 ragas 게이트 비교 키에 들어간다. 라벨이 바뀌면 기준선을 다시 promote한다.
 
+## 10. 평가 파이프라인 구조 — 오프라인 / 온라인 / 리포트 (T3-43, 고정)
+
+```
+                         Golden Dataset (질문 · 기준 정답 · 정답 통계표 ID · 기대 계산 결과)
+                                   ↓
+   Offline Evaluation (개발 / PR / 배포 전)          Online Evaluation (실제 사용자 요청)
+   고정 Golden Set · Ragas 평가 · Baseline 비교       Trace 수집 · 표본 추출 평가
+   · Regression Gate                                   · 품질 저하 감지 · 실패 케이스 수집
+                                   ↓
+                 Evaluation Report (지표별 점수 · 실패 유형 · 이전 버전 대비 변화)
+```
+
+```bash
+bash scripts/dev.sh suite --stage <ID>                    # 오프라인 (exit 1 run 실패 · 2 회귀 게이트 하락)
+bash scripts/dev.sh online --stage <ID>-online [--lookback 24h --limit 500 --sample 40]   # 온라인 (exit 3 품질 저하)
+bash scripts/dev.sh pipeline --stage <ID> [suite 인자]    # 둘 다, 오프라인 먼저 (exit = 처음 0이 아닌 값)
+```
+
+dev.sh는 Docker·Chroma·Jaeger를 띄우고 `uv run --group embed --group ragas`로 실행한다(그룹을 하나만 주면 다른 그룹이 sync로 지워진다).
+
+| 단계 | 오프라인 (`evals.suite`) | 온라인 (`--layer online`) |
+|---|---|---|
+| 입력 | 고정 골든셋(calculation·retrieval golden, 대체 표 라벨) | 서비스 trace(Jaeger, `deployment.environment.name=service`). 재현: `--from-run <agent run>` |
+| 평가 | L0~L4·agent → e2e 답을 `ragas`가 심판(e2e가 mock·skip이면 ragas skip) | 전 턴 코드 검사(최종 답 숫자 근거·출처, agent `answer.py`) + 결과 분포, 답한 턴 표본에 Ragas Faithfulness·Relevancy |
+| 비교 | 같은 조건 기준 run(`--baseline`) + **회귀 게이트**(이번 ragas summary vs `evals/quality_baseline.json`, CI와 같은 비교, 기준선 없음·키 다름은 skipped) | 같은 키 이전 온라인 기록(3개 이상)의 중앙값, 허용폭 = max(심판 흔들림 0.03, 2×표본 표준오차) |
+| 기록 | `quality_history.jsonl`(집계, 커밋) | `evals/datasets/online_history.jsonl`(로컬, 커밋 안 함: 트래픽이 매일 바뀜) |
+| 실패 | run 리포트의 실패 단계(`실패: retrieval` 등) | `evals/datasets/online_failures.jsonl`(로컬 전용, trace 단위 중복 제거, 30일 보존): 오류·근거 없는 숫자·출처 누락·Faithfulness 저점, 거절은 `refusal_review:<사유>`로 분리 → 사람이 검토해 골든셋 후보로 |
+| 리포트 | suite.html: 지표별 점수 · 실패 유형 · 기준 대비 차이 · 회귀 게이트 표 | online report.html: 지표 · 표준오차 · 직전 기록 중앙값 · 허용폭 · 저하 · 턴 결과 · 거절 사유 · 실패 케이스 |
+
+- 서비스 trace의 턴 루트 `invoke_agent`에 `kosis.turn.question`·`kosis.turn.answer`·`kosis.turn.table_key`·`kosis.turn.resolved_question`이 있다(T3-43).
+  이 속성이 없는 trace(그 전 기록)는 온라인 평가가 읽지 못하고 "질문 없는 trace"로 센다.
+- Jaeger(all-in-one)는 메모리 저장이라 재시작하면 trace가 사라진다. 운영에서는 저장소를 붙이거나 매일 온라인 평가를 돌려 기록을 남긴다.
+- 온라인 점수 행은 `eval.online` span으로 원래 서비스 trace에 link된다(`kosis.online.faithfulness` 등, OTLP endpoint가 있을 때).
+
