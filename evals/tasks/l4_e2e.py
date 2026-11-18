@@ -10,6 +10,7 @@ from collections import Counter
 
 from evals.evaluators import alternates
 from evals.schemas import CalcItem, QueryItem, RetrievalItem, load_items, load_jsonl
+from evals.trace import node_ranks
 from evals.tasks.common import (MOCK_NOTE, answer_owners, calc_items, grade, pct, single_turn_rows, summarize_stat_target,
                                 verdict_table)
 
@@ -65,8 +66,15 @@ def run(args) -> tuple[list[dict], dict, str]:
                 "right_alternate": sum(r["right_alternate"] for r in rows),
                 "no_period": (sum(r["outcome"] == "refused" for r in no_period), len(no_period)),
                 "no_period_reason": (sum(r["outcome"] == "refused" and "wrong_reason" not in r["errors"] for r in no_period), len(no_period))}
+    # T3-45: an error tag on a row answered from another table mostly says "other table" (its cells against the golden)
+    errors_by_top1 = {side: dict(Counter(e for r in rows if r["right_table"] is (side == "right") for e in r["errors"]))
+                      for side in ("right", "wrong")}
+    k = max((len(r["keys"]) for r in rows), default=5)
+    nodes = node_ranks(rows, k)
+    restored = sum(bool(a.get("search_restored")) for a in raw)
     summary = {"verdicts": verdicts, "errors": dict(errors), "top1_right": len(right), "by_top1": split, "causes": causes,
-               "template": template}
+               "template": template, "errors_by_top1": errors_by_top1, "search_nodes": nodes, "search_k": k,
+               "search_restored": restored}
     n = len(rows) or 1
     report = "\n".join([
         f"# L4 end to end — {args.stage}", "",
@@ -86,6 +94,12 @@ def run(args) -> tuple[list[dict], dict, str]:
         f"- 템플릿 {{연도}} 일치 {pct(*template['year'])} · {{지역}} 일치 {pct(*template['region'])} (L2 정답 라벨과 같은 qid, 답한 문항만)",
         f"- no_period 문항 (§4.3): 거절 {pct(*template['no_period'])} · 사유까지 맞음 {pct(*template['no_period_reason'])}",
         "- 오류 유형: " + (", ".join(f"{k} {v}" for k, v in errors.most_common()) or "없음"),
+        *(f"  - {'맞힌' if side == 'right' else '틀린'} 표에서: "
+          + (", ".join(f"{e} {c}" for e, c in sorted(tags.items(), key=lambda kv: -kv[1])) or "없음")
+          for side, tags in errors_by_top1.items()),
+        "- 검색 노드별 정답 표 순위 (답할 문항, T3-45): " + (" → ".join(
+            f"{name} 1위 {c['top1']}/{c['n']} · top{k} {c['topk']} · 후보 밖 {c['missing']}" for name, c in nodes.items()) or "노드 span 없음"),
+        *([f"- 실행 중 예외 뒤 검색 후보 복원 (T3-45): {restored}문항 — 검색 노드 span에서 keys·used_table"] if restored else []),
     ]) + "\n"
     return rows, summary, report
 

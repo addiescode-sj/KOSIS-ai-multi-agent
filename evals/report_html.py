@@ -289,6 +289,30 @@ def e2e_body(m: dict, rows: list[dict]) -> str:
         '<p class="note">틀린 표에서 PASS는 두 표의 숫자가 같을 때만 나온다.</p>',
         stacked_verdicts([(k, v) for k, v in split if v]), "</div>",
         '<div class="card"><h2>실패 원인</h2><p class="note">검색 = 1위가 다른 표 · 답 = 표는 맞았는데 답이 틀림.</p>', cause_chart, "</div></div>",
+        search_cards(s),
+    ])
+
+
+def search_cards(s: dict) -> str:
+    """T3-45: error tags split by whether the answer's table was right, and the gold table's rank per search node."""
+    if "errors_by_top1" not in s:  # runs graded before T3-45
+        return ""
+    by = s["errors_by_top1"]
+    tags = sorted(set(by["right"]) | set(by["wrong"]), key=lambda e: -(by["right"].get(e, 0) + by["wrong"].get(e, 0)))
+    tag_rows = "".join(f'<tr><td>{esc(e)}</td><td class="num">{by["right"].get(e, 0)}</td><td class="num">{by["wrong"].get(e, 0)}</td></tr>'
+                       for e in tags)
+    k = s.get("search_k", 5)
+    node_rows = "".join(f'<tr><td>{esc(name)}</td><td class="num">{c["top1"]}/{c["n"]}</td><td class="num">{c["topk"]}</td>'
+                        f'<td class="num">{c["missing"]}</td></tr>' for name, c in s.get("search_nodes", {}).items())
+    restored = (f'<p class="note">실행 중 예외 뒤 검색 후보를 노드 span에서 복원한 문항: {s["search_restored"]}</p>'
+                if s.get("search_restored") else "")
+    return "".join([
+        '<div class="grid2"><div class="card"><h2>오류 유형 — 맞힌 표 / 틀린 표</h2>',
+        '<p class="note">틀린 표에서 나온 셀 오류는 대부분 "다른 표의 셀을 정답 셀과 비교"한 결과다. 계획의 셀 선택 문제는 맞힌 표 열을 본다.</p>',
+        f'<table><tr><th>오류</th><th>맞힌 표</th><th>틀린 표</th></tr>{tag_rows}</table></div>',
+        '<div class="card"><h2>검색 노드별 정답 표 순위</h2>',
+        f'<p class="note">답할 문항(answerable·default_allowed) 전체에서 노드마다 정답 표 순위. 문항별 대표 노드(실패 단계)와 달리 모든 행을 센다.</p>{restored}',
+        f'<table><tr><th>노드</th><th>1위</th><th>top {k}</th><th>후보 밖</th></tr>{node_rows}</table></div></div>',
     ])
 
 

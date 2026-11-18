@@ -306,6 +306,16 @@ PASS가 아닌 문항마다, **위에서부터 첫 번째로 맞는 규칙 하�
 - **`compute`가 `understanding`보다 앞이다.** 계산 모듈이 거절해서 생긴 `false_refusal`이 판정 오류로 잘못 분류되지 않게 하려는 것이다.
 - **사실 오류는 `compute`가 아니라 `understanding`이다.** compute는 계획이 고른 셀을 그대로 계산하는 결정적 코드다.
   값·단위·차원·시점이 틀렸다면 계획(analyze)이 다른 셀을 고른 것이다.
+- **답 없는 질문(`not_answerable`·`clarify`)은 판정 오류가 1번보다 앞이다 (T3-45).** 이 문항의 "정답 표"는 가장 가까운 표일 뿐이다.
+  `missed_refusal`·`wrong_reason`·`assumed_condition`은 표와 상관없이 거절·되묻기 판단의 문제라서 `understanding`으로 둔다.
+
+T3-45 보강:
+- **실행 중 예외 뒤 검색 후보 복원.** 검색이 끝난 뒤 실전 1이 예외를 던지면(예: `101_DT_1B8000G` SchemaError) 그래프 상태가 비어 행의 `keys`·`used_table`이 사라진다.
+  `trace.restore_search`가 검색 노드 span(마지막 순위 노드 = rerank2)의 앞 k개로 채운다. 러너와 재채점(`--from-run`)이 같은 함수를 쓴다.
+  조건: error가 있고, gate route=found이고, statistics span이 있는 행만. 같은 run의 정상 행에서 규칙(keys = 그 노드 앞 k개)이 맞지 않으면 아무것도 채우지 않는다.
+- **오류 태그를 맞힌 표 / 틀린 표로 나눠 본다** (`summary.errors_by_top1`, report.html "오류 유형 — 맞힌 표 / 틀린 표").
+  틀린 표에서 나온 셀 오류는 대부분 다른 표의 셀을 정답 셀과 비교한 결과다. 계획의 셀 선택 문제는 맞힌 표 열을 본다.
+- **검색 노드별 정답 순위** (`summary.search_nodes`, `trace.node_ranks`): 답할 문항 전체에서 노드마다 정답 표가 1위·top k·후보 밖인 수. 문항별 대표 노드와 달리 모든 행을 센다.
 
 ## 4. 오류 유형 (`evaluators/calculation.py`)
 
