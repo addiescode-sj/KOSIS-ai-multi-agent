@@ -71,6 +71,8 @@ def test_chat_stream_is_one_trace_with_node_tool_and_phase1_step_spans(client):
     root = next(s for s in spans if s.name == "invoke_agent")
     assert format(root.context.trace_id, "032x") == events[0][1]["trace_id"]
     assert root.attributes["gen_ai.conversation.id"] == "t1" and root.attributes["kosis.turn.index"] == 0
+    # T3-43: what online evaluation reads back (question, final answer = the streamed result)
+    assert root.attributes["kosis.turn.question"] == "2030년 출생아 수" and root.attributes["kosis.turn.answer"] == ANSWER
     by_name = {s.name: s for s in spans}
     assert {"context", "search", "statistics", "execute_tool search_tables", "execute_tool summarize_stat"} <= set(by_name)
     # phase 1 steps sit under the summarize_stat tool span, at phase 1's own offsets
@@ -87,6 +89,8 @@ def test_the_turn_index_counts_questions_in_the_thread(client):
         http.post("/chat", json={"question": q, "thread_id": "t2"})
     roots = [s for s in memory.get_finished_spans() if s.name == "invoke_agent"]
     assert [r.attributes["kosis.turn.index"] for r in roots] == [0, 1]
+    assert [r.attributes["kosis.turn.question"] for r in roots] == ["2030년 출생아 수", "2031년은?"]  # /chat records them too
+    assert all(r.attributes.get("kosis.turn.answer") for r in roots)
 
 
 def test_chat_answers_like_the_stream(client):

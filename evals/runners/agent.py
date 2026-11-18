@@ -32,7 +32,7 @@ from opentelemetry.sdk.trace.export import BatchSpanProcessor, SimpleSpanProcess
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from opentelemetry.trace import Link, SpanContext, StatusCode, TraceFlags
 
-from kosis_agent.observability.tracing import CHAT, ROOT_SPAN, TOOL_PREFIX, agent_turn, resource
+from kosis_agent.observability.tracing import CHAT, ROOT_SPAN, TOOL_PREFIX, agent_turn, record_error, resource, short
 
 from evals.schemas import AgentScenario
 
@@ -170,8 +170,7 @@ def run(graph, scenarios: list[AgentScenario], repeat: int = 1,
                         answer = _answer(state)
                     except Exception as e:  # noqa: BLE001 - a failed turn is graded, not raised
                         error = f"{type(e).__name__}: {e}"
-                        root.record_exception(e)
-                        root.set_status(StatusCode.ERROR, error)
+                        record_error(root, e)  # T3-44: span gets a cut copy, the record keeps the full error
                 records.append({**turn_record(list(memory.get_finished_spans()), answer, error), "run": r})
                 progress(done, total, f"{thread} turn {i}", started, error)
                 if error:
@@ -234,8 +233,7 @@ def single_turns(graph, questions: list[tuple[str, str]], telemetry: tuple[Trace
                                      config={"configurable": {"thread_id": thread}, "callbacks": [spans, nodes]})
             except Exception as e:  # noqa: BLE001 - a failed question is graded (run_failure), not raised
                 error = f"{type(e).__name__}: {e}"
-                root.record_exception(e)
-                root.set_status(StatusCode.ERROR, error)
+                record_error(root, e)  # T3-44: span gets a cut copy, the record keeps the full error
         record = turn_record(list(memory.get_finished_spans()), _answer(state), error)
         answer, error = _final_answer(state, error)
         search, stat = state.get("search"), state.get("stat")
@@ -253,8 +251,10 @@ def single_turns(graph, questions: list[tuple[str, str]], telemetry: tuple[Trace
     return rows
 
 
-def link_questions(provider: TracerProvider, rows: list[dict], layer: str) -> None:
-    """One `eval.question` span per graded row, linked to the row's turn root, with the verdict and failure (T3-32)."""
+def link_questions(provider: TracerProvider, rows: list[dict], layer: str, name: str = "eval.question",
+                   attributes=None) -> None:
+    """One `eval.question` span per graded row, linked to the row's turn root, with the verdict and failure (T3-32).
+    T3-19: the ragas layer names it `eval.ragas` and adds its scores through attributes(row) -> dict."""
     tracer = provider.get_tracer("kosis-evals")
     for r in rows:
         if not r.get("trace_id") or not r.get("span_id"):
@@ -262,12 +262,14 @@ def link_questions(provider: TracerProvider, rows: list[dict], layer: str) -> No
         f = r.get("failure") or {}
         link = Link(SpanContext(int(r["trace_id"], 16), int(r["span_id"], 16), is_remote=True,
                                 trace_flags=TraceFlags(TraceFlags.SAMPLED)))
-        with tracer.start_as_current_span("eval.question", links=[link], attributes={
+        with tracer.start_as_current_span(name, links=[link], attributes={
                 "kosis.eval.qid": r["qid"], "kosis.eval.layer": layer, "kosis.verdict": r.get("verdict") or "",
                 "kosis.errors": ",".join(r.get("errors") or []),
-                **{f"kosis.failure.{k}": v for k, v in f.items() if v is not None and k != "label"}}) as span:
+                # T3-44: a run_failure reason carries the whole error (2 MB SchemaError): cut, results.jsonl keeps it
+                **{f"kosis.failure.{k}": short(v) if isinstance(v, str) else v for k, v in f.items() if v is not None and k != "label"},
+                **(attributes(r) if attributes else {})}) as span:
             if f:
-                span.set_status(StatusCode.ERROR, f"{f['label']}: {f['reason']}")
+                span.set_status(StatusCode.ERROR, short(f"{f['label']}: {f['reason']}"))
     provider.force_flush()
 
 

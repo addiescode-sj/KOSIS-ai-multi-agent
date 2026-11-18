@@ -7,7 +7,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 from evals import trace
-from evals.evaluators import calculation
+from evals.evaluators import alternates, calculation
 from evals.schemas import ROOT, CalcItem, load_jsonl
 
 MOCK_NOTE = " · **llm mock: 경로 확인용, 점수 아님** (모델 대신 코드 템플릿이 답함)"
@@ -134,15 +134,23 @@ def search_failure_section(rows: list[dict], exported: bool) -> str:
 
 
 def grade(items: list[CalcItem], answers: list[dict]) -> list[dict]:
-    """L3 grading of each answer against the golden table's cells, with the ops fields kept per row."""
+    """L3 grading of each answer against the golden table's cells, with the ops fields kept per row.
+
+    T3-41: when the answer came from another table (used_table) that holds every golden cell fact with the same values
+    (evaluators.alternates), it is graded against that table's cells instead: the golden item with its source_refs
+    moved there, the same grader. L3 answers from the golden table grade exactly as before."""
     rows = []
     for item, a in zip(items, answers):
+        answer = a["answer"]
+        cited = frozenset(f.source_ref for f in answer.result.facts if f.source_ref) if answer is not None else frozenset()
+        graded = alternates.alternate_item(item, a.get("used_table"), cited) or item
         # only the graded cells: a whole large table as Python objects took GBs (plans/T3-06.md, exit 137)
-        cells = calculation.read_cells(ROOT / "data" / "values" / f"{item.table_key}.parquet",
-                                       calculation.grade_refs(item, a["answer"]))
-        g = calculation.grade(item, a["answer"], cells, a["error"])
-        rows.append({**g.model_dump(), "table_key": item.table_key, **{k: a[k] for k in OPS_FIELDS + TRACE_FIELDS if k in a},
-                     "answer": a["answer"].model_dump(mode="json") if a["answer"] else None})
+        cells = calculation.read_cells(ROOT / "data" / "values" / f"{graded.table_key}.parquet",
+                                       calculation.grade_refs(graded, answer))
+        g = calculation.grade(graded, answer, cells, a["error"])
+        rows.append({**g.model_dump(), "table_key": item.table_key, "graded_table": graded.table_key,
+                     **{k: a[k] for k in OPS_FIELDS + TRACE_FIELDS if k in a},
+                     "answer": answer.model_dump(mode="json") if answer else None})
     return rows
 
 

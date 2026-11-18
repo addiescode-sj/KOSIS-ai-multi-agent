@@ -60,6 +60,26 @@ def resource(environment: str, **attributes: Any) -> Resource:
                             **{k: v for k, v in attributes.items() if v is not None}})
 
 
+MAX_ERROR_TEXT = 2048  # span에 남기는 오류 문자열(메시지·스택트레이스·상태 설명)의 최대 길이 (T3-44)
+
+
+def short(text: Any, limit: int = MAX_ERROR_TEXT) -> str:
+    """오류 문자열을 span에 넣을 길이로 자른다(T3-44). 실전 1 SchemaError가 중복 셀을 하나씩 나열해 2 MB가 되면,
+    그 문자열이 오류가 지나간 span마다 들어가 OTLP 묶음이 Jaeger 수신 한도(4 MB)를 넘고 같은 묶음의 다른 문항 span까지
+    버려졌다. 전문은 평가 results.jsonl·서비스 응답에 그대로 남는다. 툴 결과 같은 정상 속성은 자르지 않는다(채점이 읽음)."""
+    text = str(text)
+    return text if len(text) <= limit else f"{text[:limit]}… (+{len(text) - limit:,}자 생략, 전체 {len(text):,}자)"
+
+
+def record_error(span: Span, error: BaseException, description: str | None = None) -> None:
+    """예외를 span에 남긴다: exception 이벤트(메시지·스택트레이스는 short로 자름, SDK 형식 그대로)와 ERROR 상태."""
+    import traceback
+
+    stack = "".join(traceback.format_exception(type(error), error, error.__traceback__))
+    span.record_exception(error, attributes={"exception.message": short(error), "exception.stacktrace": short(stack)})
+    span.set_status(Status(StatusCode.ERROR, short(description or f"{type(error).__name__}: {error}")))
+
+
 def to_json(value: Any) -> str:
     """툴 입력·출력을 JSON 텍스트로 바꾼다. Pydantic 모델은 dump하고, ToolMessage는 content를 쓴다.
 
@@ -170,8 +190,7 @@ class LiveSpans(BaseCallbackHandler):
             return
         span.set_attributes({k: v for k, v in attributes.items() if v is not None})
         if error is not None:
-            span.record_exception(error)
-            span.set_status(Status(StatusCode.ERROR, f"{type(error).__name__}: {error}"))
+            record_error(span, error)
         span.end()
 
     # 그래프 노드
@@ -294,7 +313,7 @@ class LiveSpans(BaseCallbackHandler):
                                       start_time=end - int(seconds * 1e9),
                                       attributes={k: v for k, v in attributes.items() if v is not None})
         if error:
-            span.set_status(Status(StatusCode.ERROR, str(error)))
+            span.set_status(Status(StatusCode.ERROR, short(error)))
         span.end(end_time=end)
 
     def on_tool_error(self, error: BaseException, *, run_id: UUID, **kwargs: Any) -> None:

@@ -19,17 +19,18 @@ from evals.schemas import CalcItem, QueryItem, RetrievalItem
 OFFICIAL = {name: name for name in SIDO_ORDER} | {alias: name for name, aliases in SIDO.items() for alias in aliases}
 
 
-def locate(item: CalcItem, row: dict, verdict: str, l1: RetrievalItem | None = None) -> dict:
+def locate(item: CalcItem, row: dict, verdict: str, l1: RetrievalItem | None = None, alts: set[str] = frozenset()) -> dict:
     """Where the golden table ranked and why a row did not pass: retrieval (another table at top 1) or answer.
 
     §6.3 {지표명}: with the L1 item of the same qid, any key of its answer slots is the right table (an alternate
-    table answers the question too); without it, only the L3 table counts."""
+    table answers the question too); without it, only the L3 table counts. T3-41: plus the tables that hold every
+    golden cell value (evaluators.alternates labels, `alts`)."""
     keys = row["keys"]
-    gold = l1.gold_keys if l1 and l1.answerable else {item.table_key}
+    gold = (set(l1.gold_keys) if l1 and l1.answerable else {item.table_key}) | set(alts)
     right = row["used_table"] in gold
     ranks = [n for n, k in enumerate(keys, 1) if k in gold]
     return {"used_table": row["used_table"], "right_table": right, "right_alternate": right and row["used_table"] != item.table_key,
-            "l1_linked": l1 is not None, "gold_rank": ranks[0] if ranks else None,
+            "l1_linked": l1 is not None, "alt_linked": bool(alts), "gold_rank": ranks[0] if ranks else None,
             "top_keys": keys[:5], "gold_keys": sorted(gold), "cause": "pass" if verdict == "PASS" else "answer" if right else "retrieval"}
 
 
