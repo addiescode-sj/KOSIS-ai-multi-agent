@@ -8,6 +8,7 @@ from typing import Callable
 from kosis_ai.schemas import StatAnswer
 
 from evals.evaluators import calculation
+from evals.evaluators.agent.state import sub_calls
 from evals.schemas import CalcItem, TurnExpect
 
 
@@ -67,7 +68,7 @@ def grade_numbers(expect: TurnExpect, record: dict, calls: list[dict], key: str 
     if expect.calc_qid:
         item = calc[expect.calc_qid]
         answer = stat_answer(calls)
-        g = calculation.grade(item, answer, cells_of(item.table_key, calculation.grade_refs(item, answer)), record.get("error"))
+        g = calculation.grade(item, answer, cells_of(item.table_key, calculation.grade_refs(item, answer)), record.get("error"), cite=False)
         calc_grade = {"verdict": g.verdict, "errors": g.errors}
         if g.verdict != "PASS" and key in expect.alt_table_keys and same_values(item, answer):
             # an alternate gold table: the L3 grader checks cells of the golden table only, so the same numbers read
@@ -78,10 +79,13 @@ def grade_numbers(expect: TurnExpect, record: dict, calls: list[dict], key: str 
     sub_grades = []
     if expect.calc_qids:  # T3-28: one L3 grade per sub-question, in summarize_stat call order
         answers = stat_answers(calls)
+        if expect.refuse_parts is not None and (subs := sub_calls(calls, len(expect.refuse_parts))) is not None:
+            # T3-38: a sub-question that must refuse has no calc_qid; calc_qids are the answering sub-questions' items
+            answers = [_as_answer(s) if s else None for s, refuse in zip(subs, expect.refuse_parts) if not refuse]
         for i, qid in enumerate(expect.calc_qids):
             item = calc[qid]
             answer = answers[i] if i < len(answers) else None
-            g = calculation.grade(item, answer, cells_of(item.table_key, calculation.grade_refs(item, answer)), record.get("error"))
+            g = calculation.grade(item, answer, cells_of(item.table_key, calculation.grade_refs(item, answer)), record.get("error"), cite=False)
             verdict = g.verdict
             if verdict != "PASS" and same_values(item, answer):  # alternate table holding the same numbers
                 verdict = "PASS"

@@ -30,12 +30,15 @@ def load_scenarios(scenarios) -> list[AgentScenario]:
 def task_table(by_task: dict) -> list[str]:
     """Success and answer quality per evaluation task (multi-turn / multi-query), from aggregate()["by_task"]."""
     fmt = lambda v: "—" if v is None else f"{v:.3f}"  # noqa: E731
-    lines = ["| 평가 태스크 | 대화 | 대화 성공률 | 턴 통과율 | 툴 선택 | 상태(표 키) | 최종 수치 (n) | 합산 (n) | 근거 없는 숫자 턴 |",
-             "|" + " --- |" * 9]
+    lines = ["| 평가 태스크 | 대화 | 대화 성공률 | 턴 통과율 | 툴 선택 | 상태(표 키) | 최종 수치 (n) | 합산 (n) | 근거 없는 숫자 턴 | 출처 빠진 턴 "
+             "| 차트 턴 통과 (n) | 차트 자동 선택 (n) |",
+             "|" + " --- |" * 12]
     for name, m in by_task.items():
         lines.append(f"| {TASK_NAMES.get(name, name)} | {m['n_conversations']} | {fmt(m['conversation_success'])} | {fmt(m['turn_pass'])} "
                      f"| {fmt(m['tool_selection'])} | {fmt(m['state_accuracy'])} | {fmt(m['numeric_accuracy'])} ({m['n_numeric']}) "
-                     f"| {fmt(m['combine_accuracy'])} ({m['n_combine']}) | {m['unsupported_final_number_turns']} |")
+                     f"| {fmt(m['combine_accuracy'])} ({m['n_combine']}) | {m['unsupported_final_number_turns']} "
+                     f"| {m['missing_source_turns']} "
+                     f"| {fmt(m['chart_turn_pass'])} ({m['n_chart_turns']}) | {fmt(m['auto_chart_agreement'])} ({m['n_auto_chart']}) |")
     return [*lines, ""]
 
 
@@ -108,7 +111,12 @@ def run(args) -> tuple[list[dict], dict, str]:
         f"| 파라미터 정확도 (필드 단위) | {fmt(s['param_accuracy'])} |",
         f"| 상태(표 키) 정확도 | {fmt(s['state_accuracy'])} ({s['n_state']}) |",
         f"| 최종 수치 정확도 (L3 PASS) | {fmt(s['numeric_accuracy'])} ({s['n_numeric']}) |",
-        f"| 근거 없는 숫자가 있는 턴 | {s['unsupported_final_number_turns']} |", "",
+        f"| 근거 없는 숫자가 있는 턴 | {s['unsupported_final_number_turns']} |",
+        f"| 출처(조사명·통계표명)가 빠진 턴 | {s['missing_source_turns']} |",
+        f"| 차트 턴 통과율 (make_chart를 기대한 턴) | {fmt(s['chart_turn_pass'])} ({s['n_chart_turns']}) |",
+        f"| 차트 데이터 일치 (Vega-Lite 값 ⊆ 사실 값) | {fmt(s['chart_data_accuracy'])} ({s['n_chart_data']}) |",
+        f"| 차트 자동 선택 일치 (종류 말 없는 턴) | {fmt(s['auto_chart_agreement'])} ({s['n_auto_chart']}) "
+        f"{count(s['auto_chart_confusion']) if s['auto_chart_confusion'] else ''} |", "",
         *task_table(s["by_task"]),
         "| 인자 필드 | 정확도 | n |", "| --- | --- | --- |",
         *[f"| {f} | {fmt(v['acc'])} | {v['n']} |" for f, v in s["param_by_field"].items()], "",
