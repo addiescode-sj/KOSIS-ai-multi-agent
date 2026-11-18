@@ -21,9 +21,10 @@
 | `l1-graph` | L1 | 실제 LangGraph 검색 그래프 | 데이터·Chroma·`RERANK_CKPT` | 0 |
 | `ablation` | L1 | 슬롯 필터 on/off별 검색 (dev) | 데이터·Chroma | 0 |
 | `l2-v1` · `l2-v2` | L2 | 질의 파서(규칙) | 데이터 | 0 |
-| `l3` | L3 | 에이전트 그래프 한 턴, 검색은 정답 표(oracle) → `summarize_stat` 실호출 → Parquet 대조 (T3-32) | 데이터·HCX 키 | **HCX 90문항** (재시도 포함 약 135회로 추정) |
+| `l3` | L3 | 에이전트 그래프 한 턴, 검색은 정답 표(oracle) → `summarize_stat` 실호출 → Parquet 대조 (T3-32). **해석기·멀티쿼리 분해 LLM도 같이 돈다**(hybrid, gpt-4o-mini): 실전 1만 보는 순수 oracle이 아니라 "정답 표를 준 에이전트 한 턴"이다. 실전 1만 떼어 보려면 `INTERPRETER=rules`로 돌린다 | 데이터·HCX 키 (+ `OPENAI_API_KEY`) | **HCX 90문항** (재시도 포함 약 135회로 추정) + 해석기 호출 |
 | `e2e` | L4 | 서비스 에이전트 그래프(`build_agent`) 한 턴: 검색 → `summarize_stat` (T3-32) | 데이터·Chroma·`RERANK_CKPT`·HCX 키 | **HCX 90문항 + 2차 리랭커** |
 | `agent` | 종합 | 멀티턴 시나리오 → 에이전트 → 툴 (§6) | `--agent`·시나리오 파일 | 에이전트가 부르는 LLM |
+| `ragas` | 심판 | 저장된 e2e run의 Faithfulness·Response Relevancy·Context Precision·Recall + 코드 ID P/R, 저점 → 그래프 노드, CI 게이트 기록 (§9) | e2e run 폴더·`OPENAI_API_KEY`·`--group ragas` | 심판 약 350회 (gpt-4.1-mini, 디스크 캐시) |
 
 - L3·e2e는 `--llm mock`으로 **비용 없이 경로만** 확인할 수 있다. mock은 모델 대신 코드 템플릿이 답해서 점수가 그럴듯하게 나온다(예: L3 PASS 85/90).
   **점수로 쓰지 않는다**: 리포트에 "llm mock: 경로 확인용, 점수 아님"이 붙고, `ops_history.jsonl`에는 기록되지 않는다.
@@ -102,6 +103,7 @@ uv run python -m evals.run_eval --layer l3 --llm mock --stage $S-l3-mock        
 uv run python -m evals.run_eval --layer l3 --interval 5 --stage $S-l3                                 # HCX
 uv run python -m evals.run_eval --layer l3 --from-run <과거 L3 run 폴더> --stage $S-l3-regrade        # 저장된 답 재채점, 호출 0
 uv run python -m evals.run_eval --layer e2e --interval 5 --stage $S-e2e                               # 서비스 그래프, 검색 설정 = .env
+uv run python -m evals.run_eval --layer e2e --from-run <과거 e2e run 폴더> --stage $S-e2e-regrade      # 저장된 답·검색 순위 재채점, 호출 0 (T3-39)
 uv run python -m evals.run_eval --layer agent --oracle --scenarios <시나리오.jsonl> --split all --stage $S-agent-oracle   # 채점기 자기검증
 ```
 
@@ -111,7 +113,8 @@ L1 프리셋(`retrieval.STAGED`): `hybrid` · `hybrid+cond` · `staged` · `clov
 ### 0.6 결과 읽기
 
 - run 폴더: `report.html`(맨 위 읽는 법 → 결과 → 실패 단계·trace → 운영 지표·추이 → 행별 결과), `report.md`, `results.jsonl`(질문 원문 포함, git에 안 올림), `manifest.json`(조건·해시), `ops.json`.
-- 운영 지표: 지연 p50·p95, 입력·출력 토큰, 비용(`evals/pricing.json` 단가), 실패율. 실행 간 추이는 `ops_history.jsonl`(집계만, 커밋함).
+- 운영 지표: 지연 p50·p95, 입력·출력 토큰, 비용(`evals/pricing.json` 단가 × 모델별 토큰, T3-39), 실패율. 실행 간 추이는 `ops_history.jsonl`(집계만, 커밋함).
+  T3-39 이전 run은 행에 모델 이름이 `HCX-DASH-002,gpt-4o-mini`처럼 합쳐 있고 토큰이 모델별로 없어 단가를 채워도 비용이 나오지 않는다(`--from-run` 재채점도 그 행을 그대로 복사).
 - trace: l1·l3·e2e는 문항별 span 경로 + **trace 카드**(span 이름별 횟수·지연 p50·p95·비중 표, 문항별 워터폴 60건까지·문제 문항 먼저, T3-32), agent는 턴별 span 워터폴. `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317`과 `docker compose --profile obs up -d jaeger`면 Jaeger 링크가 생긴다(아래 "Jaeger로 보기").
 - 스위트: `suite.html`의 비교 표에서 차이(이번 − 기준)를 본다. "무엇을 바꿔서 몇 → 몇"은 이 표에서 뽑는다.
 
@@ -154,6 +157,13 @@ uv run python -m evals.run_eval --layer e2e --agent <module:function> --stage <�
 - 검색 gate가 거절한 질문은 실전 1까지 가지 않는다. 그 거절(`out_of_scope`·`no_item`)을 실전 1 거절처럼 채점한다.
 - `--llm mock`은 실전 1 mock·stage 2 끔·해석기 규칙으로 바꿔 어떤 모델도 부르지 않는다(`.env`가 `STAGE2=hcx`여도).
 - T3-32 이전 l3·e2e run과 수치를 비교하지 않는다(계층 정의가 바뀜). l3는 같은 mock 입력에서 판정·답이 90/90 같았다(`plans/T3-32.md`).
+- **재채점** (T3-39): `--from-run <run 폴더>`는 l3·e2e 모두 그 run의 `results.jsonl`(답·검색 순위·span)을 다시 채점한다. 채점 규칙을 고친 뒤 HCX를 다시 부르지 않고 전→후를 잰다.
+  T3-32 이전 형식(`question_id`·`stat_answer`, 실전 1 하네스)도 읽는다. T3-39 이전 e2e run은 상위 5개 순위(`top_keys`)만 저장돼 정답 순위가 5 밖이면 "밖"으로 나온다. 재채점은 `ops_history.jsonl`에 쓰지 않는다.
+- **정답 표 판정** (§6.3, e2e): 수치 골든 문항과 같은 질문의 검색 골든 항목을 qid → `phase1_id` → 질문 원문 순으로 찾아, 그 정답 슬롯의 표 **전부**를 정답 표로 본다.
+  실전 1 골든(v1, `S-*`)은 qid가 달라 T3-39 전에는 연결이 0이었다(리포트 "L1 정답 슬롯과 연결된 문항"). 지금은 검색 골든이 실전 1 질문을 가져온 10문항이 연결된다(대체 표가 있는 문항 5).
+  다른 정답 표로 맞게 답하면 `right_alternate`로 세고 검색 성공이다. 연결 안 된 문항은 여전히 L3 대표 표만 정답이다 → 검색 골든에 `phase1_id`를 더 달면 연결이 늘어난다.
+- **큰 표** (T3-39): 채점기는 표 전체가 아니라 골든 사실과 답의 셀(`calculation.grade_refs`)만 Parquet에서 스트리밍으로 읽는다(`read_cells(path, refs)`).
+  10 MB 표 하나가 4 GB·70초였던 것이 25 MB 표에서 0.4 GB·1.2초. 10 MB 넘는 표 7개(29문항)를 빼던 이유가 없어졌다. 실전 2의 초대형 표 청킹(KOS-179)은 Chroma 색인 쪽이라 이것과 무관하다.
 
 ```bash
 ```
@@ -318,6 +328,7 @@ L3·e2e 채점기가 붙이는 오류다. 정답 표의 Parquet 셀과 골든 �
 | `missing_clarification` | 되묻기는 했지만 선택지가 2개 미만이다 | FAIL | 질문 이해 |
 | `disallowed_default` | 기본값이 허용된 질문에서 답하지 않았거나, 허용되지 않은 기본값을 적용했다 | FAIL | 질문 이해 |
 | `unstated_default` | 기본값을 적용했는데 무엇을 적용했는지 밝히지 않았다 | PARTIAL | 질문 이해 |
+| `missing_source` | 답했는데 출처가 없다: `source`가 비었거나 답 문장(`text`)에 조사명·통계표명이 없다 (T3-40). 실전 1은 `final_text`가 본문 뒤에 `출처: KOSIS / 조사명 / 통계표명 (url)`을 붙이고, `parts`에는 출처가 없으므로 `text`를 본다. 거절·되묻기는 검사하지 않는다 | PARTIAL | 문장 생성 (`compose`) |
 | `run_failure` | 답이 없다: 예외, 모델 호출 실패, 검색 결과 없음 | FAIL | 도구 호출 실패 (e2e에서 검색 결과가 없으면 검색 실패) |
 
 e2e에서는 1위 표가 틀리면 위 오류와 상관없이 1번 규칙(검색 실패)이 먼저 걸린다.
@@ -360,7 +371,8 @@ uv run python -m evals.run_eval --layer agent --stage <이름> --agent <module:f
 uv run python -m evals.run_eval --layer agent --stage <이름> --from-run evals/reports/<run>          # 과거 실행 재채점
 ```
 
-**멀티턴 dev 시나리오 (T3-27, `plans/T3-27.md`)**: T3-05 정식 평가셋 전까지 쓰는 dev 세트다. `calculation_golden`의 같은 표 문항을 이어 붙여 6유형(R 지시어 · E 생략 이월 · X 정정 · S 주제 전환 · C 차트 후속 · M 한 턴 여러 요청)을 코드로 만든다. E·X의 정답은 원천 문항의 셀 키에서 지역 코드·연도만 바꿔 Parquet에서 읽는다(합성 정답, 셀이 없거나 기호면 만들지 않음).
+**멀티턴 dev 시나리오 (T3-27, `plans/T3-27.md`)**: T3-05 정식 평가셋 전까지 쓰는 dev 세트다. 빌더가 만드는 시나리오는 **전부 `split=dev`**다(T3-39):
+표현이 빌더 템플릿이고 해석 규칙을 이 세트로 고쳤으므로 held-out이 아니다(그전에는 검색 골든의 test split을 물려받아 50개가 test로 보였다). 아키텍처 비교(T3-07~10)의 test는 사람이 쓴 T3-05 파일만 쓴다. `calculation_golden`의 같은 표 문항을 이어 붙여 6유형(R 지시어 · E 생략 이월 · X 정정 · S 주제 전환 · C 차트 후속 · M 한 턴 여러 요청)을 코드로 만든다. E·X의 정답은 원천 문항의 셀 키에서 지역 코드·연도만 바꿔 Parquet에서 읽는다(합성 정답, 셀이 없거나 기호면 만들지 않음).
 
 ```bash
 uv run python -m evals.builders.multiturn     # → agent_scenarios_multiturn_dev(_structure).jsonl, calculation_golden_multiturn.jsonl
@@ -375,6 +387,17 @@ STAT_PROVIDER=hcx uv run python -m evals.run_eval --layer agent --stage <이름>
 
 `INTERPRETER`는 rules | hybrid | llm이다. 유형(R·E·X…)별 비율은 `results.jsonl`의 `sid`(`MT-<유형>-<번호>`)로 나눠 본다.
 
+**차트 자동 선택 시나리오 (T3-37, KOS-197, `plans/T3-37.md`)**: 종류 말이 없는 차트 요청("그래프로 보여줘", "그려줘")을 C(차트 후속)·M(한 턴 여러 요청)으로 30개 만든다.
+기대 계열(`expect.auto_chart`)은 계산 골든 문항 `type`에서 코드로 정한다(`builders/multiturn.AUTO_CHART`, 실전 1 `kosis_chat/chart/builders.py`의 종류 선택과 같다):
+value → 막대 · trend → 꺾은선 · compare → 막대 · share → 원형 · extreme → 막대. 그린 실전 1 종류는 계열로 묶어 비교한다(bar·timeline·grouped_bar = 막대, line·multi_line = 꺾은선, pie = 원형).
+기존 파일은 건드리지 않고 아래 두 파일만 쓴다(sid `MT-C-A001`·`MT-M-A001`).
+
+```bash
+uv run python -m evals.builders.multiturn --auto-chart   # → agent_scenarios_multiturn_chart_auto(_structure).jsonl
+STAT_PROVIDER=mock INTERPRETER=rules uv run python -m evals.run_eval --layer agent --stage <이름> --split dev \
+  --agent evals.runners.multiturn_dev:build --scenarios evals/datasets/agent_scenarios_multiturn_chart_auto_structure.jsonl
+```
+
 **평가 태스크별 성공률 (T3-29)**: `--scenarios`는 파일을 여러 개 받는다(sid 중복 금지). 멀티턴·멀티쿼리 파일을 한 실행에 넣으면
 리포트의 "평가 태스크" 표와 `summary.by_task`에 태스크마다(`multiturn` = `MT-*`, `multiquery` = `MQ-*`, 그 밖 `other`) 대화 성공률·턴 통과율·툴 선택·상태·
 최종 수치·합산·근거 없는 숫자 턴(답변 품질)이 따로 나온다. 파일 하나만 주면 표에 한 줄이다.
@@ -387,6 +410,12 @@ uv run python -m evals.run_eval --layer agent --stage <이름> --split dev --age
 - 시나리오: `evals/datasets/agent_scenarios.jsonl` (T3-05, `--scenarios`로 바꿈). 계약은 `evals/schemas.py`의 `AgentScenario`.
   턴마다 `expect`에 부를 툴(순서대로, 채점할 인자 필드만), 턴이 끝날 표(`table_key`), 거절 여부(`refuse`), L3 문항(`calc_qid`)을 적는다.
   한 턴에 여러 요청("찾아서, 계산해서, 그려줘")은 `tools`에 여러 개를 적고, "이거"·"그 표"는 다음 턴의 `table_key`로 채점된다.
+  **부분 거절 (T3-38, KOS-199)**: 멀티쿼리 턴("A 그리고 B")에서 하위 질문 일부만 자료가 없으면 `refuse_parts`(하위 질문 순서의 bool 목록, 예: `[false, true]`)를 적는다.
+  k번째 하위 질문 = k번째 `search_tables`. 그 하위 질문의 거절 = 검색이 표를 못 찾음(그래프는 그 하위 질문의 `summarize_stat`을 부르지 않음) 또는 그 `summarize_stat`이 `refused`.
+  틀린 하위 질문마다 `missed_refusal`/`false_refusal` 하나, 행의 `refusal_errors`에 하위 질문 번호(`part`)가 남는다. 턴이 나뉘지 않았거나(검색 수 ≠ 하위 질문 수) 같은 표로 되돌려 원문 한 번 물었으면 하위 질문마다 턴 전체 거절 여부를 쓴다.
+  이때 `calc_qids`는 답하는 하위 질문(false)에만 순서대로 붙는다. `refuse_parts`가 없으면 지금 규칙(턴 전체 `refuse`) 그대로다.
+  한계: 하위 질문 1이 실전 1에서 거절되고 바로 다른 표로 하위 질문 2를 물으면 `final_calls`가 1을 대체 표 시도로 접는다(T3-23 규칙). 빌더 R 유형은 답하는 하위 질문을 앞에 둔다.
+  빌더: `python -m evals.builders.multiquery` → `agent_scenarios_multiquery_dev_refusal.jsonl`(R: 답할 수 있는 문항 + `not_answerable` 문항, 20개. 기존 B·K·N·P 파일은 바이트 그대로).
   `summarize_stat`의 인자는 `question`·`table_key`와 조건 4개(`period_start`·`period_end`·`regions`·`dimensions`)다. 조건 이름은 L2 라벨(`QueryItem`)·실전 2 `ParsedQuery`와 같으므로, 시나리오 `args`에는 L2 라벨 값을 그대로 적으면 된다. 지금 워크플로 그래프는 실전 2 `parse_query`로 조건을 채운다(`src/kosis_agent/graph/main_graph.py`).
 - 실행 기록: 턴마다 그래프를 `thread_id = <sid>#<run>`으로 `invoke`하고, 실행 중 열린 OTel span(`kosis_agent.observability.tracing.LiveSpans`)에서 툴 이름·인자·결과·지연·LLM 호출·토큰을 읽는다.
   span 이름·속성은 OTel GenAI 규약 그대로다: `invoke_agent`(`gen_ai.conversation.id`, `kosis.turn.index`, 턴 종료 이유 `kosis.outcome` 등) · `execute_tool <name>`(`gen_ai.tool.name`, `gen_ai.tool.call.arguments`·`.result`) · LLM 호출(`gen_ai.operation.name=chat`, `gen_ai.request.model`, `gen_ai.usage.input_tokens`·`output_tokens`). 읽는 법은 §8.
@@ -394,24 +423,30 @@ uv run python -m evals.run_eval --layer agent --stage <이름> --split dev --age
 
 | 지표 | 정의 | 채점 |
 |---|---|---|
-| 툴 선택 정확도 | 부른 툴 이름 순서 == 정답 순서인 턴의 비율 | 결정적 |
+| 툴 선택 정확도 | 부른 툴 이름 순서 == 정답 순서인 턴의 비율. **지금 메인 흐름(결정적 워크플로)에서는 코드가 순서를 정하므로 이 값과 툴 순서 일치는 거의 1.000 고정이다** — 해석(상태·인자)·수치가 실제 신호이고, 툴 선택은 LLM이 툴을 고르는 변형(T3-07~09)에서 값이 생긴다 | 결정적 |
 | 툴 순서 일치 | 정답 툴이 그 순서대로 나타난 턴의 비율 (불필요 호출 허용) | 결정적 |
 | 빠진 호출 · 불필요 호출 | 툴별 개수 (정답과 실제 호출의 다중집합 차) | 결정적 |
 | 파라미터 정확도 | 정답 인자 필드(`table_key`·`period_start`·`period_end`·`regions`·`dimensions`·`chart_type`)별 일치 비율. 같은 툴의 k번째 호출과 비교, L2 규칙(`query.field_correct`: 목록은 집합, 나머지는 문자열 일치) | 결정적 |
 | 상태(표 키) 정확도 | 턴이 끝난 표 == 정답 `table_key`. 끝난 표 = 마지막 `summarize_stat`/`make_chart`의 `table_key`, 없으면 마지막 검색 1위 | 결정적 |
 | 최종 수치 정확도 | `calc_qid` 턴의 `summarize_stat` 답을 L3 채점기(`calculation.grade`, Parquet 셀 대조) 그대로 채점해 PASS인 비율 | 결정적 |
-| 근거 없는 숫자 | 최종 답 문장의 숫자 중 이 대화의 툴 결과·질문에 없고 사실 값의 반올림도 아닌 것이 있는 턴 수 (0이 목표) | 결정적 |
+| 근거 없는 숫자 | 최종 답 문장의 숫자 중 근거가 없는 것이 있는 턴 수 (0이 목표, T3-40). 근거 = 이 대화의 질문 숫자 · `summarize_stat` 사실 값(반올림 허용, 증감은 크기로 비교) · 사실의 시점·라벨·단위 숫자 · `combine_values` 결과(반올림 허용) · 기본값 조건(`default_applied`) 숫자. 출처(인용 문자열·url·조사명·통계표명·표 ID)와 실전 1 코드 줄(`참고:` 줄, 거절 메시지)은 문장에서 그대로 지운 뒤 센다. 검색 결과(`picked`·`candidates`)·셀 참조·항목 코드·툴 인자는 근거가 아니다. "약 10만"·"3천 명"·"1억 2천만"은 한 숫자로 읽고 단위 반올림(10만 → ±5,000)을 허용한다 | 결정적 |
+| 출처 빠진 턴 | 답한 `summarize_stat`(멀티쿼리면 하위 답마다)의 조사명·통계표명이 최종 답에 없는 턴 수 (`missing_source`, T3-40). 거절·되묻기 답, 답이 없는 턴, 예외로 끝난 턴(`run_failure`)은 뺀다 | 결정적 |
 | 대체 표 시도 | `summarize_stat`이 거절(또는 툴 오류)된 뒤 바로 **다른** `table_key`로 다시 부른 호출 수(`alt_attempts`)와 그런 턴 수. 시도는 감점하지 않고 위 지표에서 모두 뺀다. 툴·인자·상태·거절·수치는 **최종 호출**로만 채점하므로, 최종 표가 정답 표와 다르면 `lost_state`, 최종 답이 틀리면 `wrong_numbers`다 (T3-23). 같은 표를 다시 부르거나 답한 뒤 다시 부른 호출은 시도가 아니라 불필요 호출이다 | 결정적 |
+| 차트 데이터 일치 (T3-37) | make_chart가 그린 Vega-Lite `data.values`(x·y·theta의 quantitative 필드)의 숫자가 같은 턴(차트만 다시 그리는 턴이면 대화의 마지막) `summarize_stat` 사실 값 안에 있는 차트의 비율. 턴 기록에는 Vega-Lite가 없으므로(툴 content는 `kind`·`drawn`만) 인자 `chart`(실전 1 ChartSpec)를 툴과 같은 `to_vega`로 다시 그려 읽는다. 실전 1 계약상 사실이 아닌 맥락 점(`fact_id` 없음: 같은 표의 다른 기간·후보 셀, 원형의 "그 외" = 합계 사실 − 조각)은 통과시키고 `chart_context_values`로 센다 | 결정적 |
+| 차트 자동 선택 일치 (T3-37) | `expect.auto_chart`가 있는 턴(종류 말 없음)에서 그린 종류의 계열 == 기대 계열인 비율. 리포트에 `기대→실제` 분포 | 결정적 |
+| 차트 턴 통과율 (T3-37) | make_chart를 기대한 턴 중 오류가 없는 턴의 비율 (`by_task`에도) | 결정적 |
 | 턴 통과율 | 오류가 하나도 없는 턴의 비율 | 결정적 |
 | 대화 성공률 | 모든 턴이 통과한 대화(실행)의 비율. 리포트에 처음 실패한 턴 분포 | 결정적 |
 | pass^k | `--repeat k`번 모두 성공한 시나리오의 비율 | 결정적 |
-| 요청당 비용·지연 | 턴 = 요청 1건. `ops.json`의 p50·p95 지연, LLM 호출 수, 토큰, 비용 (`ops_history.jsonl`에 누적) | 결정적 |
+| 요청당 비용·지연 | 턴 = 요청 1건. `ops.json`의 p50·p95 지연, LLM 호출 수, 토큰, 비용 (`ops_history.jsonl`에 누적). 비용은 턴의 **모델별 토큰**(`tokens_by_model`: 해석기 gpt-4o-mini + 실전 1 HCX + rerank2)에 `evals/pricing.json` 단가를 모델마다 곱한다(T3-39). 단가 없는 모델이 하나라도 있거나 통화가 섞이면 합계는 없음으로 두고 모델별 토큰만 보인다. HCX 단가(KRW)는 아직 null: 공식 가격표(ncloud.com CLOVA Studio `#pricing`)가 스크립트로 그려져 자동으로 읽지 못했다(T3-38, 출처는 `pricing.json` `_note`). 브라우저로 확인해 `_source`와 함께 채운다. Gemma(자체 호스팅)는 0원 vs GPU 시간 환산을 팀이 정할 때까지 null | 결정적 |
 
 턴 오류: `run_failure` 실행 실패 · `missing_call` · `extra_call` · `wrong_order` · `wrong_args` · `lost_state`(지시어·조건 이월 실패 포함) · `missed_refusal` · `false_refusal`
-(거절 = 검색 `route` `refuse` 또는 `summarize_stat` `outcome` `refused`, 또는 툴을 하나도 안 부름) · `wrong_numbers` · `unsupported_final_number`. 예외가 난 실행은 거기서 멈추고 남은 턴은 `run_failure`다.
+(거절 = 검색 `route` `refuse` 또는 `summarize_stat` `outcome` `refused`, 또는 툴을 하나도 안 부름. `refuse_parts`가 있으면 하위 질문마다) · `wrong_numbers` · `unsupported_final_number` · `missing_source` ·
+`chart_data_mismatch`(차트에 사실·표 데이터가 아닌 숫자, T3-37) · `wrong_chart_type`(종류 말 없는 턴에서 make_chart를 불렀는데 계열이 다름, T3-37; 안 불렀으면 `missing_call`만).
+에이전트 계층의 `wrong_numbers`(L3 채점)는 출처 검사를 끄고(`grade(..., cite=False)`) 최종 답의 출처는 `missing_source`로 따로 센다. 예외가 난 실행은 거기서 멈추고 남은 턴은 `run_failure`다.
 
 - LLM 호출·토큰 (T3-31부터): 해석기·멀티쿼리(LangChain), 실전 1 HCX 단계, 실전 2 rerank2를 모두 센다(§8.3). T3-31 이전 agent run은 해석기 호출만 세었으므로 `ops_history.jsonl`에서 그 전후의 토큰·비용을 비교하지 않는다.
-- 테스트: `tests/test_evals_agent.py` (oracle 1.000, 빠진·불필요 호출, 인자 불일치, 멀티턴 중간 실패와 pass^k, 거절, L3 연결·근거 없는 숫자, 실제 LangGraph 그래프 → span → 기록 왕복).
+- 테스트: `tests/test_evals_agent.py` (oracle 1.000, 빠진·불필요 호출, 인자 불일치, 멀티턴 중간 실패와 pass^k, 거절, L3 연결·근거 없는 숫자, 실제 LangGraph 그래프 → span → 기록 왕복), `tests/test_evals_partial_refusal.py` (부분 거절 양방향·`refuse_parts` 없을 때 기존 규칙·R 유형 oracle, T3-38).
 
 ## 7. 규칙을 바꿀 때
 
@@ -419,7 +454,7 @@ uv run python -m evals.run_eval --layer agent --stage <이름> --split dev --age
   `owners()`(고칠 담당), `target()`(ops_history 대상)을 갖는다 — `l0_metadata` · `l1_retrieval` · `l2_query` · `ablation` · `l012` · `l3_calculation` · `l4_e2e` · `agent`, 공용 조각은 `common`.
   새 계층은 파일 하나를 만들고 `run_eval.TASKS`에 한 줄 넣는다(헤드라인 지표는 `suite.metrics`, HTML 본문은 `report_html`).
 - 에이전트 채점기 `evaluators/agent/`: `tools.py`(툴 선택·순서·인자) · `state.py`(멀티턴 상태·거절) · `numbers.py`(L3 수치·멀티쿼리 하위 답·합산) ·
-  `answer.py`(답변 품질: 근거 없는 숫자). `__init__.py`의 `grade_turn`이 이 순서로 오류를 이어 붙이고 `aggregate`가 `by_task`를 더한다.
+  `chart.py`(차트 데이터·자동 선택, T3-37) · `answer.py`(답변 품질: 근거 없는 숫자·출처). `__init__.py`의 `grade_turn`이 이 순서로 오류를 이어 붙이고 `aggregate`가 `by_task`를 더한다.
 
 - 판정 규칙: `trace.py`의 `blame()`. 단계를 추가하면 `STAGES`에도 넣는다. 리포트 표기와 판정 순서 표시가 여기서 나온다.
 - 오류 유형: `evaluators/calculation.py`의 `grade()`·`fact_errors()`. 새 오류를 만들면 `ERROR_INFO`와 이 문서 4절에 설명을 추가한다.
@@ -529,4 +564,109 @@ LLM 호출 = `gen_ai.operation.name == "chat"`인 span 하나. agent 리포트�
 | rerank2가 실패했나 | `chat <stage2 모델>` span 상태·`error.type` | `ChatResult.degraded=true`면 1차 순서로 답한 것 |
 
 - 테스트: `tests/test_llm_metrics.py`(세 LLM 경로의 chat span, 메트릭 합 = 원본 usage, 종료 이유·예외), `tests/test_api.py`(서비스 trace, 평가 provider와 분리).
+
+## 9. Ragas 평가 파이프라인 — 골든셋 + Ragas + pytest (T3-19, KOS-116)
+
+Ragas를 따로 돌리는 도구로 쓰지 않고 기존 계층의 하나로 둔다. 역할 분담:
+
+| 구성 | 맡는 일 |
+|---|---|
+| 골든셋 | 질문, 정답 표 ID(L1 슬롯), 필요한 사실(기간·분류) → Ragas reference를 **코드가** 만든다 |
+| e2e run | 질문 → 검색 → `summarize_stat` 한 턴의 답·순위·trace (`results.jsonl`) |
+| Ragas (`--layer ragas`) | 심판이 답 문장·검색 상위 표를 채점. 그래프·검색은 다시 돌리지 않는다 |
+| pytest | 샘플 생성·노드 귀속·게이트 로직 고정(`tests/test_evals_ragas.py`), CI 회귀 게이트(`tests/test_quality_gate.py`) |
+
+```bash
+uv sync --group embed --group ragas
+python -m evals.run_eval --layer e2e --stage <ID>-e2e                       # 또는 기존 e2e run을 그대로 쓴다
+python -m evals.run_eval --layer ragas --stage <ID>-ragas --from-run evals/reports/<e2e run>
+python -m evals.quality                                                    # 기준선 대비 (CI와 같은 비교)
+python -m evals.quality --promote evals/reports/<ragas run>                # 의도한 변화일 때만 기준선 갱신, PR에 같이 커밋
+```
+
+### 9.1 지표와 입력
+
+| 지표 | user_input | response | retrieved_contexts | reference |
+|---|---|---|---|---|
+| Faithfulness | 질문 | 답 문장 | pandas가 계산한 사실 줄(`f1: 2025 · 시도별=경기도 = 76,309 명`) + 출처 + 사용한 표 텍스트 | — |
+| Response Relevancy (`AnswerRelevancy`) | 질문 | 답 문장(출처 줄 제외) | — | — |
+| Context Precision (`ContextPrecisionWithReference`) | 질문 | — | 검색 상위 k(기본 5)개 표 텍스트, 순위대로 | 골든 → 코드 |
+| Context Recall | 질문 | — | 같음 | 같음 |
+| ID Precision@k · ID Recall@k | — | — | 상위 k개 표 ID | 정답 표 ID (코드 계산, 심판 교차 확인용) |
+
+- 표 텍스트 = 실전 2 `build_doc(record, "n2-L60")["bm25_text"]` 앞 2,000자. reference = 정답 표(대체 표 포함)의 조사명·표명 + 기간 + 필요한 분류 값(숫자·단위·합계 값 없음).
+- 거절·되묻기·오류 행은 생성 지표에서, 정답 표가 없는 문항(not_answerable·clarify)은 검색 지표에서 뺀다. 대신 **답한 문항 수**와 PASS율을 게이트에 넣어
+  "거절이 늘어 Faithfulness 평균이 오르는" 생존 편향을 막는다.
+- 심판은 생성 모델(HCX)·파이프라인 LLM(gpt-4o-mini)과 다른 `RAGAS_JUDGE_MODEL`(기본 gpt-4.1-mini), 임베딩 `RAGAS_EMBED_MODEL`(기본 text-embedding-3-small).
+  응답은 `data/cache/ragas`에 캐시되어 같은 입력 재채점은 호출 0. `--no-judge-cache`는 심판 흔들림을 잴 때만.
+- Ragas 0.4.3은 `langchain_community.chat_models.vertexai`를 import해서 그대로는 실패한다. `ragas_metrics.load_ragas()`가 빈 모듈을 넣고 import한다(버전 고정).
+
+### 9.2 노드 trace 연결
+
+- 점수 < 0.5인 지표마다 담당 노드를 정한다: 검색 지표 → `search/<정답 표를 밀어낸 검색 노드>`(`trace.lost_at`), Faithfulness →
+  `statistics/<답 문장을 쓴 실전 1 span>`(fallback_chatbot · compose_llm · template · answer_final), Response Relevancy → 정답 아닌 표로 답했으면 검색 노드, 아니면 문장 span.
+- report.md·html: 지표 × 노드 저점 수, 가장 낮은 문항 10(trace_id), 원 e2e와 같은 문항별 워터폴.
+- `OTEL_EXPORTER_OTLP_ENDPOINT`가 있으면 문항마다 `eval.ragas` span이 원래 턴 trace에 link되고 `kosis.ragas.<지표>`·`kosis.ragas.node.<지표>` 속성이 붙는다
+  (Jaeger 태그 검색 예: `kosis.ragas.node.faithfulness=statistics/fallback_chatbot`).
+
+### 9.3 CI 회귀 게이트
+
+- ragas run마다 `evals/reports/quality_history.jsonl`에 집계 한 줄(커밋). `evals/quality_baseline.json`(커밋)과 **비교 키**(골든·split·tables.jsonl hash,
+  e2e 그래프+모델, 심판·임베딩, ragas 버전, 컨텍스트 포맷, k)가 같은 기록 중 run_id가 가장 큰 것을 지표별로 비교한다. 다른 그래프·모델 실험은 키가 달라 게이트에 안 걸린다.
+- 허용폭: 심판 지표는 기준선 파일의 `tolerance`(심판 흔들림 실측) 또는 0.03, 코드 비율 지표는 2문항(2/n), 답한 수는 2.
+- CI에는 데이터·키가 없어 평가를 **실행하지 못한다**. PR이 `src/`·`backend/`·`vendor/`를 바꾸고 기록을 안 올리면 경고만 뜬다.
+
+### 9.4 대체 정답 표 (T3-41)
+
+수치 골든 문항은 대표 표 하나로 만들었지만 같은 숫자를 가진 표가 여럿이다(예: 2025년 경기도 출생아 76,309명은 `DT_1B8000H`에도 `DT_1B81A12`에도 있음).
+
+```bash
+python -m evals.builders.alternates     # data/values 전수 스캔(약 1분) → evals/datasets/calculation_alternates.jsonl, 자기검증 실패 시 exit 1
+```
+
+- 규칙(`evaluators/alternates.py`): 골든의 **모든** 셀 사실(required + aux)이 한 표 안에서 같은 기간·같은 값·같은 시도(전국 문항은 지역 없는 셀)·
+  골든 분류 라벨 또는 합계·그 밖의 분류는 합계뿐·단위 호환이고, 골든에서 한 항목인 사실은 대체 표에서도 한 항목. LLM 없음, 숫자는 골든 그대로.
+- 라벨 상태: `auto`(값이 모두 정수 ≥ 100) / `needs_review`(작은 값·비율, 우연 일치 위험) / 사람이 바꾸는 `accepted`·`rejected`(재생성해도 유지).
+  정답 표 집합(`locate()`, ragas ID 지표)은 auto·accepted만 쓴다. `self_check` 줄 = 대표 표를 규칙이 다시 찾았는지.
+- 숫자 채점: e2e 답이 대표 표가 아닌 표에서 왔고 그 표가 규칙을 만족하면, 골든 사실의 source_ref를 그 표 셀(답이 인용한 셀 우선)로 옮겨 같은 채점기로 채점한다
+  (`graded_table` 열). L3(대표 표 오라클)는 경로가 바뀌지 않는다.
+- agent 계층 (T3-42): 같은 규칙. 숫자(calc_qid·calc_qids 하위 답)는 답의 **출처 표**(`source`, 없으면 호출의 `table_key`)가 대체 표면 그 셀로 채점하고
+  (`calc.graded_table`·`via_alternate`), 상태·툴 인자 판정도 그 턴의 대체 표를 정답에 더한다(`value_alternates` 열). 같은 대화에서 인정된 대체 표는
+  같은 표를 기대하는 다음 턴(calc_qid 없는 "그 표로 그려줘")에도 이어진다. T3-27 `same_values`(값만 같으면 통과)는 없앴다.
+  agent 표 키 판정은 라벨 status가 아니라 규칙만 본다(e2e 숫자 채점과 같고, e2e 정답 표 판정은 auto·accepted 라벨).
+- 라벨 파일 hash는 l3·e2e manifest의 `alternates`와 ragas 게이트 비교 키에 들어간다. 라벨이 바뀌면 기준선을 다시 promote한다.
+
+## 10. 평가 파이프라인 구조 — 오프라인 / 온라인 / 리포트 (T3-43, 고정)
+
+```
+                         Golden Dataset (질문 · 기준 정답 · 정답 통계표 ID · 기대 계산 결과)
+                                   ↓
+   Offline Evaluation (개발 / PR / 배포 전)          Online Evaluation (실제 사용자 요청)
+   고정 Golden Set · Ragas 평가 · Baseline 비교       Trace 수집 · 표본 추출 평가
+   · Regression Gate                                   · 품질 저하 감지 · 실패 케이스 수집
+                                   ↓
+                 Evaluation Report (지표별 점수 · 실패 유형 · 이전 버전 대비 변화)
+```
+
+```bash
+bash scripts/dev.sh suite --stage <ID>                    # 오프라인 (exit 1 run 실패 · 2 회귀 게이트 하락)
+bash scripts/dev.sh online --stage <ID>-online [--lookback 24h --limit 500 --sample 40]   # 온라인 (exit 3 품질 저하)
+bash scripts/dev.sh pipeline --stage <ID> [suite 인자]    # 둘 다, 오프라인 먼저 (exit = 처음 0이 아닌 값)
+```
+
+dev.sh는 Docker·Chroma·Jaeger를 띄우고 `uv run --group embed --group ragas`로 실행한다(그룹을 하나만 주면 다른 그룹이 sync로 지워진다).
+
+| 단계 | 오프라인 (`evals.suite`) | 온라인 (`--layer online`) |
+|---|---|---|
+| 입력 | 고정 골든셋(calculation·retrieval golden, 대체 표 라벨) | 서비스 trace(Jaeger, `deployment.environment.name=service`). 재현: `--from-run <agent run>` |
+| 평가 | L0~L4·agent → e2e 답을 `ragas`가 심판(e2e가 mock·skip이면 ragas skip) | 전 턴 코드 검사(최종 답 숫자 근거·출처, agent `answer.py`) + 결과 분포, 답한 턴 표본에 Ragas Faithfulness·Relevancy |
+| 비교 | 같은 조건 기준 run(`--baseline`) + **회귀 게이트**(이번 ragas summary vs `evals/quality_baseline.json`, CI와 같은 비교, 기준선 없음·키 다름은 skipped) | 같은 키 이전 온라인 기록(3개 이상)의 중앙값, 허용폭 = max(심판 흔들림 0.03, 2×표본 표준오차) |
+| 기록 | `quality_history.jsonl`(집계, 커밋) | `evals/datasets/online_history.jsonl`(로컬, 커밋 안 함: 트래픽이 매일 바뀜) |
+| 실패 | run 리포트의 실패 단계(`실패: retrieval` 등) | `evals/datasets/online_failures.jsonl`(로컬 전용, trace 단위 중복 제거, 30일 보존): 오류·근거 없는 숫자·출처 누락·Faithfulness 저점, 거절은 `refusal_review:<사유>`로 분리 → 사람이 검토해 골든셋 후보로 |
+| 리포트 | suite.html: 지표별 점수 · 실패 유형 · 기준 대비 차이 · 회귀 게이트 표 | online report.html: 지표 · 표준오차 · 직전 기록 중앙값 · 허용폭 · 저하 · 턴 결과 · 거절 사유 · 실패 케이스 |
+
+- 서비스 trace의 턴 루트 `invoke_agent`에 `kosis.turn.question`·`kosis.turn.answer`·`kosis.turn.table_key`·`kosis.turn.resolved_question`이 있다(T3-43).
+  이 속성이 없는 trace(그 전 기록)는 온라인 평가가 읽지 못하고 "질문 없는 trace"로 센다.
+- Jaeger(all-in-one)는 메모리 저장이라 재시작하면 trace가 사라진다. 운영에서는 저장소를 붙이거나 매일 온라인 평가를 돌려 기록을 남긴다.
+- 온라인 점수 행은 `eval.online` span으로 원래 서비스 trace에 link된다(`kosis.online.faithfulness` 등, OTLP endpoint가 있을 때).
 

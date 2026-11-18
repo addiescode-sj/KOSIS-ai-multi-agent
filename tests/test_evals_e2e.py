@@ -75,7 +75,7 @@ def test_the_table_phase1_answered_from_is_used_and_located():
     assert e2e.locate(item(), row, "FAIL")["cause"] == "retrieval"
     [right] = rows(graph(["101_DT_GOLD"]))
     assert e2e.locate(item(), right, "FAIL") | {"top_keys": None} == {
-        "used_table": "101_DT_GOLD", "right_table": True, "right_alternate": False, "l1_linked": False, "gold_rank": 1,
+        "used_table": "101_DT_GOLD", "right_table": True, "right_alternate": False, "l1_linked": False, "alt_linked": False, "gold_rank": 1,
         "top_keys": None, "gold_keys": ["101_DT_GOLD"], "cause": "answer"}
     # §6.3: with the L1 item of the same qid, an alternate key of its slot is the right table too
     l1 = RetrievalItem(qid="c1", split="test", qtype="sibling", source="v2", question="q",
@@ -124,7 +124,7 @@ def test_run_eval_e2e_writes_report_and_links_verdicts(monkeypatch, tmp_path):
     history: list[str] = []
     monkeypatch.setattr(ops, "append_history", lambda run_id, *a, **kw: history.append(run_id))
     monkeypatch.setattr(report_html, "read_history", lambda: [])
-    monkeypatch.setattr(calculation, "read_cells", lambda path: {})
+    monkeypatch.setattr(calculation, "read_cells", lambda path, refs=None: {})
     memory = InMemorySpanExporter()
     tracing = runner.tracing
 
@@ -202,3 +202,47 @@ def test_mock_turns_every_model_off_before_the_graph_is_built(monkeypatch):
     seen = agent_graph(SimpleNamespace(llm="mock", agent=None),
                        lambda: {k: os.environ[k] for k in ("STAT_PROVIDER", "STAGE2", "INTERPRETER")})
     assert seen == {"STAT_PROVIDER": "mock", "STAGE2": "none", "INTERPRETER": "rules"}
+
+
+def test_l1_items_link_by_qid_phase1_id_or_question():
+    """T3-39: the retrieval golden item of a calculation question, so an alternate gold table counts as the right
+    table on the v1 golden too (its qids differ from the retrieval golden's)."""
+    from evals.tasks.l4_e2e import l1_index, l1_item
+
+    by_qid = RetrievalItem(qid="V2-x", split="test", qtype="sibling", source="v2", question="v2 q", required=[["101_DT_A"]])
+    by_phase1 = RetrievalItem(qid="r7", split="test", qtype="concept", source="phase1", question="2024년 출생아 수는?",
+                              required=[["101_DT_GOLD", "101_DT_OTHER"]], phase1_id="S-VAL-03")
+    index = l1_index([by_qid, by_phase1])
+    calc = lambda qid, q: CalcItem(qid=qid, kind="answerable", question=q, table_key="101_DT_GOLD", table_sha256="0")  # noqa: E731
+    assert l1_item(index, calc("V2-x", "other")) is by_qid
+    assert l1_item(index, calc("S-VAL-03", "other")) is by_phase1
+    assert l1_item(index, calc("S-VAL-99", "2024년 출생아 수는?")) is by_phase1
+    assert l1_item(index, calc("S-VAL-99", "unknown")) is None
+    [row] = rows(graph(["101_DT_OTHER", "101_DT_GOLD"]))
+    assert e2e.locate(item(), row, "FAIL", by_phase1)["right_alternate"]
+
+
+def test_e2e_from_run_regrades_the_saved_rows(monkeypatch, tmp_path):
+    """T3-39: --from-run reads this repo's l3 / e2e results.jsonl (answer dump, keys, used_table) with no model call."""
+    from argparse import Namespace
+
+    from evals.evaluators import calculation
+    from evals.runners.stat import read_rows
+    from evals.tasks import l4_e2e
+
+    monkeypatch.setattr(calculation, "read_cells", lambda path, refs=None: {})
+    [live] = rows(graph(["101_DT_OTHER", "101_DT_GOLD"]))
+    saved = {**live, "qid": "c1", "answer": live["answer"].model_dump(mode="json"), "verdict": "PASS", "top_keys": live["keys"][:5]}
+    (tmp_path / "results.jsonl").write_text(json.dumps(saved, ensure_ascii=False, default=str) + "\n", encoding="utf-8")
+    [again] = read_rows(tmp_path, [item()])
+    assert again["answer"].outcome == "refused" and again["keys"] == ["101_DT_OTHER", "101_DT_GOLD"]
+    assert again["used_table"] == "101_DT_OTHER" and again["spans"] == STEPS and not again["failed"]
+    assert again["llm_calls"] == live["llm_calls"] and again["tokens_by_model"] == live["tokens_by_model"]
+    [missing] = read_rows(tmp_path, [CalcItem(qid="c9", kind="answerable", question="q", table_key="101_DT_GOLD", table_sha256="0")])
+    assert missing["answer"] is None and missing["failed"] and missing["error"] == "not in the run"
+    # the task reads it instead of running the graph
+    golden = tmp_path / "calc.jsonl"
+    golden.write_text(item().model_dump_json() + "\n", encoding="utf-8")
+    _, summary, report = l4_e2e.run(Namespace(calc_golden=[golden], golden=tmp_path / "none", query_golden=tmp_path / "none",
+                                              from_run=tmp_path, agent=None, llm="hcx", stage="t", interval=0, telemetry=None))
+    assert summary["verdicts"]["all"] == {"PASS": 1} and "과거 실행 재채점" in report and summary["top1_right"] == 0

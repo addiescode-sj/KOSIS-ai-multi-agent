@@ -20,7 +20,7 @@ from fastapi import Depends, FastAPI, HTTPException
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 from langchain_core.messages import HumanMessage
 from langchain_core.tools import BaseTool
-from opentelemetry.trace import Span, StatusCode, Tracer
+from opentelemetry.trace import Span, Tracer
 from pydantic import BaseModel, Field
 
 import kosis_agent  # noqa: F401  (sets KOSIS_WORKSPACE before phase 1 / phase 2 modules load)
@@ -28,7 +28,7 @@ from backend.app import telemetry
 from kosis_agent.envfile import load_env_file
 from kosis_agent.graph.main_graph import build_graph, call_tool
 from kosis_agent.graph.state import ChatResult, chat_result, new_checkpointer
-from kosis_agent.observability.tracing import LiveSpans, start_turn, trace_id
+from kosis_agent.observability.tracing import LiveSpans, record_error, start_turn, trace_id
 from kosis_agent.retrieval.search import make_search_tables_tool
 from kosis_agent.services.chart import make_chart_tool, to_vega_lite
 from kosis_agent.services.statistics import make_summarize_stat_tool
@@ -189,9 +189,19 @@ def tokens(text: str) -> list[str]:
     return [piece for piece in re.split(r"(?<=\s)(?=\S)", text) if piece]
 
 
+def _record_turn(root: Span, question: str, result: ChatResult | None = None) -> None:
+    """What online evaluation reads back from a service trace (T3-43): the user's question and, once the turn ended,
+    the final answer, the table it came from and the standalone question phase 1 got. The tool spans hold the
+    numbers (summarize_stat result); without these the turn cannot be rebuilt (the search argument is the rewritten
+    query, a reused-table turn has no search, and combine / refusal sentences are in no tool result)."""
+    root.set_attribute("kosis.turn.question", question)
+    if result is not None:
+        root.set_attributes({k: v for k, v in {"kosis.turn.answer": result.answer, "kosis.turn.table_key": result.table_key,
+                                               "kosis.turn.resolved_question": result.resolved_question}.items() if v})
+
+
 def _fail(span: Span, error: BaseException) -> None:
-    span.record_exception(error)
-    span.set_status(StatusCode.ERROR, f"{type(error).__name__}: {error}")
+    record_error(span, error)  # T3-44: a cut copy in the trace; the response still carries the full error
 
 
 def _run_tool(tracer: Tracer, name: str, tools: dict[str, BaseTool], args: dict) -> Any:
@@ -228,6 +238,7 @@ def chat_stream(req: ChatRequest, graph=Depends(get_graph),
     실행 중 예외는 `error` (`{type, detail}`)로 끝난다(상태 줄은 이미 200으로 나감)."""
     thread = req.thread_id or uuid.uuid4().hex  # no thread_id: a new conversation
     root, spans = start_turn(tracer, thread, _turn_index(graph, thread), telemetry.get_meter())
+    _record_turn(root, req.question)
     final: dict = {}
     try:
         yield ServerSentEvent(event="meta", data={"thread_id": thread, "trace_id": trace_id(root)})
@@ -240,6 +251,7 @@ def chat_stream(req: ChatRequest, graph=Depends(get_graph),
             else:
                 final = chunk
         result = chat_result(final)
+        _record_turn(root, req.question, result)
         for piece in tokens(result.answer):
             yield ServerSentEvent(event="token", data={"delta": piece})
         yield ServerSentEvent(event="result", data=result)
@@ -256,10 +268,13 @@ def chat(req: ChatRequest, graph=Depends(get_graph), tracer: Tracer = Depends(te
     """`/chat/stream`과 같은 그래프·같은 답. 스트림 없이 끝난 뒤 `ChatResult`를 돌려준다."""
     thread = req.thread_id or uuid.uuid4().hex
     root, spans = start_turn(tracer, thread, _turn_index(graph, thread), telemetry.get_meter())
+    _record_turn(root, req.question)
     try:
         state = graph.invoke({"messages": [("user", req.question)]},
                              {"configurable": {"thread_id": thread}, "callbacks": [spans]})
-        return ChatResponse(thread_id=thread, trace_id=trace_id(root), result=chat_result(state))
+        result = chat_result(state)
+        _record_turn(root, req.question, result)
+        return ChatResponse(thread_id=thread, trace_id=trace_id(root), result=result)
     except Exception as e:
         _fail(root, e)
         raise HTTPException(500, f"{type(e).__name__}: {e}  (trace_id {trace_id(root)})") from e

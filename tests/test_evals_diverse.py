@@ -31,7 +31,7 @@ def frame() -> pd.DataFrame:
 def oracle(item) -> StatAnswer:
     src = Source(org_id="358", tbl_id="DT_T", survey_nm="s", tbl_nm="t")
     if item.kind == "answerable":
-        return StatAnswer(outcome="answered", source=src, result=StatResult(facts=item.required_facts),
+        return StatAnswer(outcome="answered", source=src, result=StatResult(facts=item.required_facts), text=src.citation(),
                           parts=[FactPart(fact_id=f.id) for f in item.required_facts])
     return StatAnswer(outcome="refused", source=src, refusal=Refusal(reason=item.allowed_reasons[0], message="x"))
 
