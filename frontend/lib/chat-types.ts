@@ -1,41 +1,25 @@
 import type { UIMessage } from "ai";
 
-// Mirrors of the backend Pydantic models (src/kosis_rag/schemas.py); the UI shows them as they come
-export type TableCandidate = {
-  key: string;
-  org_id: string;
-  tbl_id: string;
-  table_name: string;
-  survey_name: string;
-  organization: string;
-  period: string;
-  url: string;
-  score: number | null;
+import type { ChatResult } from "./schemas.ts";
+
+// Data parts /api/chat writes into the assistant message (AI SDK UI message stream):
+//   node   — a finished phase 2 search node (parse, retrieve, rerank1, rerank2, gate, ...) and its seconds
+//   stat   — phase 1 ran on one table (summarize_stat)
+//   draft  — the answer sentence so far (tokens the backend sends after phase 1 checked the numbers)
+//   result — the turn's ChatResult, parsed with zod; the final answer replaces the draft
+//   meta   — the backend thread_id, sent back on the next turn (multi-turn)
+//   notice — a note from the proxy, e.g. the backend no longer has the earlier turns
+export type ChatData = {
+  node: { name: string; seconds: number };
+  stat: { key: string; seconds: number };
+  draft: { text: string };
+  result: ChatResult;
+  meta: { threadId: string };
+  notice: { text: string };
 };
 
-export type SearchResult = {
-  question: string;
-  candidates: TableCandidate[]; // the tables shown to the guide LLM
-  picked: TableCandidate[]; // the ones the answer recommends and cites (T2-39); [] on refusal
-  no_answer: boolean;
-  no_answer_reason: string | null;
-  answer: string;
-  answer_origin: "llm" | "template" | "refusal";
-  llm_status: string | null;
-};
+export type ChatMessage = UIMessage<never, ChatData>;
 
-// One finished graph node from /search/stream: its name and its own trace entry (seconds, ...)
-export type NodeStep = { name: string; seconds: number };
-
-// draft = the guide reply so far, only the part that already passed the backend check (T2-38); the final answer replaces it
-export type ChatMessage = UIMessage<never, { node: NodeStep; draft: { text: string }; result: SearchResult }>;
-
-export const NODE_LABELS: Record<string, string> = {
-  parse: "질의 조건 파싱",
-  retrieve: "하이브리드 검색 (dense + BM25)",
-  rerank1: "1차 리랭커",
-  rerank2: "2차 리랭커 (LLM)",
-  gate: "답 없음 판정",
-  guide: "안내 답변 생성",
-  refuse: "거절 답변",
-};
+export function textOf(message: Pick<ChatMessage, "parts">): string {
+  return message.parts.map((p) => (p.type === "text" ? p.text : "")).join("");
+}
