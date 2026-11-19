@@ -7,14 +7,18 @@ Per question (results.jsonl row joined with the golden files by qid):
     s_picks   max classifier logit over picks; s_top: max over top (one scoring pass, card text: cards.card on
               data/tables.jsonl)
 Refusal (positive class = not answerable), 04-dataset-plan.md §6.4 / §9 D2:
-    gemma         the run's own no_answer_pred
-    combined      gemma OR every picked table < theta (s_picks < theta)              <- the planned service rule
+    gemma         stage 2 picked nothing: stage2_picked_n == 0 without a stage2_error (gate.node.decide_route,
+                  evals llm_no_answer). NOT the row's no_answer_pred: that is the evals tau rule on the dense score
+                  (read here by mistake until 11-18; it is not used any more)
+    combined      gemma OR every picked table < theta (s_picks < theta)
     combined_top  gemma OR (every picked table < theta AND every table of the first --top keys < theta), i.e.
                   max(s_picks, s_top) < theta; a row with no picks is refused by gemma only (as combined), so
                   combined_top never refuses a row combined keeps
-    alone         s_top < theta
-    A row with no keys at all (no score) is refused by gemma only under every rule; such rows that gemma keeps are
-    counted (no_keys_not_refused), the semantics are not changed.
+    alone         s_top < theta (the classifier only; stage 2 never refuses)
+    alone_or_gemma  s_top < theta OR gemma: the classifier in front of stage 2, stage 2 keeps its veto. With
+                  --top-source rerank1 this is the flow stage 1 -> classifier -> stage 2 (refused by either)
+    A row with no keys at all (the search returned nothing) is refused under every rule, as the service gate does
+    (no docs -> refuse); such rows are counted in no_keys.
 Sets (from the golden notes): a JSON-object notes (build_dev_na.py v2) gives set / sub / relative -> groups <set>,
 <set>:<sub> and <set>:relative; v1 dev-NA+ notes ("src=... sub=...") -> set Dv1; other plain notes -> set A when
 answerable (KOS-192 dev) and B when not (old golden no-answer rows: add eval/golden/retrieval_golden.jsonl to --golden
@@ -52,8 +56,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from build_data import read_jsonl  # noqa: E402
 from cards import CARD_FORMAT, card, load_records  # noqa: E402
 
-RULES = ("gemma", "combined", "combined_top", "alone")
-GEMMA_RULES = ("gemma", "combined", "combined_top")
+RULES = ("gemma", "combined", "combined_top", "alone", "alone_or_gemma")
+GEMMA_RULES = ("gemma", "combined", "combined_top", "alone_or_gemma")  # rules stage 2's empty pick also refuses under
+SCORE_RULES = ("combined", "combined_top", "alone")  # distinct classifier scores (AUC); alone_or_gemma scores as alone
 FIT_EXCLUDE = ("D", "Dv1")
 
 
@@ -73,13 +78,18 @@ def rule_score(r: dict, rule: str) -> float | None:
         return r["s_picks"]
     if rule == "combined_top":
         return None if r["s_picks"] is None or r["s_top"] is None else max(r["s_picks"], r["s_top"])
-    if rule == "alone":
+    if rule in ("alone", "alone_or_gemma"):
         return r["s_top"]
     return None
 
 
+def forced(r: dict, rule: str) -> bool:
+    """Refused whatever theta is: the search returned nothing (every rule), or stage 2 picked nothing (GEMMA_RULES)."""
+    return bool(r.get("empty")) or (rule in GEMMA_RULES and r["gemma"])
+
+
 def refuses(r: dict, rule: str, theta: float) -> bool:
-    if rule in GEMMA_RULES and r["gemma"]:
+    if forced(r, rule):
         return True
     s = rule_score(r, rule)
     return s is not None and s < theta
@@ -140,22 +150,23 @@ def best_theta(rows: list[dict], rule: str = "combined") -> float | None:
 
 def budget_theta(rows: list[dict], rule: str, max_fr: int) -> dict:
     """Highest theta whose false refusals (answerable rows refused) are <= max_fr. Refusal is strict (score < theta),
-    so with the answerable scores the rule can refuse sorted e[0] <= e[1] <= ..., and b = max_fr minus gemma's own
-    false refusals, theta = e[b] refuses at most e[0..b-1]. Fewer than b+1 such scores: any theta fits (unbounded,
-    reported as just above the highest score of all rows). Gemma alone over the budget: theta None."""
+    so with the answerable scores the rule can refuse sorted e[0] <= e[1] <= ..., and b = max_fr minus the false
+    refusals no theta can undo (forced: no keys, or stage 2's empty pick under GEMMA_RULES), theta = e[b] refuses at
+    most e[0..b-1]. Fewer than b+1 such scores: any theta fits (unbounded, reported as just above the highest score
+    of all rows). Forced false refusals alone over the budget: theta None."""
     ans = [r for r in rows if r["answerable"]]
-    g0 = sum(r["gemma"] for r in ans) if rule in GEMMA_RULES else 0
+    g0 = sum(forced(r, rule) for r in ans)
     if rule == "gemma":
-        return {"theta": None, "gemma_false_refusals": g0, "unbounded": False}
+        return {"theta": None, "forced_false_refusals": g0, "unbounded": False}
     b = max_fr - g0
     if b < 0:
-        return {"theta": None, "gemma_false_refusals": g0, "unbounded": False, "why": "gemma alone exceeds the budget"}
-    es = sorted(s for r in ans if not (rule in GEMMA_RULES and r["gemma"])
-                for s in [rule_score(r, rule)] if s is not None)
+        return {"theta": None, "forced_false_refusals": g0, "unbounded": False,
+                "why": "refusals without the classifier already exceed the budget"}
+    es = sorted(s for r in ans if not forced(r, rule) for s in [rule_score(r, rule)] if s is not None)
     if len(es) > b:
-        return {"theta": es[b], "gemma_false_refusals": g0, "unbounded": False}
+        return {"theta": es[b], "forced_false_refusals": g0, "unbounded": False}
     every = [s for s in (rule_score(r, rule) for r in rows) if s is not None]
-    return {"theta": (max(every) + 1e-6) if every else None, "gemma_false_refusals": g0, "unbounded": True}
+    return {"theta": (max(every) + 1e-6) if every else None, "forced_false_refusals": g0, "unbounded": True}
 
 
 def auc(pos: list[float], neg: list[float]) -> float | None:
@@ -175,8 +186,8 @@ def rule_auc(rows: list[dict], rule: str) -> dict:
 
 def auc_block(rows: list[dict]) -> dict:
     common = [r for r in rows if r["s_picks"] is not None and r["s_top"] is not None]
-    return {"all_scored": {k: rule_auc(rows, k) for k in RULES[1:]},
-            "common_subset": {k: rule_auc(common, k) for k in RULES[1:]}}
+    return {"all_scored": {k: rule_auc(rows, k) for k in SCORE_RULES},
+            "common_subset": {k: rule_auc(common, k) for k in SCORE_RULES}}
 
 
 def budget_report(rows: list[dict], max_fr: int, group_rows: list[dict] | None = None) -> dict:
@@ -287,9 +298,12 @@ def gather(results: list[dict], golden: dict[str, dict], split: str, top: int,
                 TOP_FALLBACK["rerank1"] += 1
         ans = g.get("answerable", True) is not False
         m = note_meta(g.get("notes"), ans)
+        # stage 2's verdict as the service gate reads it (gate.node.decide_route): it ran without error and picked
+        # nothing. A run without stage 2 has stage2_picked_n None -> never. no_answer_pred (evals tau rule) is not read.
+        gemma = bool(keys) and n == 0 and not r.get("stage2_error")
         rows.append({"qid": r["qid"], "q": g["question"], "answerable": ans,
                      "reason": g.get("no_answer_reason") or "-", "hit1": bool(r.get("hit@1")),
-                     "gemma": bool(r.get("no_answer_pred")), "picks": picks, "top": top_keys,
+                     "gemma": gemma, "empty": not keys, "picks": picks, "top": top_keys,
                      "set": m["set"], "relative": m["relative"], "groups": meta_groups(m)})
     return rows
 
@@ -332,14 +346,15 @@ def fit_rows(rows: list[dict], exclude_sets: tuple[str, ...] | list[str], includ
 def summarize(rows: list[dict], theta: float, split: str, max_fr: int,
               exclude_sets: tuple[str, ...] | list[str] = FIT_EXCLUDE, include_relative: bool = False) -> dict:
     fit = fit_rows(rows, exclude_sets, include_relative)
-    no_keys = Counter("answerable" if r["answerable"] else "unanswerable" for r in rows
-                      if r["s_picks"] is None and r["s_top"] is None and not r["gemma"])
+    no_keys = Counter("answerable" if r["answerable"] else "unanswerable" for r in rows if r.get("empty"))
     out = {"n": len(rows), "n_answerable": sum(r["answerable"] for r in rows),
            "fit_exclude_sets": list(exclude_sets), "fit_include_relative": include_relative,
            "n_fit_answerable": sum(r["answerable"] for r in fit),
            "n_fit_unanswerable": sum(not r["answerable"] for r in fit),
            "n_left_out_of_fit": len(rows) - len(fit), "no_picks": sum(r["s_picks"] is None for r in rows),
-           "no_keys_not_refused": dict(no_keys), "auc": auc_block(fit),
+           "no_keys": dict(no_keys),
+           "gemma_refusals": {"answerable": sum(r["gemma"] for r in rows if r["answerable"]),
+                              "unanswerable": sum(r["gemma"] for r in rows if not r["answerable"])}, "auc": auc_block(fit),
            "at_ckpt_or_given_theta": report(fit, theta, rows)}
     if split == "dev":
         t = best_theta(fit)
@@ -362,6 +377,15 @@ def selftest() -> None:
     r1 = report(rows, 1.0)
     assert r1["combined"]["false_refusals"] == 1 and r1["combined"]["hit1_answerable"] == 0.5
     assert "no_period:refused" in r1["alone"]["by_reason"]
+    # row 4 (stage 2 picked nothing, top table 1.0 passes theta 1.0): alone misses it, alone_or_gemma refuses it
+    assert r1["alone"]["refused_right"] == 1 and r1["alone_or_gemma"]["refused_right"] == 2, r1["alone_or_gemma"]
+    assert r1["alone_or_gemma"]["false_refusals"] == r1["alone"]["false_refusals"] == 0
+    assert budget_theta(rows, "alone_or_gemma", 0)["theta"] == budget_theta(rows, "alone", 0)["theta"] == 2.0
+    # a search that returned nothing is refused under every rule (the service gate), whatever theta is
+    nk = rows + [{"answerable": False, "reason": "no_period", "hit1": False, "gemma": False, "empty": True,
+                  "s_picks": None, "s_top": None}]
+    assert all(report(nk, -99.0)[k]["refused_right"] >= 1 for k in RULES), report(nk, -99.0)
+    assert report(nk, -99.0)["alone"]["refused_right"] == 1 and report(rows, -99.0)["alone"]["refused_right"] == 0
     # row 2: the picked table is wrong (0.5) but a top-5 table passes (2.0): combined refuses, combined_top keeps it
     assert r1["combined_top"]["false_refusals"] == 0 and r1["combined_top"]["refused_right"] == 2, r1["combined_top"]
     assert r1["combined_top"]["recall_by_reason"] == {"no_item": 1.0, "no_period": 1.0}
@@ -381,6 +405,8 @@ def selftest() -> None:
     assert report(rows, 2.0 + 1e-6)["combined_top"]["false_refusals"] == 1
     g_rows = rows + [{"answerable": True, "reason": "-", "hit1": False, "gemma": True, "s_picks": 5.0, "s_top": 5.0}]
     assert budget_theta(g_rows, "combined", 0)["theta"] is None and budget_theta(g_rows, "alone", 0)["theta"] == 2.0
+    assert budget_theta(g_rows, "alone_or_gemma", 0)["theta"] is None  # stage 2's own false refusal uses the budget
+    assert budget_theta(g_rows, "alone_or_gemma", 1)["theta"] == 2.0 and "alone_or_gemma" not in auc_block(rows)["all_scored"]
     br = budget_report(rows, 0)
     assert br["combined"]["at_theta"]["false_refusals"] == 0 and br["combined_top"]["at_theta"]["false_refusals"] == 0
     assert br["combined_top"]["at_theta"]["recall"] >= br["combined"]["at_theta"]["recall"] - 1e-9
@@ -401,8 +427,10 @@ def selftest() -> None:
     assert note_meta("", True)["set"] == "A" and note_meta("old note", False)["set"] == "B"
     assert note_meta("{bad json", True)["set"] == "A" and note_meta(None, False)["set"] == "B"
 
-    res = [{"qid": "a", "split": "dev", "keys": ["X", "Y", "Z"], "stage2_picked_n": 1, "hit@1": 1, "no_answer_pred": False},
-           {"qid": "b", "split": "dev", "keys": ["Y"], "stage2_picked_n": 0, "hit@1": 0, "no_answer_pred": True},
+    # no_answer_pred is the evals tau rule, not stage 2's verdict: a (tau refuses, stage 2 picked) is not gemma,
+    # b (tau keeps, stage 2 picked nothing) is
+    res = [{"qid": "a", "split": "dev", "keys": ["X", "Y", "Z"], "stage2_picked_n": 1, "hit@1": 1, "no_answer_pred": True},
+           {"qid": "b", "split": "dev", "keys": ["Y"], "stage2_picked_n": 0, "hit@1": 0, "no_answer_pred": False},
            {"qid": "c", "split": "test", "keys": ["X"], "stage2_picked_n": 1},
            {"qid": "e", "split": "dev", "keys": [], "stage2_picked_n": 0, "hit@1": 0, "no_answer_pred": False}]
     note = json.dumps({"set": "C1", "kind": "no_item", "sub": "A", "source": "C"})
@@ -420,7 +448,13 @@ def selftest() -> None:
     assert g1[0]["top"] == ["X", "Y"] and g1[0]["picks"] == ["P"] and g1[1]["top"] == ["Q", "R"], g1
     assert gather(tr, tg, "dev", 2)[0]["top"] == ["P", "X"]
     assert [x["qid"] for x in g] == ["a", "b", "e"] and g[0]["picks"] == ["X"] and g[0]["top"] == ["X", "Y"]
-    assert g[1]["picks"] == [] and g[1]["gemma"]
+    assert g[1]["picks"] == [] and g[1]["gemma"] and not g[0]["gemma"]
+    assert g[2]["empty"] and not g[2]["gemma"] and not g[0]["empty"]  # e: no keys at all -> the gate, not stage 2
+    # a failed stage-2 call is not a verdict (the answer keeps the stage-1 order); a run without stage 2 never refuses
+    er = gather([{"qid": "a", "split": "dev", "keys": ["X"], "stage2_picked_n": 0, "stage2_error": "boom"},
+                 {"qid": "b", "split": "dev", "keys": ["X"], "stage2_picked_n": None, "no_answer_pred": True}],
+                gold, "dev", 2)
+    assert not er[0]["gemma"] and er[0]["picks"] == ["X"] and not er[1]["gemma"] and er[1]["picks"] == ["X"]
     assert g[0]["groups"] == ["A"] and g[1]["groups"] == ["C1", "C1:A"] and g[1]["set"] == "C1"
     score_rows(g, lambda pairs: [float(len(c)) for _, c in pairs], lambda k: k * {"X": 1, "Y": 2, "Z": 3}[k])
     assert g[0]["s_picks"] == 1.0 and g[0]["s_top"] == 2.0 and g[1]["s_picks"] is None and g[2]["s_top"] is None
@@ -442,7 +476,7 @@ def selftest() -> None:
     at = s["dev_budget"]["combined"]["at_theta"]
     assert at["false_refusals"] == 0 and at["by_group"]["D"]["false_refusals"] == 1 and at["by_group"]["C4:relative"]["n"] == 1
     assert at["by_group"]["run:C:/y/run1"]["answerable"] == 3
-    assert s["no_keys_not_refused"] == {"unanswerable": 1}
+    assert s["no_keys"] == {"unanswerable": 1} and s["gemma_refusals"] == {"answerable": 0, "unanswerable": 1}
     s_all = summarize(pooled, 1.5, "dev", 0, exclude_sets=(), include_relative=True)
     assert s_all["dev_budget"]["combined"]["theta"] == -9.0 and s_all["n_fit_answerable"] == 4
     assert "dev_budget" not in summarize(pooled, 1.5, "test", 0)
@@ -512,7 +546,8 @@ def main() -> None:
     head = {"ckpt": str(a.ckpt), "ckpt_meta": {k: scorer.meta.get(k) for k in ("name", "epoch", "init", "data_dir")},
             "split": a.split, "top": a.top, "top_source": a.top_source, "top_source_counts": dict(TOP_FALLBACK), "max_length": scorer.max_length, "rules": list(RULES)}
     fit_args = (a.max_false_refusals, a.fit_exclude_sets, a.fit_include_relative)
-    stem = f"{a.ckpt.stem}-{a.split}"
+    # the top source is part of the file name, so a rerank1 scoring does not overwrite a keys scoring of the same run
+    stem = f"{a.ckpt.stem}-{a.split}" + ("" if a.top_source == "keys" else f"-{a.top_source}")
     printed = []
     for run, rows in per_run:
         summary = {"run": str(run), **head, **summarize(rows, theta, a.split, *fit_args)}
@@ -523,7 +558,8 @@ def main() -> None:
             with (out_dir / f"{stem}.scores.jsonl").open("w", encoding="utf-8") as f:
                 for r in rows:
                     f.write(json.dumps({"qid": r["qid"], "answerable": r["answerable"], "reason": r["reason"],
-                                        "groups": r["groups"], "gemma": r["gemma"], "s_picks": r["s_picks"],
+                                        "groups": r["groups"], "gemma": r["gemma"], "empty": r["empty"],
+                                        "s_picks": r["s_picks"],
                                         "s_top": r["s_top"], "scores": r["scores"]}, ensure_ascii=False) + "\n")
         printed.append(summary)
     if len(per_run) > 1:

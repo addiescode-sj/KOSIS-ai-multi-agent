@@ -14,6 +14,7 @@ then reads os.environ. In the container compose passes the same file as `env_fil
                                                     (STAGE2=gpt only) and its key (default the STAGE2 key below) (T3-33)
     HQ_BUILD HQ_WEIGHT HQ_BM25                      reverse HyDE question index (empty HQ_BUILD = off)
     HCX_API_KEY HCX_THINKING OPENAI_API_KEY         stage 2 keys (clova / hcx: HCX_API_KEY, gpt: OPENAI_API_KEY)
+    JEV_BASE_URL JEV_MODEL JEV_API_KEY JEV_MODE JEV_THRESHOLD JEV_PROMPT   stage 2 jev (T3-23; STAGE2_* do not apply)
     STAT_PROVIDER STAT_MODEL STAT_RETRY_INTERVAL    phase 1 model (hcx = HCX-DASH-002 default | openai | gemma | mock), seconds before a retry
     HCX_API_KEY                                     phase 1 key too (None: LLMKeyMissing when a phase 1 LLM step runs)
     ALT_TABLE_BUDGET                                candidate tables tried after a table-mismatch refusal (default 0 = off, T3-23)
@@ -41,7 +42,7 @@ from kosis_rag.schemas.resources import OFF, ChromaConfig, IndexSpec, SearchOpti
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 STAT_MODEL = "HCX-DASH-002"  # the phase 1 baseline model (T1-28 S5 HCX run: PASS 86 / 90)
-STAGE2_KEY_ENV = {"clova": "HCX_API_KEY", "hcx": "HCX_API_KEY", "gpt": "OPENAI_API_KEY"}
+STAGE2_KEY_ENV = {"clova": "HCX_API_KEY", "hcx": "HCX_API_KEY", "gpt": "OPENAI_API_KEY", "jev": "JEV_API_KEY"}
 
 
 class AgentConfig(NamedTuple):
@@ -71,9 +72,16 @@ def stage2_llm(name: str) -> SearchLLMConfig | None:
 
     Stage 2's own variables (phase 2 PR #48, T3-33): STAGE2_MODEL swaps the model, STAGE2_BASE_URL points at an
     OpenAI-compatible server (phase 2 uses it only on its openai provider, i.e. STAGE2=gpt) and STAGE2_API_KEY is
-    that server's key; without it the STAGE2 name's usual key (STAGE2_KEY_ENV). evals.config calls this too."""
+    that server's key; without it the STAGE2 name's usual key (STAGE2_KEY_ENV). evals.config calls this too.
+    STAGE2=jev (T3-23) reads its own JEV_* variables instead (a /v1/systemone server, Gemma_server/clef_server.ipynb)."""
     if name in OFF or name not in selectors.LLM_RERANKERS:
         return None
+    if name == "jev":  # T3-23: a Jev-style decision model (the Colab Clef-Flash server)
+        threshold = _env("JEV_THRESHOLD")
+        return selectors.default_config(name, api_key=_env(STAGE2_KEY_ENV[name]), model=_env("JEV_MODEL"),
+                                        base_url=_env("JEV_BASE_URL"), decision_mode=_env("JEV_MODE"),
+                                        threshold=float(threshold) if threshold else None,
+                                        prompt_version=_env("JEV_PROMPT"))
     return selectors.default_config(name, api_key=_env("STAGE2_API_KEY") or _env(STAGE2_KEY_ENV[name]),
                                     thinking=(_env("HCX_THINKING") or "none").strip().lower(),
                                     model=_env("STAGE2_MODEL"), base_url=_env("STAGE2_BASE_URL"))

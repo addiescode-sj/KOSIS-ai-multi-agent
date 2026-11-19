@@ -3,6 +3,8 @@
 import json
 from types import SimpleNamespace
 
+import pytest
+
 from evals.tasks import l1_retrieval
 from evals.builders import pool
 from evals.evaluators import retrieval
@@ -68,3 +70,56 @@ def test_l1_from_run_regrades_saved_rankings_with_the_runs_tau(tmp_path):
     assert args.retriever == "staged" and summary["tau"] == 0.5 and summary["no_answer"]["tp"] == 1
     assert summary["metrics"]["all"]["hit@1"] == 0 and summary["metrics"]["all"]["hit@1_upper"] == 1
     assert "0.000 ~ 1.000" in report and "과거 실행 재채점" in report
+
+
+def _checkpoint_rows(split="dev"):
+    return [{"qid": "q1", "split": split, "qtype": "concept", "answerable": True, "keys": ["a"], "top_score": 0.9,
+             "error": None, "search_spans": []},
+            {"qid": "q2", "split": split, "qtype": "no_answer", "answerable": False, "keys": ["z"], "top_score": 0.1,
+             "error": None, "search_spans": []}]
+
+
+def _regrade_args(tmp_path, run, tau=None):
+    golden = tmp_path / "golden.jsonl"
+    golden.write_text("".join(i.model_dump_json() + "\n" for i in items()), encoding="utf-8")
+    judged = tmp_path / "pool.csv"
+    judged.write_text("qid,key,slot\nq1,a,1\n", encoding="utf-8")
+    return SimpleNamespace(golden=golden, from_run=run, retriever="staged", k=10, tau=tau, pool=judged, split="all",
+                           stage="KOS-192-P0")
+
+
+def test_l1_checkpoint_is_regraded_with_tau_picked_on_dev(tmp_path, monkeypatch, capsys):
+    import evals.run_eval
+
+    monkeypatch.setattr(evals.run_eval, "REPORTS", tmp_path / "reports")
+    args = _regrade_args(tmp_path, None)
+    l1_retrieval.checkpoint(_checkpoint_rows(), args)
+    run = tmp_path / "reports" / "_partial" / "KOS-192-P0"
+    assert "checkpoint: 2 search rows" in capsys.readouterr().out
+    manifest = json.loads((run / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["partial"] is True and manifest["summary"]["tau"] is None and manifest["top_k"] == 10
+    assert len((run / "results.jsonl").read_text(encoding="utf-8").splitlines()) == 2
+    args.from_run = run
+    shown, summary, _ = l1_retrieval.run(args)
+    assert summary["tau"] == 0.9 and summary["no_answer"]["tp"] == 1 and len(shown) == 2  # best F1 on the dev rows
+    args.tau = 0.5  # an explicit --tau still wins
+    assert l1_retrieval.run(args)[1]["tau"] == 0.5
+
+
+def test_l1_checkpoint_without_dev_rows_asks_for_tau(tmp_path):
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / "manifest.json").write_text(json.dumps({"retriever": "staged", "top_k": 10, "summary": {"tau": None}}))
+    (run / "results.jsonl").write_text("".join(json.dumps(r) + "\n" for r in _checkpoint_rows("test")))
+    with pytest.raises(SystemExit, match="pass --tau"):
+        l1_retrieval.run(_regrade_args(tmp_path, run))
+
+
+def test_l1_checkpoint_failure_only_warns(tmp_path, monkeypatch, capsys):
+    import evals.run_eval
+
+    blocker = tmp_path / "file"
+    blocker.write_text("x")
+    monkeypatch.setattr(evals.run_eval, "REPORTS", blocker)  # a file, so the folder cannot be made
+    l1_retrieval.checkpoint(_checkpoint_rows(), _regrade_args(tmp_path, None))
+    assert capsys.readouterr().out.startswith("warning: search checkpoint not written")

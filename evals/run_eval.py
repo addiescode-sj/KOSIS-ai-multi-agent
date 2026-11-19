@@ -16,7 +16,8 @@
 
 L1 runs every item (BM25 is fast) so the no-answer threshold tau is chosen on dev and applied to the split shown.
 Every run writes results.jsonl, manifest.json, ops.json (latency, tokens, cost, tool failure rate), report.md and
-report.html (charts, evals.report_html), and appends one aggregate line to evals/reports/ops_history.jsonl.
+report.html (charts, evals.report_html), plus any extra files the task returns (L1 over the graph: gate_report.md,
+the gate's real refusals), and appends one aggregate line to evals/reports/ops_history.jsonl.
 Run folders hold question text and table keys and stay out of git; ops_history holds aggregates only.
 """
 
@@ -59,6 +60,14 @@ SEARCH_ARGS = {
     "answer_k": ("ANSWER_K", "candidates handed to gate"),
     "hq_build": ("HQ_BUILD", "question index build id (T2-39)"),
     "hcx_thinking": ("HCX_THINKING", "stage 2 hcx: none | low"),
+    "jev_base_url": ("JEV_BASE_URL", "stage 2 jev: the /v1/systemone server, e.g. https://<tunnel>.trycloudflare.com/v1"),
+    "jev_model": ("JEV_MODEL", "stage 2 jev: model name (default Cloudflare/clef-flash)"),
+    "jev_api_key": ("JEV_API_KEY", "stage 2 jev: the server's key (prefer `set JEV_API_KEY=...`: an argument shows in the process list)"),
+    "jev_mode": ("JEV_MODE", "stage 2 jev: noul (true/false per table, default) | choice"),
+    "jev_threshold": ("JEV_THRESHOLD", "stage 2 jev: pick threshold (default noul 0.5, choice 0.05)"),
+    "jev_prompt": ("JEV_PROMPT", "stage 2 jev: prompt version, rerank/prompts/stage2-jev-<mode>-<this>.md (default v2)"),
+    "answer_ckpt": ("ANSWER_CKPT", "answerability classifier checkpoint .pt between stage 1 and stage 2 (KOS-193); off when empty"),
+    "answer_theta": ("ANSWER_THETA", "answerability: refuse when the best logit of the stage-1 top 5 is below this (required with --answer-ckpt)"),
 }
 
 
@@ -106,6 +115,7 @@ def main(argv: list[str] | None = None) -> Path:
     parser.add_argument("--retriever", default="bm25-catalog", help="l1, e2e: oracle (l1 only) | bm25-catalog | bm25-record | chroma")
     parser.add_argument("--k", type=int, help="default 10; ragas: 5 (tables given to the judge as contexts)")
     parser.add_argument("--tau", type=float, help="l1: fixed no-answer threshold (default: best F1 on dev)")
+    parser.add_argument("--jev-recut", type=float, help="l1 --from-run of a jev run: re-pick stage 2 at this threshold from the saved probabilities (no model call)")
     parser.add_argument("--from-run", type=Path, help="l1, l3, e2e, agent: grade a past run folder instead of searching / calling the model (l1 reuses its retriever, k and tau)")
     parser.add_argument("--slot-source", choices=("gold", "pred"), default="pred", help="ablation: query_golden labels or parse_query")
     parser.add_argument("--slots", default="year,cycle,region,dimension,measure", help="ablation: slots to switch")
@@ -200,6 +210,12 @@ def main(argv: list[str] | None = None) -> Path:
         "vendor_phase2": git("-C", "vendor/phase2", "rev-parse", "HEAD"),
         "retriever": args.retriever if args.layer in ("l1", "ablation", "l012") else None,
         "top_k": args.k if args.layer in ("l1", "ablation", "l012", "ragas") else None,
+        # T3-23: which stage 2 model / server ran (the key is not written)
+        "stage2_llm": {"model": os.environ.get("STAGE2_MODEL"), "base_url": os.environ.get("STAGE2_BASE_URL"),
+                       "jev": {**{k.lower(): os.environ.get(f"JEV_{k}") for k in ("MODEL", "BASE_URL", "MODE", "THRESHOLD", "PROMPT")},
+                               "recut": getattr(args, "jev_recut", None)}},
+        # KOS-193: the answerability classifier between stage 1 and stage 2 (None, None when off)
+        "answerable": {"ckpt": os.environ.get("ANSWER_CKPT"), "theta": os.environ.get("ANSWER_THETA")},
         "slot_source": "gold,pred" if args.layer == "l012" else args.slot_source if slotted else None,
         "slots": args.slots if slotted else None,
         "from_run": str(args.from_run) if args.from_run else None,
@@ -213,6 +229,10 @@ def main(argv: list[str] | None = None) -> Path:
     (out / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
     (out / "ops.json").write_text(json.dumps(op, ensure_ascii=False, indent=2), encoding="utf-8")
     (out / "report.md").write_text(report, encoding="utf-8")
+    task = TASKS[args.layer]
+    extra = task.extra_files(args, rows, summary) if hasattr(task, "extra_files") else {}
+    for name, text in extra.items():  # e.g. L1 gate_report.md (KOS-193)
+        (out / name).write_text(text, encoding="utf-8")
     if args.layer == "ragas" and not args.no_record:  # T3-19: gate metrics for tests/test_quality_gate.py (CI)
         quality.record(run_id, args.stage, summary)
     if args.layer == "online" and not args.no_record:  # T3-43: local online history (traffic, never committed)
@@ -229,6 +249,8 @@ def main(argv: list[str] | None = None) -> Path:
     report_html.write(out)  # every layer (T3-20); l0 / l2 / ablation show report.md as HTML, dedicated charts when they are presented
     print(report)
     print(f"-> {out}")
+    for name in extra:
+        print(f"-> {out / name}" + (" (실제 거절 내역)" if name == "gate_report.md" else ""))
     return out
 
 

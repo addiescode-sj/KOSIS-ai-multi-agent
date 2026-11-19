@@ -63,10 +63,34 @@ STAGED = {
     "hybrid+cond-gpt": {"cond_filter": True, "rerank_ckpt": "", "stage2": "gpt"},  # same prompt, gpt-4o-mini
     # stage 1 + the OpenAI-compatible stage 2: gpt-4o-mini, or STAGE2_MODEL on STAGE2_BASE_URL (e.g. vLLM Gemma, T3-33)
     "staged-gpt": {"cond_filter": True, "stage2": "gpt"},
+    "hybrid+cond-jev": {"cond_filter": True, "rerank_ckpt": "", "stage2": "jev"},  # T3-23: Jev-style decision model (JEV_*)
+    "staged-jev": {"cond_filter": True, "stage2": "jev"},  # T3-23: stage 1 + Clef-Flash (JEV_*)
+    "staged-gpt-nocond": {"cond_filter": False, "stage2": "gpt"},  # KOS-192: staged-gpt with the condition filter off
+    "staged-gpt-condyears": {"cond_filter": True, "cond_scope": "years", "stage2": "gpt"},  # KOS-192: only years / period filter
+    # KOS-192 offline scripts (scripts/kos192): the two presets above up to stage 1, no LLM (RERANK_CKPT)
+    "staged-nocond": {"cond_filter": False, "stage2": "none"},
+    "staged-condyears": {"cond_filter": True, "cond_scope": "years", "stage2": "none"},
+    "staged-jev-condyears": {"cond_filter": True, "cond_scope": "years", "stage2": "jev"},  # KOS-192 x T3-23: years filter + jev
 }
 
 
-STAGE2_FIELDS = ("stage2_picked_n", "stage2_reason", "stage2_error", "stage2_calls")  # None when no stage 2 ran
+# None when no stage 2 ran; stage2_scores only for a scoring stage 2 (jev: key -> probability, to re-pick a threshold;
+# a dict, so evaluators.retrieval.aggregate, which averages numeric columns only, skips it)
+STAGE2_FIELDS = ("stage2_picked_n", "stage2_reason", "stage2_error", "stage2_calls", "stage2_scores")
+
+
+def stage1_signals(docs: list[Document]) -> tuple[float | None, float | None]:
+    """(top, margin) of the stage 1 cross-encoder scores in a ranked pool (KOS-192 rewrite trigger).
+
+    In: docs = the whole pool a search returned (before any cut to k); a doc re-scored by stage 1 carries
+        metadata["stage1_score"]. Out: top = the highest stage1_score (the score's top, not the blend order's top),
+        margin = top minus the second highest; None when no doc (top) or fewer than two docs (margin) carry a score.
+    Side effects: none. Node: not used by the graph (the L1 runner and scripts/kos192 read it from the pool).
+    """
+    scores = sorted((d.metadata["stage1_score"] for d in docs if d.metadata.get("stage1_score") is not None),
+                    reverse=True)
+    top = scores[0] if scores else None
+    return top, (scores[0] - scores[1] if len(scores) >= 2 else None)
 
 
 GRAPH = "graph:"  # graph:<STAGED name> = the same settings run through the LangGraph search (T2-10)
@@ -108,13 +132,18 @@ def build(name: str, items: list[RetrievalItem], k: int) -> Runnable:
     Out: something with .invoke(question, config) -> ranked Documents (metadata["key"] set). graph:<preset> returns
         the LangGraph search's whole ranked pool, the same documents the preset's nested retrievers return.
     Side effects: loads tables.jsonl, connects to Chroma and loads models as the preset needs; ValueError for an
-        unknown name. Node: not used by the graph.
+        unknown name, and for a bare STAGED preset whose cond_scope is not "all" (the legacy nested retrievers filter
+        by every condition and ignore cond_scope: such a preset runs only as graph:<preset>). Node: not used by the
+        graph.
     """
     if name == "oracle":
         return OracleRetriever(gold={i.question: [s[0] for s in i.required] for i in items})
     if name == "chroma":  # needs the shared server and CHROMA_COLLECTION (T2-26)
         return connect_chroma(k)
     if name in STAGED:  # the pipeline keeps its own pool of 50; the runner cuts to k
+        if STAGED[name].get("cond_scope", "all") != "all":  # KOS-192: the legacy path has no cond_scope
+            raise ValueError(f"preset {name!r} sets cond_scope={STAGED[name]['cond_scope']!r}, which only the graph "
+                             f"search applies: use --retriever {GRAPH}{name}")
         from kosis_rag.legacy.pipeline import build_search
 
         return build_search(_resources(name))
@@ -152,9 +181,11 @@ def run(retriever: BaseRetriever, items: list[RetrievalItem], k: int, telemetry=
         started = time.perf_counter()
         error = None
         try:
-            docs = retriever.invoke(item.question, config={"callbacks": callbacks})[:k]
+            pool = retriever.invoke(item.question, config={"callbacks": callbacks})
+            docs = pool[:k]
         except Exception as exc:  # a failing question is recorded, the run goes on
-            docs, error = [], f"{type(exc).__name__}: {exc}"
+            pool, docs, error = [], [], f"{type(exc).__name__}: {exc}"
+        s1_top, s1_margin = stage1_signals(pool)  # KOS-192: over the whole pool stage 1 re-scored, before the cut
         ids = {}
         if root is not None:
             root.set_attribute("gen_ai.tool.call.result", json.dumps([d.metadata.get("key") for d in docs], ensure_ascii=False))
@@ -173,6 +204,9 @@ def run(retriever: BaseRetriever, items: list[RetrievalItem], k: int, telemetry=
             "keys": [d.metadata["key"] for d in docs],
             # a stage 2 re-ranker moves another table to the top: tau judges the stage 1 top score either way (T2-09)
             "top_score": meta.get("stage2_input_top_score", meta.get("score")),
+            # KOS-192: the highest stage 1 cross-encoder score of the pool and its gap to the second (the rewrite
+            # trigger candidates); None without stage 1
+            "stage1_top_score": s1_top, "stage1_margin": s1_margin,
             **{f: meta.get(f) for f in STAGE2_FIELDS},
             "latency_ms": (time.perf_counter() - started) * 1000,
             # stage 2 calls its API directly (no LangChain callback): add what it recorded on the documents,

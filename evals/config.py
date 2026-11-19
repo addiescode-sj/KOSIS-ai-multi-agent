@@ -7,6 +7,8 @@ os.environ first (kosis_agent.envfile, shell values win); this module reads os.e
 
     CHROMA_HOST CHROMA_PORT CHROMA_COLLECTION · TEXT_FORMAT EMBED_CKPT RERANK_CKPT RERANK_MODE
     STAGE2 COND_FILTER ANSWER_K · HQ_BUILD HQ_WEIGHT HQ_BM25 · HCX_API_KEY HCX_THINKING OPENAI_API_KEY
+    JEV_BASE_URL JEV_MODEL JEV_API_KEY JEV_MODE JEV_THRESHOLD JEV_PROMPT (STAGE2=jev, read by backend.app.config)
+    ANSWER_CKPT ANSWER_THETA (KOS-193 answerability classifier between stage 1 and stage 2; off without ANSWER_CKPT)
 
 ponytail: replace with this repo's backend config (agent_config()) once T3-01 adds it.
 """
@@ -46,6 +48,7 @@ def search_config(**overrides: Any) -> tuple[IndexSpec, SearchOptions]:
         "tables": data / "tables.jsonl", "sigungu": data / "sigungu.json", "hq_root": data / "hq",
         "text_format": _env("TEXT_FORMAT"), "embed_ckpt": _env("EMBED_CKPT"), "rerank_ckpt": _env("RERANK_CKPT"),
         "hq_build": (_env("HQ_BUILD") or "").strip() or None,
+        "answer_ckpt": _env("ANSWER_CKPT"),
         "chroma": ChromaConfig(host=_env("CHROMA_HOST") or "localhost", port=int(_env("CHROMA_PORT") or 8001),
                                collection=_env("CHROMA_COLLECTION")),
     }
@@ -56,6 +59,7 @@ def search_config(**overrides: Any) -> tuple[IndexSpec, SearchOptions]:
         "answer_k": int(_env("ANSWER_K") or 5),
         "hq_weight": float(_env("HQ_WEIGHT") or 1.0),
         "hq_bm25": (_env("HQ_BM25") or "off").strip().lower() not in OFF,
+        "answer_theta": float(v) if (v := _env("ANSWER_THETA")) else None,
     }
     for key, value in overrides.items():
         if key in IndexSpec.model_fields:

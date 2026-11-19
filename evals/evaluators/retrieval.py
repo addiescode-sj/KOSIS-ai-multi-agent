@@ -112,7 +112,8 @@ def best_tau(rows: list[tuple[float | None, bool]]) -> float:
 
 
 def aggregate(rows: list[dict], by: str = "qtype") -> dict[str, dict]:
-    """Mean of every numeric metric, overall ('all') and per group; rows carry their group under `by`."""
+    """Mean of every numeric metric, overall ('all') and per group; rows carry their group under `by`. A missing or None
+    value adds 0 (the denominator stays the group size), so an empty score column never breaks the grading."""
     groups: dict[str, list[dict]] = defaultdict(list)
     for row in rows:
         groups["all"].append(row)
@@ -120,7 +121,7 @@ def aggregate(rows: list[dict], by: str = "qtype") -> dict[str, dict]:
     out = {}
     for name, members in groups.items():
         keys = [k for k, v in members[0].items() if isinstance(v, (int, float)) and k != "rank" and not isinstance(v, bool)]
-        out[name] = {"n": len(members), **{k: sum(m[k] for m in members if k in m) / len(members) for k in keys}}
+        out[name] = {"n": len(members), **{k: sum(m[k] for m in members if m.get(k) is not None) / len(members) for k in keys}}
     return out
 
 
