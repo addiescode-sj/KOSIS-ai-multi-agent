@@ -4,30 +4,27 @@ import { cn } from "cn"
 import { Slot } from "radix-ui"
 
 const badgeVariants = cva(
-  "inline-flex w-fit shrink-0 items-center justify-center gap-1 overflow-hidden rounded-full border border-transparent px-2 py-0.5 text-xs font-medium whitespace-nowrap transition-[color,box-shadow] focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 aria-invalid:border-destructive aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 [&>svg]:pointer-events-none [&>svg]:size-3",
+  "inline-flex h-6 w-fit shrink-0 items-center justify-center gap-1 rounded-md px-2 text-xs font-medium whitespace-nowrap [&>svg]:pointer-events-none [&>svg]:size-3",
   {
     variants: {
+      // Prototype tones (T3-11)
       variant: {
-        default: "bg-primary text-primary-foreground [a&]:hover:bg-primary/90",
-        secondary:
-          "bg-secondary text-secondary-foreground [a&]:hover:bg-secondary/90",
-        destructive:
-          "bg-destructive text-white focus-visible:ring-destructive/20 dark:bg-destructive/60 dark:focus-visible:ring-destructive/40 [a&]:hover:bg-destructive/90",
-        outline:
-          "border-border text-foreground [a&]:hover:bg-accent [a&]:hover:text-accent-foreground",
-        ghost: "[a&]:hover:bg-accent [a&]:hover:text-accent-foreground",
-        link: "text-primary underline-offset-4 [a&]:hover:underline",
+        gray: "bg-gray-100 text-sub",
+        blue: "bg-brand-50 text-brand-700",
+        green: "bg-emerald-50 text-emerald-700",
+        amber: "bg-amber-50 text-amber-700",
+        red: "bg-red-50 text-red-600",
       },
     },
     defaultVariants: {
-      variant: "default",
+      variant: "gray",
     },
   }
 )
 
 function Badge({
   className,
-  variant = "default",
+  variant = "gray",
   asChild = false,
   ...props
 }: React.ComponentProps<"span"> &

@@ -10,7 +10,7 @@ if [ -d node_modules ]; then
 fi
 # Frontend typecheck (skipped until npm install in frontend/)
 if [ -d frontend/node_modules ]; then
-  (cd frontend && npx next typegen >/dev/null && npx tsc --noEmit && node --test lib/*.test.ts >/dev/null)
+  (cd frontend && npx next typegen >/dev/null && npx tsc --noEmit && npx jest --silent >/dev/null)
 fi
 
 # Phase 1 / phase 2 modules are imported from the submodules

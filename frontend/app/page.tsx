@@ -1,5 +1,11 @@
-import { Chat } from "@/components/chat";
+import { Suspense } from "react";
 
-export default function Home() {
-  return <Chat />;
+import { NewChat } from "@/components/chat/entries";
+
+export default function Page() {
+  return (
+    <Suspense>
+      <NewChat />
+    </Suspense>
+  );
 }
