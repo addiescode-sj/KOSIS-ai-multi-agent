@@ -20,7 +20,7 @@
 | 만료 뒤 같은 `thread_id` | 410 vs 새 대화 | **새 대화로 시작** + `meta.expired: true` (F-SGTERZ) |
 | 멀티쿼리 차트 | 마지막 하위 답 하나만 | **하위 답마다** `sub_results[].chart` (11/18 결정) |
 | 피드백 필드 | `choice` | **`category`** (F-RPMLSR 데이터 명세 이름), 분당 10회 제한(429) 추가 |
-| 카카오 로그인 | 2차 | **동결 전 포함 여부 확정 필요** — F-DCIQJH는 "동결 전 포함", 홈 와이어프레임(11/19)에 로그인 버튼 추가. R-GYWJRI·PL-EQDDSH는 아직 "2차" |
+| 카카오 로그인 | 2차 | **1차(기능 동결 전 포함)** — 11/19 김병석 결정. F-DCIQJH·홈 와이어프레임(11/19)과 같음 |
 | `/me` | `GET /me` | **`GET /auth/me`** (F-DCIQJH) |
 | 운영자 화면 | `GET /admin/metrics` · `GET /admin/feedback` | **도구 결정 전까지 보류** (F-PVOWFN 추천안은 Grafana 같은 BI 도구 → DB 직접 조회라 API가 필요 없을 수 있음) |
 
@@ -67,8 +67,8 @@
 | 1차 | `POST /feedback` **[신규]** | 👍/👎 · 선택지 · 이유 저장 | F-RPMLSR, F-WFJGDJ |
 | 1차 | `DELETE /threads/{thread_id}` **[신규]** | 비회원 대화 삭제(서버 쪽 이전 턴) | F-EULYHK |
 | 1차 | `POST /events` **[신규]** | 화면 이벤트 로그 일괄 전송 | F-TTIAJU, F-QRZCBS |
-| 1차? | `GET /auth/kakao/login` · `GET /auth/kakao/callback` · `POST /auth/logout` · `GET /auth/me` **[신규 · 시기 결정 필요]** | 카카오 로그인 | F-DCIQJH, F-JFIVUV |
-| 1차? | `GET /conversations` · `GET /conversations/{id}` · `DELETE /conversations/{id}` **[신규 · 시기 결정 필요]** | 회원 대화 목록·복원·삭제 | F-JVQZTL, F-EULYHK |
+| 1차 | `GET /auth/kakao/login` · `GET /auth/kakao/callback` · `POST /auth/logout` · `GET /auth/me` **[신규]** | 카카오 로그인 | F-DCIQJH, F-JFIVUV |
+| 1차 | `GET /conversations` · `GET /conversations/{id}` · `DELETE /conversations/{id}` **[신규]** | 회원 대화 목록·복원·삭제 | F-JVQZTL, F-EULYHK |
 | 보류 | `GET /admin/metrics` · `GET /admin/feedback` | 운영자 메트릭 | F-PVOWFN, F-CGNPEM, F-RDOKFK, F-JNISZQ, F-BDKPCR |
 | 개발 | `POST /chat` · `POST /tools/{search_tables,summarize_stat,make_chart}` · `GET /threads/{thread_id}` **[현재]** | 스트림 없는 답, 툴 단독 실행, 대화 상태 조회 | 평가·디버깅용 |
 | 개발 | `POST /search` · `POST /search/stream` · `/nodes/*` (실전 2) | 검색 단독·노드별 | F-BTULHD, F-XRSCJK |
@@ -355,9 +355,11 @@ F-JJWJTZ는 "재검색·재연결 중임을 일반 진행과 구분해 보여 �
 
 ---
 
-## 6. 카카오 로그인 · 회원 대화 [신규 · 시기 결정 필요]
+## 6. 카카오 로그인 · 회원 대화 [신규 · 1차]
 
-F-DCIQJH 규칙은 "카카오 로그인은 기능 동결 전에 포함"이고, 11/19 홈 와이어프레임에 "로그인 후 대화 시작"·"카카오로 로그인" 버튼이 들어갔다. 반면 R-GYWJRI·PL-EQDDSH·PRD 위험 칸은 아직 "2차, 동결 전에 넣을지 미정"이다. **동결(11/22) 전 포함으로 확정되면 이 장이 1차가 된다.**
+**11/19 결정: 카카오 로그인과 회원 대화는 기능 동결(11/22) 전에 넣는다.** F-DCIQJH 규칙, 11/19 홈 와이어프레임("로그인 후 대화 시작"·"카카오로 로그인" 버튼)과 같다. Manyfast R-GYWJRI·PL-EQDDSH·PRD 위험 칸의 "2차, 미정" 문구는 이 결정에 맞춰 고친다.
+
+동결까지 기간이 짧으므로 카카오 앱 등록(REST API 키, Redirect URI를 로컬·배포 주소 둘 다 등록)과 비밀값(`KAKAO_CLIENT_ID`·`KAKAO_CLIENT_SECRET`·쿠키 서명 키) 주입을 먼저 끝낸다. 비밀값은 배포 환경에서 Secrets Manager로 넣는다(KOS-162).
 
 | 메서드 · 경로 | 설명 |
 | -- | -- |
@@ -414,8 +416,10 @@ GET /admin/feedback?value=down&from=…&to=…&cursor=…
 | 3 | `graph/state.py` `ChatResult` | `outcome`에 `partial`·`general`, `answer_origin`에 `general`, `limits`, `clarify_options`, `sub_results[].chart`, `picked[].survey·url` 확인 | 전민기 |
 | 3-1 | 그래프 | 통계 외 질문 → 일반 답변 경로(숫자 검사 포함), 부분 답변 종료 경로, 재시도 상한(PL-KDMYOY) | 전민기 · 이선주 |
 | 4 | `graph/state.py` `new_checkpointer` | InMemorySaver → PostgreSQL saver(KOS-121), 세션 테이블 `last_used_at`, 1시간 만료 정리 배치 | 김병석 |
-| 5 | `kosis_store` | `feedback`, `events`, `events_quarantine`, `daily_metrics`, `sessions` 테이블 + Alembic. 로그인을 넣으면 `users`, 회원 대화(지금 `conversations`·`messages`에 `user_id`·`title`·`updated_at` 추가. F-JVQZTL의 `conversation_turns` 이름과 맞출지 결정) | 임도유 · 김병석 |
-| 6 | 신규 라우터 | `/feedback`, `/threads/{id}`(DELETE), `/events`, 로그인 시 `/auth/*`·`/conversations` | 이선주 · 임도유 · 김병석 |
+| 5 | `kosis_store` | `feedback`, `events`, `events_quarantine`, `daily_metrics`, `sessions`, `users` 테이블 + Alembic. 회원 대화(지금 `conversations`·`messages`에 `user_id`·`title`·`updated_at` 추가. F-JVQZTL의 `conversation_turns` 이름과 맞출지 결정) | 임도유 · 김병석 |
+| 6 | 신규 라우터 | `/feedback`, `/threads/{id}`(DELETE), `/events`, `/auth/*`, `/conversations` | 이선주 · 임도유 · 김병석 |
+| 6-1 | 카카오 앱 · 비밀값 | 카카오 개발자 앱 등록(로컬·배포 Redirect URI), `KAKAO_*`·쿠키 서명 키를 `.env.example`과 Secrets Manager에 추가 | 김병석 |
+| 6-2 | `frontend/` | 홈·사이드바 로그인 버튼, 로그인 실패 안내, 회원 사이드바 목록·이전 대화 복원, 로그아웃 | Addie Lee |
 | 7 | 배포 설정 | 개발용 엔드포인트(`/chat`, `/tools/*`, `GET /threads/{id}`, `/search*`, `/nodes/*`) 배포에서 막기 | 김병석 |
 | 8 | `docker-compose.yml` · `pyproject.toml` | 아직 남은 `redis` 서비스·`REDIS_URL`·`redis>=5.0` 제거(11/08 결정) | 김병석 |
 
@@ -429,6 +433,7 @@ GET /admin/feedback?value=down&from=…&to=…&cursor=…
 - 멀티쿼리는 하위 답마다 차트, 단위가 다르면 섞지 않음
 - 재시도 상한: 하위 검색 3회, 전체 계획 보완 2회, 계산·차트·답 생성 각 2회
 - 추천 질문·FAQ는 1차에서 삭제
+- **카카오 로그인·회원 대화는 기능 동결 전에 포함 (11/19 김병석 결정)**
 - 👎 선택지 4개 유지(수치가 틀림·표가 다름·이해하기 어려움·기타), 👍 5개, 이유 200자
 - 되묻기: 후보가 있으면 `clarify_options` 버튼, 없으면 문장
 - 조건 보완: 후보 표 숨김 · 기존 질문 입력창 유지 · 고친 질문은 새 턴
@@ -438,9 +443,9 @@ GET /admin/feedback?value=down&from=…&to=…&cursor=…
 
 ### 아직 결정 필요 (제안값으로 우선 진행)
 
-1. **카카오 로그인 동결 전 포함 여부** — 기능 명세(F-DCIQJH)·홈 와이어프레임은 포함, 요구사항·정책은 2차. 동결이 11/22라 오늘 정해야 함
-2. 회원 대화 보관 — 90일(F-JVQZTL) vs 삭제 전까지(PL-BIWRBV)
-3. 한 사용자 대화 10개 상한(F-IRBJCC)을 둘지, 넘으면 어떻게 할지
+1. 회원 대화 보관 — 90일(F-JVQZTL) vs 삭제 전까지(PL-BIWRBV). 로그인이 1차가 되어 동결 전에 정해야 함
+2. 한 사용자 대화 10개 상한(F-IRBJCC)을 둘지, 넘으면 어떻게 할지
+3. 회원 대화 제목 — 첫 질문 일부 vs AI 생성 제목(F-JVQZTL)
 4. 피드백 창을 선택지 없이 닫았을 때 — 제안: `category: null`로 값만 저장
 5. 입력 검증 오류 상태 코드 — 제안: 400 대신 422로 통일
 6. `failed` 답에 피드백을 받을지 — 제안: 받지 않음
