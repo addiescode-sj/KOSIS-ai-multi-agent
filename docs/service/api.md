@@ -375,7 +375,7 @@ F-JJWJTZ는 "재검색·재연결 중임을 일반 진행과 구분해 보여 �
 - 로그인 전 비회원 대화는 계정으로 옮기지 않는다(PL-BIWRBV, 로그인 화면에 안내).
 - 회원의 `POST /chat/stream`은 `thread_id` = `conversations.id`를 쓰고, 턴이 끝날 때 질문과 `result`를 저장한다. 출처 표시는 저장된 표 키로 레지스트리를 다시 조회한다(F-XDXRJB).
 - 로그인 장애가 질문·답변을 막으면 안 된다(비회원 경로는 항상 동작).
-- **[결정 필요]** 회원 대화 보관: F-JVQZTL "90일 보관 후 삭제" vs PL-BIWRBV·11/09 결정 "삭제 전까지".
+- 회원 대화 보관: **90일** (11/19 결정). 90일이 지난 대화와 턴은 매일 정리 배치가 함께 지우고, 그 전에 사용자가 지우면 바로 지운다. 90일을 세는 기준은 마지막으로 이어 물은 시각(`updated_at`)을 제안한다. 로그인 화면·개인정보 안내에 90일 보관을 적는다.
 - **[결정 필요]** 대화 수 상한: F-IRBJCC "한 사용자 최대 10개". 넘을 때 동작(가장 오래된 것 자동 삭제 / 새 대화 막기)이 없다.
 
 ---
@@ -418,6 +418,7 @@ GET /admin/feedback?value=down&from=…&to=…&cursor=…
 | 4 | `graph/state.py` `new_checkpointer` | InMemorySaver → PostgreSQL saver(KOS-121), 세션 테이블 `last_used_at`, 1시간 만료 정리 배치 | 김병석 |
 | 5 | `kosis_store` | `feedback`, `events`, `events_quarantine`, `daily_metrics`, `sessions`, `users` 테이블 + Alembic. 회원 대화(지금 `conversations`·`messages`에 `user_id`·`title`·`updated_at` 추가. F-JVQZTL의 `conversation_turns` 이름과 맞출지 결정) | 임도유 · 김병석 |
 | 6 | 신규 라우터 | `/feedback`, `/threads/{id}`(DELETE), `/events`, `/auth/*`, `/conversations` | 이선주 · 임도유 · 김병석 |
+| 6-0 | 회원 대화 정리 배치 | `conversations.updated_at` 기준 90일 지난 대화·턴 삭제(매일), 비회원 세션 정리 배치와 같이 돈다 | 김병석 |
 | 6-1 | 카카오 앱 · 비밀값 | 카카오 개발자 앱 등록(로컬·배포 Redirect URI), `KAKAO_*`·쿠키 서명 키를 `.env.example`과 Secrets Manager에 추가 | 김병석 |
 | 6-2 | `frontend/` | 홈·사이드바 로그인 버튼, 로그인 실패 안내, 회원 사이드바 목록·이전 대화 복원, 로그아웃 | Addie Lee |
 | 7 | 배포 설정 | 개발용 엔드포인트(`/chat`, `/tools/*`, `GET /threads/{id}`, `/search*`, `/nodes/*`) 배포에서 막기 | 김병석 |
@@ -434,6 +435,7 @@ GET /admin/feedback?value=down&from=…&to=…&cursor=…
 - 재시도 상한: 하위 검색 3회, 전체 계획 보완 2회, 계산·차트·답 생성 각 2회
 - 추천 질문·FAQ는 1차에서 삭제
 - **카카오 로그인·회원 대화는 기능 동결 전에 포함 (11/19 김병석 결정)**
+- **회원 대화 보관 90일 (11/19 결정)**
 - 👎 선택지 4개 유지(수치가 틀림·표가 다름·이해하기 어려움·기타), 👍 5개, 이유 200자
 - 되묻기: 후보가 있으면 `clarify_options` 버튼, 없으면 문장
 - 조건 보완: 후보 표 숨김 · 기존 질문 입력창 유지 · 고친 질문은 새 턴
@@ -443,16 +445,15 @@ GET /admin/feedback?value=down&from=…&to=…&cursor=…
 
 ### 아직 결정 필요 (제안값으로 우선 진행)
 
-1. 회원 대화 보관 — 90일(F-JVQZTL) vs 삭제 전까지(PL-BIWRBV). 로그인이 1차가 되어 동결 전에 정해야 함
-2. 한 사용자 대화 10개 상한(F-IRBJCC)을 둘지, 넘으면 어떻게 할지
-3. 회원 대화 제목 — 첫 질문 일부 vs AI 생성 제목(F-JVQZTL)
-4. 피드백 창을 선택지 없이 닫았을 때 — 제안: `category: null`로 값만 저장
-5. 입력 검증 오류 상태 코드 — 제안: 400 대신 422로 통일
-6. `failed` 답에 피드백을 받을지 — 제안: 받지 않음
-7. 한 질문 총 실행 시간 상한 — 추천 30초
-8. 하위 질문 최대 개수 — 추천 3개
-9. 연결 자동 재시도 횟수 — 추천 1회
-10. 재시도 이벤트 이름 — 제안: `retry` `{stage, attempt, max, reason}`
-11. 운영자 메트릭 도구 — 제안: Grafana가 DB 직접 조회(API 없음)
-12. 개발용 엔드포인트 배포 공개 — 제안: 개발 환경만
-13. 내부 트래픽 식별 — `X-Internal` 헤더 vs IP 대역(F-PVOWFN 추천)
+1. 한 사용자 대화 10개 상한(F-IRBJCC)을 둘지, 넘으면 어떻게 할지
+2. 회원 대화 제목 — 첫 질문 일부 vs AI 생성 제목(F-JVQZTL)
+3. 피드백 창을 선택지 없이 닫았을 때 — 제안: `category: null`로 값만 저장
+4. 입력 검증 오류 상태 코드 — 제안: 400 대신 422로 통일
+5. `failed` 답에 피드백을 받을지 — 제안: 받지 않음
+6. 한 질문 총 실행 시간 상한 — 추천 30초
+7. 하위 질문 최대 개수 — 추천 3개
+8. 연결 자동 재시도 횟수 — 추천 1회
+9. 재시도 이벤트 이름 — 제안: `retry` `{stage, attempt, max, reason}`
+10. 운영자 메트릭 도구 — 제안: Grafana가 DB 직접 조회(API 없음)
+11. 개발용 엔드포인트 배포 공개 — 제안: 개발 환경만
+12. 내부 트래픽 식별 — `X-Internal` 헤더 vs IP 대역(F-PVOWFN 추천)
