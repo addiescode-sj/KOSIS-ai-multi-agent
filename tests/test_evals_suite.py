@@ -22,7 +22,7 @@ def opts(**kw) -> Namespace:
                         "scenarios": None, "repeat": 1, **kw})
 
 
-ALL_OK = {n: (True, "ok") for n in ("data", "v2", "chroma", "rerank", "llm", "agent")}
+ALL_OK = {n: (True, "ok") for n in ("data", "v2", "chroma", "rerank", "llm", "agent", "judge")}
 
 
 def test_unready_runs_are_skipped_with_the_reason_and_failures_do_not_stop_the_suite(tmp_path):
@@ -45,8 +45,9 @@ def test_unready_runs_are_skipped_with_the_reason_and_failures_do_not_stop_the_s
 
 def test_mock_and_e2e_arguments():
     o = opts(llm="mock")
-    assert suite.argv_for("e2e", ["--layer", "e2e"], "mock", o)[-6:] == ["--llm", "mock", "--interval", "0", "--retriever", "graph:staged"]
-    assert suite.argv_for("e2e", ["--layer", "e2e"], "hcx", o)[-1] == "graph:staged-hcx"
+    # T3-32: e2e is the service graph, its search settings are the shell's: no --retriever preset any more
+    assert suite.argv_for("e2e", ["--layer", "e2e"], "mock", o)[-4:] == ["--llm", "mock", "--interval", "0"]
+    assert "--retriever" not in suite.argv_for("e2e", ["--layer", "e2e"], "hcx", o)
     assert "--llm" not in suite.argv_for("l2-v1", ["--layer", "l2"], "mock", o)
 
 
@@ -61,6 +62,52 @@ def test_baseline_needs_the_same_conditions(tmp_path, monkeypatch):
     mock_l3 = {"run_id": "y", "layer": "l3", "split": "test", "golden": {"sha256": "g"}, "llm": "mock", "top_k": None, "retriever": None}
     assert suite.baseline_for(mock_l3, pool) is None  # a mock run is never compared with an HCX run
     assert suite.baseline_for({**mock_l3, "llm": "hcx"}, pool)[0].name.endswith("old-l3")
+
+
+KEY = {"golden_sha256": "g", "judge": "gpt-4.1-mini"}
+RAGAS = {"n": 90, "key": KEY, "gate": {"faithfulness": 0.80, "e2e_pass_rate": 0.5}, "source_run": "e",
+         "metrics": {"faithfulness": {"mean": 0.80, "n": 60, "errors": 0}}}
+
+
+def _offline(tmp_path, e2e_llm):
+    """A fake run_eval for e2e (live or mock) and ragas; returns the argv each run got."""
+    calls = []
+
+    def fake_main(argv):
+        calls.append(argv)
+        stage = argv[argv.index("--stage") + 1]
+        if "e2e" in argv:
+            return manifest(tmp_path / stage, "e2e", stage, {"verdicts": {"all": {"PASS": 45, "FAIL": 45}}, "top1_right": 47,
+                                                            "failures": {"retrieval": 30}}, llm=e2e_llm)
+        return manifest(tmp_path / stage, "ragas", stage, RAGAS)
+    return calls, fake_main
+
+
+def test_ragas_judges_this_suites_live_e2e_and_the_gate_compares_it(tmp_path):
+    """T3-43: ragas gets the e2e folder of the same suite; a mock e2e is never judged (no non-scores in the history)."""
+    calls, fake_main = _offline(tmp_path, None)
+    s = suite.run(opts(llm="hcx", only=["e2e", "ragas"]), main=fake_main, checks=ALL_OK)
+    ragas_argv = calls[1]
+    assert ragas_argv[ragas_argv.index("--from-run") + 1] == s["runs"][0]["run"]
+    assert s["runs"][0]["metrics"]["실패: retrieval"] == 30 and s["runs"][1]["metrics"] == {"faithfulness": 0.80}
+    calls, fake_main = _offline(tmp_path / "mock", "mock")
+    s = suite.run(opts(llm="mock", only=["e2e", "ragas"]), main=fake_main, checks=ALL_OK)
+    assert len(calls) == 1 and s["runs"][1]["status"] == "skipped" and "mock" in s["runs"][1]["reason"]
+    assert s["gate"]["status"] == "skipped"  # never a silent pass
+
+
+def test_gate_states(tmp_path):
+    base = tmp_path / "baseline.json"
+    assert suite.gate(None, base)["status"] == "skipped"
+    assert suite.gate(RAGAS, base)["status"] == "skipped"  # no baseline file
+    base.write_text(json.dumps({"key": KEY, "n": 90, "metrics": RAGAS["gate"], "tolerance": {}}), encoding="utf-8")
+    assert suite.gate(RAGAS, base)["status"] == "ok"
+    drop = suite.gate({**RAGAS, "gate": {"faithfulness": 0.70, "e2e_pass_rate": 0.5}}, base)
+    assert drop["status"] == "drop" and "faithfulness" in drop["reason"]
+    other = suite.gate({**RAGAS, "key": {**KEY, "judge": "other"}}, base)
+    assert other["status"] == "skipped" and "judge" in other["reason"]
+    md = suite.markdown({"stage": "s", "llm": "hcx", "baseline": None, "checks": {}, "runs": [], "gate": drop})
+    assert "회귀 게이트" in md and "✕ 하락" in md
 
 
 def test_markdown_shows_checks_runs_and_deltas():

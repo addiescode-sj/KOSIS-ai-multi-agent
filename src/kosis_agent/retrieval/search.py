@@ -17,6 +17,7 @@ from typing import Any
 
 from langchain_core.tools import BaseTool, tool
 
+from kosis_agent.observability.tracing import STAGE2_MODEL
 from kosis_agent.runtime import stream_writer, without_checkpointer
 from kosis_rag.schemas.io import SearchInput, SearchOutput
 
@@ -45,4 +46,8 @@ def make_search_tables_tool(search: Any) -> BaseTool:
             raise RuntimeError("search module stream ended without an output")
         return out.model_dump(mode="json"), out
 
+    # T3-31: rerank2 trace 항목에는 stage 2 이름(clova 등)만 있어서, chat span의 모델 이름을 툴 metadata로 넘긴다
+    stage2 = getattr(getattr(search, "resources", None), "stage2_llm", None)
+    if getattr(stage2, "model", None):
+        search_tables.metadata = {STAGE2_MODEL: stage2.model}
     return search_tables

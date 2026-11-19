@@ -12,7 +12,7 @@ from collections import defaultdict
 
 from evals.schemas import RetrievalItem
 
-KS = (1, 3, 5, 10)
+KS = (1, 2, 3, 5, 10)  # 2: a multi-table item is correct only when every slot is in the top 2 (Complete@2)
 
 
 def first_rank(item: RetrievalItem, keys: list[str]) -> int | None:

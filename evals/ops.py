@@ -2,11 +2,12 @@
 
 Each run writes ops.json; one aggregate line per run goes to evals/reports/ops_history.jsonl (no question text,
 committed) so runs can be compared over time. Token counts come from where each layer can see them:
-- L1: a LangChain callback reads usage from every LLM call a retriever makes (query rewrite, rerank)
-- L3 live: UsageClient wraps the Phase 1 LLM client and reads LLMResult.usage
-- L3 re-grade: the run file's `usage` and the model name in its spans
-Cost uses evals/pricing.json (price per 1K tokens per model). A model without a price gets cost None: the report
-says the price is missing instead of inventing one.
+- L1: a LangChain callback reads usage from every LLM call a retriever makes, plus the rerank2 record (stage2_*)
+- l3 / e2e / agent: the chat spans of the agent turn (runners.agent.turn_record, T3-31/32), per model
+- re-grade: the saved rows' token fields
+Cost uses evals/pricing.json (price per 1K tokens per model) over each row's tokens_by_model, so a turn that calls
+two models (follow-up reader + phase 1) is priced per model. A model without a price, or two currencies in one
+run, gives cost None: the report says the price is missing instead of inventing one.
 """
 
 from __future__ import annotations
@@ -14,7 +15,6 @@ from __future__ import annotations
 import json
 import statistics
 from pathlib import Path
-from typing import Any
 
 from langchain_core.callbacks import BaseCallbackHandler
 
@@ -29,6 +29,19 @@ def tokens_of(usage: dict | None) -> tuple[int, int]:
     usage = usage or {}
     pick = lambda *names: next((int(usage[n]) for n in names if usage.get(n) is not None), 0)  # noqa: E731
     return (pick("promptTokens", "input_tokens", "prompt_tokens"), pick("completionTokens", "output_tokens", "completion_tokens"))
+
+
+def stage2_usage(meta: dict | None) -> tuple[int, int, int, bool]:
+    """(calls, input, output, retried) of the phase 2 rerank2 call recorded on the top document's metadata.
+
+    Same rule as the agent layer (kosis_agent.observability.tracing, T3-31): one rerank2 run is one logical LLM call;
+    stage2_calls counts HTTP attempts (429/5xx retries), so it only sets `retried`. Unknown tokens (CLOVA reranker
+    may give no usage) count as 0.
+    """
+    meta = meta or {}
+    attempts = int(meta.get("stage2_calls") or 0)
+    return (1 if attempts else 0, int(meta.get("stage2_input_tokens") or 0), int(meta.get("stage2_output_tokens") or 0),
+            attempts > 1)
 
 
 class UsageCallback(BaseCallbackHandler):
@@ -59,42 +72,6 @@ class UsageCallback(BaseCallbackHandler):
             self.models.add(model)
 
 
-def usage_client(settings=None, llm: str = "hcx"):
-    """The Phase 1 client from settings, wrapped so each question's tokens and calls can be read and reset.
-
-    llm "mock" (T3-21): Phase 1's mock backend, model name "mock" — checks the path end to end at no cost; its
-    answers are templates, not model answers, so its scores are not scores."""
-    from kosis_chat.config import load_settings
-    from kosis_chat.llm.model import LLMClient, build_client
-
-    settings = settings or load_settings(**({"backend": "mock", "model_name": "mock"} if llm == "mock" else {}))
-    inner = build_client(settings)
-
-    class UsageClient(LLMClient):
-        name = inner.name
-        model = settings.model_name
-
-        def __init__(self) -> None:
-            self.reset()
-
-        def reset(self) -> None:
-            self.calls, self.input_tokens, self.output_tokens, self.failures = 0, 0, 0, 0
-
-        def record_event(self, event: dict[str, Any]) -> None:
-            inner.record_event(event)
-
-        def generate(self, system: str, user: str):
-            result = inner.generate(system, user)
-            i, o = tokens_of(result.usage)
-            self.calls += 1
-            self.input_tokens += i
-            self.output_tokens += o
-            self.failures += result.status != "ok"
-            return result
-
-    return UsageClient()
-
-
 def load_pricing(path: Path = PRICING) -> dict[str, dict]:
     return json.loads(path.read_text(encoding="utf-8")).get("models", {}) if path.exists() else {}
 
@@ -104,6 +81,35 @@ def cost(model: str | None, input_tokens: int, output_tokens: int, pricing: dict
     if not price or price.get("input_per_1k") is None or price.get("output_per_1k") is None:
         return None
     return input_tokens / 1000 * price["input_per_1k"] + output_tokens / 1000 * price["output_per_1k"]
+
+
+def tokens_by_model(row: dict) -> dict[str, dict[str, int]]:
+    """{model: {"input": n, "output": n}} of one row. Rows written since T3-39 carry it (a turn calls several models:
+    the follow-up reader on gpt-4o-mini and phase 1 on HCX); an older row with one model is read from its totals,
+    and one with several models joined by ',' cannot be split, so it stays unpriced."""
+    if row.get("tokens_by_model"):
+        return row["tokens_by_model"]
+    model = row.get("model")
+    if not model or "," in model:
+        return {}
+    return {model: {"input": row.get("input_tokens", 0), "output": row.get("output_tokens", 0)}}
+
+
+def row_cost(row: dict, pricing: dict[str, dict]) -> tuple[float | None, str | None]:
+    """(cost, currency) of one row over its models; None when any model is unpriced or the currencies differ."""
+    by_model = tokens_by_model(row)
+    if not by_model and (row.get("input_tokens") or row.get("output_tokens")):
+        return None, None
+    total, currency = 0.0, None
+    for model, t in by_model.items():
+        c = cost(model, t["input"], t["output"], pricing)
+        if c is None:
+            return None, None
+        cur = pricing[model].get("currency")
+        if currency is not None and cur != currency:
+            return None, None  # KRW and USD in one turn: not added up
+        total, currency = total + c, cur
+    return total, currency
 
 
 def percentile(values: list[float], q: int) -> float:
@@ -116,11 +122,13 @@ def summarize(rows: list[dict], pricing: dict[str, dict] | None = None) -> dict:
     """rows carry latency_ms, input_tokens, output_tokens, llm_calls, model, failed, retried (per tool call)."""
     pricing = load_pricing() if pricing is None else pricing
     latency = [r["latency_ms"] for r in rows]
-    models = sorted({r["model"] for r in rows if r.get("model")})
+    # one model per name: a row's "model" may join several ("HCX-DASH-002,gpt-4o-mini"), tokens_by_model splits them
+    models = sorted({m for r in rows for m in (tokens_by_model(r) or {m: {} for m in (r.get("model") or "").split(",") if m})})
     tin = sum(r.get("input_tokens", 0) for r in rows)
     tout = sum(r.get("output_tokens", 0) for r in rows)
-    costs = [cost(r.get("model"), r.get("input_tokens", 0), r.get("output_tokens", 0), pricing) for r in rows if r.get("input_tokens") or r.get("output_tokens")]
-    priced = [c for c in costs if c is not None]
+    costs = [row_cost(r, pricing) for r in rows if r.get("input_tokens") or r.get("output_tokens")]
+    priced = [c for c, _ in costs if c is not None]
+    currencies = {cur for _, cur in costs if cur}
     calls = len(rows)
     return {
         "tool_calls": calls,
@@ -128,9 +136,14 @@ def summarize(rows: list[dict], pricing: dict[str, dict] | None = None) -> dict:
         "llm_calls": sum(r.get("llm_calls", 0) for r in rows),
         "tokens": {"input": tin, "output": tout, "per_call_mean": (tin + tout) / calls if calls else 0.0},
         "models": models,
-        "cost": {"total": sum(priced) if priced and len(priced) == len(costs) else None,
-                 "currency": next((pricing[m].get("currency") for m in models if m in pricing), None),
-                 "unpriced_models": [m for m in models if cost(m, 1, 1, pricing) is None]},
+        "cost": {"total": sum(priced) if priced and len(priced) == len(costs) and len(currencies) == 1 else None,
+                 "currency": next(iter(currencies)) if len(currencies) == 1 else None,
+                 "unpriced_models": [m for m in models if cost(m, 1, 1, pricing) is None],
+                 "by_model": {m: {"input": sum(tokens_by_model(r).get(m, {}).get("input", 0) for r in rows),
+                                  "output": sum(tokens_by_model(r).get(m, {}).get("output", 0) for r in rows),
+                                  "cost": cost(m, sum(tokens_by_model(r).get(m, {}).get("input", 0) for r in rows),
+                                               sum(tokens_by_model(r).get(m, {}).get("output", 0) for r in rows), pricing)}
+                              for m in models}},
         "tool_failure_rate": sum(1 for r in rows if r.get("failed")) / calls if calls else 0.0,
         "retry_rate": sum(1 for r in rows if r.get("retried")) / calls if calls else 0.0,
     }

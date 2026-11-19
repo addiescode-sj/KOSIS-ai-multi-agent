@@ -124,7 +124,7 @@ def test_each_sub_question_gets_its_own_table_and_answer():
     assert [k for _, k in stat.calls] == ["101_DT_BIRTH", "110_TX_FOREIGN"]
     result = chat_result(state)
     assert result.outcome == "answered" and result.answer_origin == "multi"
-    assert result.answer == "101_DT_BIRTH: 100명\n\n110_TX_FOREIGN: 100명"
+    assert result.answer == "\n\n".join(answered(k).answer.text for k in ("101_DT_BIRTH", "110_TX_FOREIGN"))
     assert state["active_table"] == "110_TX_FOREIGN"  # the next turn's "그 표" = the last answered part
 
 

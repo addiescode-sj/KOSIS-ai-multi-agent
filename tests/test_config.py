@@ -8,7 +8,8 @@ from backend.app import config
 
 NAMES = ("KOSIS_WORKSPACE", "CHROMA_HOST", "CHROMA_PORT", "CHROMA_COLLECTION", "TEXT_FORMAT", "EMBED_CKPT",
          "RERANK_CKPT", "RERANK_MODE", "STAGE2", "COND_FILTER", "ANSWER_K", "HQ_BUILD", "HQ_WEIGHT", "HQ_BM25",
-         "HCX_API_KEY", "HCX_THINKING", "OPENAI_API_KEY", "STAT_PROVIDER", "STAT_MODEL", "STAT_RETRY_INTERVAL")
+         "HCX_API_KEY", "HCX_THINKING", "OPENAI_API_KEY", "STAT_PROVIDER", "STAT_MODEL", "STAT_RETRY_INTERVAL",
+         "STAGE2_MODEL", "STAGE2_BASE_URL", "STAGE2_API_KEY")
 
 
 @pytest.fixture
@@ -71,3 +72,23 @@ def test_multiturn_and_multiquery_llm_step_defaults_to_gpt_4o_mini(env, monkeypa
     assert cfg.interpreter_model == "gpt-4o-mini" and cfg.stat_llm.provider == "hcx"
     assert config.interpreter_chat_model(cfg).model_name == "gpt-4o-mini"
     assert config.splitter_llm(cfg) is not None
+
+
+def test_stage2_model_server_and_key_have_their_own_variables(env):
+    """T3-33 (phase 2 PR #48): STAGE2_MODEL / STAGE2_BASE_URL / STAGE2_API_KEY pick stage 2's model, server and key;
+    unset, the phase 2 defaults and the STAGE2 name's usual key. The eval config is the same function."""
+    from evals import config as eval_config
+
+    env.setenv("OPENAI_API_KEY", "sk-openai")
+    plain = config.stage2_llm("gpt")
+    assert (plain.model, plain.base_url, plain.api_key.get_secret_value()) == ("gpt-4o-mini", None, "sk-openai")
+    env.setenv("STAGE2_MODEL", "google/gemma-4-31B-it-qat-w4a16-ct")
+    env.setenv("STAGE2_BASE_URL", "http://stage2.local:8000/v1")
+    env.setenv("STAGE2_API_KEY", "stage2-key")
+    for llm in (config.stage2_llm("gpt"), eval_config.stage2_llm("gpt")):
+        assert (llm.provider, llm.model, llm.base_url) == ("openai", "google/gemma-4-31B-it-qat-w4a16-ct",
+                                                           "http://stage2.local:8000/v1")
+        assert llm.api_key.get_secret_value() == "stage2-key"
+    env.delenv("STAGE2_API_KEY")  # no stage 2 key: the STAGE2 name's usual key
+    assert config.stage2_llm("gpt").api_key.get_secret_value() == "sk-openai"
+    assert config.stage2_llm("none") is None

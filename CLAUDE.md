@@ -55,7 +55,7 @@ src/kosis_agent/   에이전트 (docs/research/KOSIS-RAG-Retrieval-Agent-Archite
   services/        statistics.py(summarize_stat 툴 = 실전 1) · chart.py(ChartSpec → Vega-Lite, make_chart 툴) · parquet_repository.py(T3-17)
   observability/   tracing.py(노드·툴·LLM OTel span 콜백, 서비스·평가 공용)
   runtime.py       툴이 노드 안에서 돌 때의 규칙(stream writer, 안쪽 그래프 checkpointer 분리)
-evals/             계층별 평가 모듈 (실전 2에서 복사해 이어감, T3-00): datasets/(gitignored) · evaluators/ · runners/ · reports/. 에이전트 지표는 T3-06에서 여기에 추가
+evals/             계층별 평가 모듈 (실전 2에서 복사해 이어감, T3-00): tasks/(계층마다 실행·리포트, T3-29) · datasets/(gitignored) · evaluators/(agent/ = 툴·상태·수치·답변 품질) · runners/ · reports/. 에이전트 지표는 T3-06에서 여기에 추가
 frontend/          Next.js 16 (App Router) + TypeScript + Tailwind + shadcn/ui + Vercel AI SDK. 실전 2 UI에서 시작 (T3-11)
 vendor/phase1/     실전 1 submodule — kosis_ai(src/), kosis_chat/, eval/, configs/model.yaml. 직접 수정 금지
 vendor/phase2/     실전 2 submodule — kosis_rag(src/)만 import한다 (evals/는 이 레포 사본을 쓴다). 직접 수정 금지
@@ -66,7 +66,7 @@ docs/              제출 문서, current-state.md
 - 실전 1·2 코드 수정이 필요하면 해당 레포에 PR → 여기서 `git submodule update --remote vendor/phase1`(또는 phase2) 후 커밋.
   `vendor/phase1`은 실전 2가 고정한 커밋과 같게 맞춘다 (`kosis_ai.schemas` 계약 일치).
 - 실전 2 `backend.app`(API 모듈)은 이 레포 `backend.app`에 가려져 import되지 않는다. 실전 2는 `kosis_rag.*` 로직만 import한다.
-- 두 모듈(실전 1 @`907b703`, 실전 2 @`56b4252`)은 `.env`도 환경변수도 읽지 않는다. 종합(이 레포)은 진입점에서 `.env`를 읽고(`kosis_agent.envfile`, 셸 값 우선), `backend/app/config.py`가 환경변수를 읽어
+- 두 모듈(실전 1 @`9e570a1`, 실전 2 @`f569721`)은 `.env`도 환경변수도 읽지 않는다. 종합(이 레포)은 진입점에서 `.env`를 읽고(`kosis_agent.envfile`, 셸 값 우선), `backend/app/config.py`가 환경변수를 읽어
   실전 2 `IndexSpec`·`SearchOptions`·`LLMConfig`와 실전 1 `LLMConfig`(다른 클래스)로 넘긴다. 데이터는 `<KOSIS_WORKSPACE>/data` 하나.
   실전 2 결과의 `picked[0].key`(tables.csv 키)를 실전 1에 넘긴다(`tbl_id` 아님).
 
@@ -85,3 +85,4 @@ docs/              제출 문서, current-state.md
 - 제공 데이터는 `data/`(gitignored)에 두고 Docker 이미지에 넣지 않는다 (compose가 읽기 전용 마운트).
 - 비자명한 로직(툴 선택·계산·채점)은 pytest 하나 이상을 남긴다.
 - frontend는 Next.js 16 — 코드 작성 전 `frontend/AGENTS.md` 지침대로 `node_modules/next/dist/docs/`를 확인한다.
+- frontend 컴포넌트는 한 파일에 하나만 둔다(PR #32 리뷰). 공통 계약 타입은 `frontend/types/`, zod 스키마는 쓰는 곳 가까이(`lib/chat/`·`lib/search/`·라우트 폴더). 단위 테스트는 Jest(`cd frontend && npx jest`).
