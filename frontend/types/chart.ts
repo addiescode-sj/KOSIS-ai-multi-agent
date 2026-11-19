@@ -7,6 +7,8 @@ export type ChartView =
   | { kind: "timeline" | "line"; title: string; unitTitle: string | null; points: Point[] }
   | { kind: "pie"; title: string; points: Point[] }
   | { kind: "grouped_bar" | "multi_line"; title: string; unitTitle: string | null; periods: string[]; series: Series[] }
+  // composition change (T3-02): per period one 100% bar, series = the part, then its rest ("그 외")
+  | { kind: "stacked_bar"; title: string; unitTitle: string | null; periods: string[]; series: Series[] }
   | { kind: "table"; title: string; columns: string[]; rows: string[][] }
   | { kind: "none"; title: string };
 

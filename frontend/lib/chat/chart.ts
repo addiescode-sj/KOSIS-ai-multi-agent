@@ -3,7 +3,8 @@
 // formats or computes a number. A spec this file cannot read becomes a table of its rows, or a fixed sentence.
 //
 // Kinds are told apart by row fields first (plans/T3-11.md Change 1):
-//   rows with 대상 → grid (top-level mark bar = grouped_bar, line = multi_line) · 비중 → pie · 시점 → line
+//   rows with 대상 → grid (top-level mark bar = grouped_bar, line = multi_line) · 구분 + 시점 → stacked_bar (T3-02,
+//   services/chart.py `_draw_stacked`) · 비중 → pie · 시점 → line
 //   · layer[1].transform → timeline · otherwise bar (horizontal when layer[0].encoding.y is 이름).
 
 import type { ChartView, Point } from "../../types/chart.ts";
@@ -40,6 +41,20 @@ export function toChartView(input: Record<string, unknown>): ChartView {
       }),
     }));
     return { kind: mark === "bar" ? "grouped_bar" : "multi_line", title, unitTitle: titleOf(spec.encoding?.y), periods: ordered, series };
+  }
+  if (has("구분") && has("시점") && !has("이름")) {
+    if (markType(spec.mark) !== "bar") return table(title, rows);
+    // stack order: the 순서 the backend wrote (part 0, rest 1); periods in data order (x sort null)
+    const parts = firstSeen([...rows].sort((a, b) => num(a["순서"]) - num(b["순서"])).map((r) => str(r["구분"])));
+    const periods = firstSeen(rows.map((r) => str(r["시점"])));
+    const series = parts.map((name) => ({
+      name,
+      points: periods.map((period) => {
+        const row = rows.find((r) => str(r["구분"]) === name && str(r["시점"]) === period);
+        return row ? point(row, period) : null;
+      }),
+    }));
+    return { kind: "stacked_bar", title, unitTitle: titleOf(spec.encoding?.y), periods, series };
   }
   if (!rows.every((r) => "이름" in r && "값" in r)) return table(title, rows);
   if (has("비중")) {

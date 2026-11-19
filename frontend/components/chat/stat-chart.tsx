@@ -45,6 +45,7 @@ function Body({ view }: { view: ChartView }) {
       return <Donut points={view.points} />;
     case "grouped_bar":
     case "multi_line":
+    case "stacked_bar":
       return <Grid kind={view.kind} periods={view.periods} series={view.series} />;
     case "table":
       return <RowsTable columns={view.columns} rows={view.rows} />;
@@ -150,7 +151,7 @@ function Donut({ points }: { points: Point[] }) {
   );
 }
 
-function Grid({ kind, periods, series }: { kind: "grouped_bar" | "multi_line"; periods: string[]; series: { name: string; points: (Point | null)[] }[] }) {
+function Grid({ kind, periods, series }: { kind: "grouped_bar" | "multi_line" | "stacked_bar"; periods: string[]; series: { name: string; points: (Point | null)[] }[] }) {
   // Recharts wants one object per period: {label, <series>: value, "<series>__표시": display}
   const rows = periods.map((label, i) => ({
     label,
@@ -160,7 +161,8 @@ function Grid({ kind, periods, series }: { kind: "grouped_bar" | "multi_line"; p
     <>
       <CartesianGrid vertical={false} stroke="#e7eaf0" strokeDasharray="4 4" />
       <XAxis dataKey="label" {...AXIS} />
-      <YAxis {...AXIS} axisLine={false} width={56} domain={kind === "multi_line" ? ["auto", "auto"] : [0, "auto"]} />
+      <YAxis {...AXIS} axisLine={false} width={56}
+        domain={kind === "multi_line" ? ["auto", "auto"] : kind === "stacked_bar" ? [0, 100] : [0, "auto"]} />
       <Tooltip content={GridTooltip} cursor={{ fill: "#f4f6fa" }} />
       {/* the series order of the data (Recharts sorts the legend by name by default) */}
       <Legend iconType="circle" iconSize={8} wrapperStyle={{ fontSize: 12, color: "#6b7280" }}
@@ -169,7 +171,17 @@ function Grid({ kind, periods, series }: { kind: "grouped_bar" | "multi_line"; p
   );
   return (
     <ResponsiveContainer width="100%" height={240}>
-      {kind === "grouped_bar" ? (
+      {kind === "stacked_bar" ? (
+        // composition change (T3-02): one 100% bar per period, the part (highlight color) under its rest
+        <BarChart data={rows} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
+          {common}
+          {series.map((s, i) => (
+            <Bar key={s.name} dataKey={s.name} stackId="share" fill={i === 0 ? HIGHLIGHT : OTHER} isAnimationActive={false} maxBarSize={56}>
+              <LabelList dataKey={`${s.name}__표시`} position="center" fill={i === 0 ? "#fff" : "#374151"} fontSize={12} />
+            </Bar>
+          ))}
+        </BarChart>
+      ) : kind === "grouped_bar" ? (
         <BarChart data={rows} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
           {common}
           {series.map((s, i) => <Bar key={s.name} dataKey={s.name} fill={SERIES[i % SERIES.length]} radius={[4, 4, 0, 0]} isAnimationActive={false} maxBarSize={36} />)}
