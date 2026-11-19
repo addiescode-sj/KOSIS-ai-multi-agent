@@ -89,3 +89,15 @@ def test_l3_e2e_report_shows_the_live_trace(tmp_path):
     assert html.index("<b>c2</b>") < html.index("<b>c1</b>")  # the FAIL row first
     assert 'class="bar llm-k err"' in html and "http://j/trace/" + "ab" * 16 in html
     assert "trace가 없다" in report_html.traces_body({}, [{**rows[0], "trace_spans": []}])
+
+
+def test_questions_show_next_to_their_ids():
+    """T3-43: a reader sees what was asked right in the tables (e2e / L3 rows, error lists, ragas · online rows)."""
+    long_q = "2025년 경기도에서 태어난 아이는 몇 명이에요? " * 3
+    rows = [{"qid": "S-1", "question": long_q, "kind": "answerable", "verdict": "FAIL", "cause": "answer", "failure": None,
+             "used_table": "101_X", "right_table": True, "gold_rank": 1, "errors": ["wrong_dims"], "latency_ms": 1.0}]
+    table = report_html.rows_table("e2e", rows)
+    assert "<th>질문</th>" in table and f'title="{long_q}"' in table and "…" in table  # cut, full text in the tooltip
+    assert "2025년 경기도에서 태어난" in report_html.error_info([("wrong_dims", 1)], rows)
+    generic = report_html.generic_rows_table([{"qid": "q1", "faithfulness": 0.8312, "question": "부산 사망자 수"}])
+    assert generic.index("<th>qid</th>") < generic.index("<th>질문</th>") and "부산 사망자 수" in generic and "0.831" in generic

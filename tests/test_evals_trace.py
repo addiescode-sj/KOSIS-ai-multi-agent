@@ -53,7 +53,7 @@ def node(name, keys=None, **attributes):
 
 LOST = [  # (node outputs, gold, k, expected node, words in the reason)
     ([node("parse"), node("retrieve", ["A", "B", "G"]), node("rerank1", ["A", "B", "G"]), node("gate")], {"G"}, 2, "retrieve", "3위"),
-    ([node("retrieve", ["A", "B"]), node("rerank1", ["B", "A"])], {"G"}, 1, "retrieve", "풀(2개)에 없음"),
+    ([node("parse"), node("retrieve", ["A", "B"]), node("rerank1", ["B", "A"])], {"G"}, 1, "retrieve", "풀(2개)에 없음"),
     ([node("retrieve", ["G", "A"]), node("rerank1", ["G", "A"]), node("rerank2", ["A", "G"])], {"G"}, 1, "rerank2", "1위 → 2위"),
     # raised by rerank1, pushed out again by rerank2: the last drop counts
     ([node("retrieve", ["A", "B", "G"]), node("rerank1", ["G", "A", "B"]), node("rerank2", ["A", "B", "G"])], {"G"}, 1, "rerank2", "1위 → 3위"),
@@ -144,3 +144,44 @@ def test_every_grader_error_has_info():
 
     added = set(re.findall(r'errors\.add\("(\w+)"', Path(calculation.__file__).read_text(encoding="utf-8")))
     assert added | set().union(*calculation.FAIL.values()) <= calculation.ERROR_INFO.keys()
+
+
+# --- T3-45: crashed turns keep their search candidates, refusals before retrieval, ranks per node ---
+
+def searched(keys, route="found", stat="ok", error=None, pool=("A", "G", "B")):
+    return {"qid": "q", "keys": keys, "used_table": keys[0] if keys else None, "error": error,
+            "search_spans": [node("rerank1", list(pool)), node("rerank2", list(pool)), node("gate", route=route),
+                             node("statistics", status=stat)]}
+
+
+def test_restore_search_fills_only_a_turn_that_crashed_after_search():
+    ok = searched(["A", "G"])
+    crashed = searched([], stat="error", error="SchemaError: duplicate")
+    refused = searched([], route="refuse", error="RuntimeError: x")  # gate refusal: no candidates to restore
+    no_stat = {**searched([], error="RuntimeError: x"), "search_spans": searched([])["search_spans"][:3]}
+    assert trace.restore_search([ok, crashed, refused, no_stat]) == 1
+    assert crashed["keys"] == ["A", "G"] and crashed["used_table"] == "A" and crashed["search_restored"]
+    assert refused["keys"] == [] and no_stat["keys"] == [] and "search_restored" not in ok
+
+
+def test_restore_search_does_nothing_when_the_rule_does_not_hold():
+    other = searched(["B", "A"])  # keys are not the head of the last ranked node: the gate rule changed
+    crashed = searched([], stat="error", error="SchemaError")
+    assert trace.restore_search([other, crashed]) == 0 and crashed["keys"] == []
+    assert trace.restore_search([searched([], stat="error", error="x")]) == 0  # no normal row to take k from
+
+
+def test_a_refusal_question_is_blamed_on_its_call_before_the_table():
+    row = {"qid": "q", "kind": "not_answerable", "verdict": "FAIL", "errors": ["missed_refusal"], "right_table": False,
+           "used_table": "A", "gold_rank": None, "spans": [span("judge", outcome="answered", final=True)]}
+    assert trace.blame(row)["stage"] == "understanding"
+    assert trace.blame({**row, "kind": "answerable"})["stage"] == "retrieval"  # answerable: the table still comes first
+    assert trace.blame({**row, "errors": ["run_failure"]})["stage"] == "retrieval"  # no call error: unchanged
+
+
+def test_node_ranks_count_every_row_per_node():
+    rows = [{"kind": "answerable", "gold_keys": ["G"], "search_spans": [node("fuse", ["G", "A"]), node("rerank2", ["A", "G"]), node("gate")]},
+            {"kind": "answerable", "gold_keys": ["G"], "search_spans": [node("fuse", ["A", "B"]), node("rerank2", ["A", "B"])]},
+            {"kind": "not_answerable", "gold_keys": ["G"], "search_spans": [node("fuse", ["G"])]}]  # not counted
+    assert trace.node_ranks(rows, 1) == {"fuse": {"n": 2, "top1": 1, "topk": 1, "missing": 1},
+                                         "rerank2": {"n": 2, "top1": 0, "topk": 0, "missing": 1}}

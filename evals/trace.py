@@ -114,8 +114,62 @@ def lost_at(spans: list[dict], gold: set[str], k: int) -> tuple[str, str] | None
         return culprit
     name, first = ranks[0]
     if first == math.inf:
-        return name, f"{name}: 정답 표가 후보 풀({len(spans[0].get('keys') or [])}개)에 없음"
+        pool = next(s["keys"] for s in spans if "keys" in s)  # T3-45: the first ranked node, not spans[0]
+        return name, f"{name}: 정답 표가 후보 풀({len(pool)}개)에 없음"
     return name, f"{name}: 정답 표 {show(first)}, 이후 노드도 top {k} 안으로 못 올림 (최종 {show(ranks[-1][1])})"
+
+
+def _ranked(row: dict) -> list[str] | None:
+    """The ranked pool of the row's last search node that has one (rerank2 in the service graph)."""
+    return next((s["keys"] for s in reversed(row.get("search_spans") or []) if s.get("keys")), None)
+
+
+def restore_search(rows: list[dict]) -> int:
+    """T3-45 (option B): fill keys / used_table of rows whose turn raised after the search finished (phase 1
+    SchemaError in statistics), from the search node spans; returns how many rows were filled.
+
+    A crashed turn leaves the graph state empty, so the row lost its candidates although search ran. Only rows with an
+    error, gate route found and a statistics span are filled: keys = the last ranked node's top k, k = the candidate
+    count of this run's other rows. The rule is checked on those other rows first (their keys must be the head of the
+    same node's pool); if it does not hold (no such rows, or the search gate changed), nothing is filled."""
+    normal = [r for r in rows if r.get("keys") and _ranked(r)]
+    if not normal or any(_ranked(r)[:len(r["keys"])] != r["keys"] for r in normal):
+        if normal:
+            print("restore_search: keys are not the head of the last ranked node on normal rows, nothing restored")
+        return 0
+    k = max(len(r["keys"]) for r in normal)
+    filled = 0
+    for r in rows:
+        spans = r.get("search_spans") or []
+        gate = next((s for s in spans if s["name"] == "gate"), None)
+        if (r.get("keys") or not r.get("error") or gate is None or gate["attributes"].get("route") != "found"
+                or not any(s["name"] == "statistics" for s in spans) or not (pool := _ranked(r))):
+            continue
+        # the crashed state had no table_key, so the table handed to phase 1 is the search's first candidate
+        r["keys"], r["used_table"], r["search_restored"] = pool[:k], pool[0], True
+        filled += 1
+    return filled
+
+
+def node_ranks(rows: list[dict], k: int) -> dict[str, dict[str, int]]:
+    """T3-45: per search node (graph order), over rows with a gold table that should be answered: how many had a gold
+    key at rank 1, within top k, or nowhere in the node's pool. Shows where the gold table is lost across all rows,
+    not only at each row's blamed node."""
+    out: dict[str, dict[str, int]] = {}
+    for r in rows:
+        gold = set(r.get("gold_keys") or [])
+        if not gold or r.get("kind") not in ("answerable", "default_allowed"):
+            continue
+        for s in r.get("search_spans") or []:
+            if "keys" not in s:  # NodeSpans keeps a pool on search nodes only
+                continue
+            rank = next((n for n, key in enumerate(s["keys"], 1) if key in gold), None)
+            c = out.setdefault(s["name"], {"n": 0, "top1": 0, "topk": 0, "missing": 0})
+            c["n"] += 1
+            c["top1"] += rank == 1
+            c["topk"] += rank is not None and rank <= k
+            c["missing"] += rank is None
+    return out
 
 
 def blame_search(row: dict, gold: set[str], k: int) -> dict | None:
@@ -152,6 +206,15 @@ def blame(row: dict) -> dict | None:
     analyze = [s for s in spans if s["name"].startswith("analyze.")]
     last = lambda pred: next((s["name"] for s in reversed(spans) if pred(s)), None)  # noqa: E731
 
+    def judged(hit: set[str]) -> dict:
+        judge = next((s for s in spans if s["name"] == "judge"), None)
+        span = "judge" if judge is None or judge["attributes"].get("final") or not analyze else analyze[-1]["name"]
+        outcome = judge["attributes"].get("outcome") if judge else None
+        return _failure("understanding", span, f"판정 오류 {', '.join(sorted(hit))} (judge outcome={outcome})", errors - hit)
+
+    # T3-45: a question with no answer to find has no right table to miss; its refusal / clarify call comes first
+    if row["kind"] in ("not_answerable", "clarify") and (hit := errors & JUDGE_ERRORS):
+        return judged(hit)
     if row.get("right_table") is False:
         rank = row.get("gold_rank")
         span, node = SEARCH_TOOL, ""
@@ -171,10 +234,7 @@ def blame(row: dict) -> dict | None:
             compute["status"] == "error" or compute["attributes"].get("outcome") == "refused"):
         return _failure("compute", "compute", f"계산 모듈이 거절함 (reason={compute['attributes'].get('reason')})", errors)
     if hit := errors & JUDGE_ERRORS:
-        judge = next((s for s in spans if s["name"] == "judge"), None)
-        span = "judge" if judge is None or judge["attributes"].get("final") or not analyze else analyze[-1]["name"]
-        outcome = judge["attributes"].get("outcome") if judge else None
-        return _failure("understanding", span, f"판정 오류 {', '.join(sorted(hit))} (judge outcome={outcome})", errors - hit)
+        return judged(hit)
     if hit := errors & PLAN_ERRORS:
         span = analyze[-1]["name"] if analyze else STAT_TOOL
         return _failure("understanding", span, f"계획이 고른 셀이 틀림: {', '.join(sorted(hit))}", errors - hit)

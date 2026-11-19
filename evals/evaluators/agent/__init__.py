@@ -14,7 +14,8 @@ alternate-table attempt, set aside and counted in alt_attempts; T3-23):
   ran. missed_refusal / false_refusal as in L3. With expect.refuse_parts (T3-38) each sub-question of a multi-query
   turn is graded on its own: its search found no table or its summarize_stat refused (state.refused_parts).
 - numbers: expect.calc_qid grades the turn's last summarize_stat answer with the L3 grader as is
-  (evaluators.calculation.grade against the table's Parquet cells).
+  (evaluators.calculation.grade against the table's Parquet cells); an answer from an alternate table (T3-41 rule,
+  evaluators.alternates) against that table's cells, and that table counts for state / arguments too (T3-42).
 - answer (T3-40): every number in the final answer text must come from a question, a summarize_stat fact (rounding
   allowed), a combine_values result or a default condition of the conversation so far, else
   unsupported_final_number; the answer must cite survey and table name of each answered summarize_stat, else
@@ -39,13 +40,14 @@ from kosis_ai.schemas import ChartPoint, ChartSeries, ChartSpec, FactPart, Refus
 
 from evals.evaluators.agent.answer import Grounds, grade_answer, grounding, missing_sources, unsupported_final_numbers
 from evals.evaluators.agent.chart import grade_chart, table_numbers, turn_values
-from evals.evaluators.agent.numbers import combined_value, grade_numbers, same_values, stat_answer, stat_answers
+from evals.evaluators import alternates
+from evals.evaluators.agent.numbers import AlternateOf, combined_value, grade_numbers, stat_answer, stat_answers, turn_alternates
 from evals.evaluators.agent.state import STATE_TOOLS, first_key, grade_state, refused, refused_parts, state_key
 from evals.evaluators.agent.tools import final_calls, grade_tools
 from evals.schemas import AgentScenario, CalcItem, TurnExpect
 
 __all__ = ["ERRORS", "Grounds", "STATE_TOOLS", "aggregate", "combined_value", "final_calls", "first_key", "grade_conversation",
-           "grade_turn", "oracle_records", "oracle_stat", "refused", "refused_parts", "same_values", "stat_answer", "stat_answers",
+           "grade_turn", "oracle_records", "oracle_stat", "refused", "refused_parts", "stat_answer", "stat_answers",
            "missing_sources", "state_key", "unsupported_final_numbers"]
 
 ERRORS = {  # error -> what it means (report legend)
@@ -71,41 +73,57 @@ TASK_METRICS = ("n_turns", "n_conversations", "conversation_success", "pass^k", 
 
 def grade_turn(expect: TurnExpect, record: dict, calc: dict[str, CalcItem], cells_of: Callable[[str, frozenset[str]], dict],
                grounds: Grounds, chart_facts: list[float] | None = None,
-               values_of: Callable[[str], Iterable[float]] = table_numbers) -> dict:
+               values_of: Callable[[str], Iterable[float]] = table_numbers, carried: Iterable[str] = (),
+               alternate_of: AlternateOf = alternates.alternate_item) -> dict:
     """One turn's metrics and errors. grounds = what grounds a number in the conversation so far (this turn's
     question and tool results included). chart_facts = the fact values this turn's charts may draw (default: this
     turn's summarize_stat answers); values_of(table_key) = every number of a table, for the context rows phase 1
     draws beside the facts (default: the Parquet value column). Graded on final_calls: alternate-table attempts are
-    set aside and counted in alt_attempts, not as errors."""
+    set aside and counted in alt_attempts, not as errors.
+
+    T3-42: tables that hold every golden cell value of the turn's calc_qid(s) (evaluators.alternates), plus `carried`
+    (accepted earlier in the conversation for the same expected table), count as right for state and tool arguments,
+    as they do for the numbers. value_alternates lists them."""
     every = record.get("calls") or []
     calls = final_calls(every)
+    found = sorted(set(turn_alternates(expect, calls, calc, alternate_of)) | set(carried))
+    if found:
+        expect = expect.model_copy(update={"alt_table_keys": sorted(set(expect.alt_table_keys) | set(found))})
     tools, tool_errors = grade_tools(expect, calls)
     state, state_errors = grade_state(expect, calls)
-    numbers, number_errors = grade_numbers(expect, record, calls, state["state_key"], calc, cells_of)
+    numbers, number_errors = grade_numbers(expect, record, calls, calc, cells_of, alternate_of)
     chart, chart_errors = grade_chart(expect, calls, chart_facts if chart_facts is not None else turn_values(calls) or [],
                                       values_of)
     answer, answer_errors = grade_answer(record, calls, grounds)
     errors = (["run_failure"] * bool(record.get("error")) + tool_errors + state_errors + number_errors + chart_errors
               + answer_errors)
     return {**tools, **state, **numbers, "expected_table": expect.table_key, "alt_attempts": len(every) - len(calls),
+            "value_alternates": found,
             **chart, **answer, "errors": errors, "passed": not errors}
 
 
 def grade_conversation(scenario: AgentScenario, records: list[dict], calc: dict[str, CalcItem],
                        cells_of: Callable[[str, frozenset[str]], dict],
-                       values_of: Callable[[str], Iterable[float]] = table_numbers) -> list[dict]:
+                       values_of: Callable[[str], Iterable[float]] = table_numbers,
+                       alternate_of: AlternateOf = alternates.alternate_item) -> list[dict]:
     """Graded rows, one per scenario turn, for one run of the scenario (records in turn order; a missing turn —
     the run stopped — is a run_failure). Each row keeps its record (the transcript) for --from-run.
-    values_of: every number of a table (chart context rows, T3-37; see grade_turn)."""
+    values_of: every number of a table (chart context rows, T3-37; see grade_turn). alternate_of: the T3-41 rule
+    (T3-42); an alternate found on one turn stays right on later turns that expect the same table ("그 표로 그려줘")."""
     grounds = Grounds()
     latest: list[float] = []  # fact values of the latest turn that called summarize_stat (a chart-only turn draws them)
+    accepted: dict[str, set[str]] = defaultdict(set)  # expected table -> alternates accepted so far in the conversation
     rows = []
     for i, turn in enumerate(scenario.turns):
         record = records[i] if i < len(records) else {"calls": [], "answer": "", "error": "turn not run"}
         grounds.add(grounding(turn.question, final_calls(record.get("calls") or [])))
         own = turn_values(final_calls(record.get("calls") or []))
         latest = own if own is not None else latest
-        g = grade_turn(turn.expect, record, calc, cells_of, grounds, latest, values_of)
+        expected = turn.expect.table_key
+        g = grade_turn(turn.expect, record, calc, cells_of, grounds, latest, values_of,
+                       accepted.get(expected, ()) if expected else (), alternate_of)
+        if expected:
+            accepted[expected].update(g["value_alternates"])
         rows.append({**record, "sid": scenario.sid, "split": scenario.split, "turn": i, "question": turn.question, **g})
     return rows
 

@@ -24,6 +24,7 @@
 | `l3` | L3 | 에이전트 그래프 한 턴, 검색은 정답 표(oracle) → `summarize_stat` 실호출 → Parquet 대조 (T3-32). **해석기·멀티쿼리 분해 LLM도 같이 돈다**(hybrid, gpt-4o-mini): 실전 1만 보는 순수 oracle이 아니라 "정답 표를 준 에이전트 한 턴"이다. 실전 1만 떼어 보려면 `INTERPRETER=rules`로 돌린다 | 데이터·HCX 키 (+ `OPENAI_API_KEY`) | **HCX 90문항** (재시도 포함 약 135회로 추정) + 해석기 호출 |
 | `e2e` | L4 | 서비스 에이전트 그래프(`build_agent`) 한 턴: 검색 → `summarize_stat` (T3-32) | 데이터·Chroma·`RERANK_CKPT`·HCX 키 | **HCX 90문항 + 2차 리랭커** |
 | `agent` | 종합 | 멀티턴 시나리오 → 에이전트 → 툴 (§6) | `--agent`·시나리오 파일 | 에이전트가 부르는 LLM |
+| `ragas` | 심판 | 저장된 e2e run의 Faithfulness·Response Relevancy·Context Precision·Recall + 코드 ID P/R, 저점 → 그래프 노드, CI 게이트 기록 (§9) | e2e run 폴더·`OPENAI_API_KEY`·`--group ragas` | 심판 약 350회 (gpt-4.1-mini, 디스크 캐시) |
 
 - L3·e2e는 `--llm mock`으로 **비용 없이 경로만** 확인할 수 있다. mock은 모델 대신 코드 템플릿이 답해서 점수가 그럴듯하게 나온다(예: L3 PASS 85/90).
   **점수로 쓰지 않는다**: 리포트에 "llm mock: 경로 확인용, 점수 아님"이 붙고, `ops_history.jsonl`에는 기록되지 않는다.
@@ -305,6 +306,16 @@ PASS가 아닌 문항마다, **위에서부터 첫 번째로 맞는 규칙 하�
 - **`compute`가 `understanding`보다 앞이다.** 계산 모듈이 거절해서 생긴 `false_refusal`이 판정 오류로 잘못 분류되지 않게 하려는 것이다.
 - **사실 오류는 `compute`가 아니라 `understanding`이다.** compute는 계획이 고른 셀을 그대로 계산하는 결정적 코드다.
   값·단위·차원·시점이 틀렸다면 계획(analyze)이 다른 셀을 고른 것이다.
+- **답 없는 질문(`not_answerable`·`clarify`)은 판정 오류가 1번보다 앞이다 (T3-45).** 이 문항의 "정답 표"는 가장 가까운 표일 뿐이다.
+  `missed_refusal`·`wrong_reason`·`assumed_condition`은 표와 상관없이 거절·되묻기 판단의 문제라서 `understanding`으로 둔다.
+
+T3-45 보강:
+- **실행 중 예외 뒤 검색 후보 복원.** 검색이 끝난 뒤 실전 1이 예외를 던지면(예: `101_DT_1B8000G` SchemaError) 그래프 상태가 비어 행의 `keys`·`used_table`이 사라진다.
+  `trace.restore_search`가 검색 노드 span(마지막 순위 노드 = rerank2)의 앞 k개로 채운다. 러너와 재채점(`--from-run`)이 같은 함수를 쓴다.
+  조건: error가 있고, gate route=found이고, statistics span이 있는 행만. 같은 run의 정상 행에서 규칙(keys = 그 노드 앞 k개)이 맞지 않으면 아무것도 채우지 않는다.
+- **오류 태그를 맞힌 표 / 틀린 표로 나눠 본다** (`summary.errors_by_top1`, report.html "오류 유형 — 맞힌 표 / 틀린 표").
+  틀린 표에서 나온 셀 오류는 대부분 다른 표의 셀을 정답 셀과 비교한 결과다. 계획의 셀 선택 문제는 맞힌 표 열을 본다.
+- **검색 노드별 정답 순위** (`summary.search_nodes`, `trace.node_ranks`): 답할 문항 전체에서 노드마다 정답 표가 1위·top k·후보 밖인 수. 문항별 대표 노드와 달리 모든 행을 센다.
 
 ## 4. 오류 유형 (`evaluators/calculation.py`)
 
@@ -563,4 +574,109 @@ LLM 호출 = `gen_ai.operation.name == "chat"`인 span 하나. agent 리포트�
 | rerank2가 실패했나 | `chat <stage2 모델>` span 상태·`error.type` | `ChatResult.degraded=true`면 1차 순서로 답한 것 |
 
 - 테스트: `tests/test_llm_metrics.py`(세 LLM 경로의 chat span, 메트릭 합 = 원본 usage, 종료 이유·예외), `tests/test_api.py`(서비스 trace, 평가 provider와 분리).
+
+## 9. Ragas 평가 파이프라인 — 골든셋 + Ragas + pytest (T3-19, KOS-116)
+
+Ragas를 따로 돌리는 도구로 쓰지 않고 기존 계층의 하나로 둔다. 역할 분담:
+
+| 구성 | 맡는 일 |
+|---|---|
+| 골든셋 | 질문, 정답 표 ID(L1 슬롯), 필요한 사실(기간·분류) → Ragas reference를 **코드가** 만든다 |
+| e2e run | 질문 → 검색 → `summarize_stat` 한 턴의 답·순위·trace (`results.jsonl`) |
+| Ragas (`--layer ragas`) | 심판이 답 문장·검색 상위 표를 채점. 그래프·검색은 다시 돌리지 않는다 |
+| pytest | 샘플 생성·노드 귀속·게이트 로직 고정(`tests/test_evals_ragas.py`), CI 회귀 게이트(`tests/test_quality_gate.py`) |
+
+```bash
+uv sync --group embed --group ragas
+python -m evals.run_eval --layer e2e --stage <ID>-e2e                       # 또는 기존 e2e run을 그대로 쓴다
+python -m evals.run_eval --layer ragas --stage <ID>-ragas --from-run evals/reports/<e2e run>
+python -m evals.quality                                                    # 기준선 대비 (CI와 같은 비교)
+python -m evals.quality --promote evals/reports/<ragas run>                # 의도한 변화일 때만 기준선 갱신, PR에 같이 커밋
+```
+
+### 9.1 지표와 입력
+
+| 지표 | user_input | response | retrieved_contexts | reference |
+|---|---|---|---|---|
+| Faithfulness | 질문 | 답 문장 | pandas가 계산한 사실 줄(`f1: 2025 · 시도별=경기도 = 76,309 명`) + 출처 + 사용한 표 텍스트 | — |
+| Response Relevancy (`AnswerRelevancy`) | 질문 | 답 문장(출처 줄 제외) | — | — |
+| Context Precision (`ContextPrecisionWithReference`) | 질문 | — | 검색 상위 k(기본 5)개 표 텍스트, 순위대로 | 골든 → 코드 |
+| Context Recall | 질문 | — | 같음 | 같음 |
+| ID Precision@k · ID Recall@k | — | — | 상위 k개 표 ID | 정답 표 ID (코드 계산, 심판 교차 확인용) |
+
+- 표 텍스트 = 실전 2 `build_doc(record, "n2-L60")["bm25_text"]` 앞 2,000자. reference = 정답 표(대체 표 포함)의 조사명·표명 + 기간 + 필요한 분류 값(숫자·단위·합계 값 없음).
+- 거절·되묻기·오류 행은 생성 지표에서, 정답 표가 없는 문항(not_answerable·clarify)은 검색 지표에서 뺀다. 대신 **답한 문항 수**와 PASS율을 게이트에 넣어
+  "거절이 늘어 Faithfulness 평균이 오르는" 생존 편향을 막는다.
+- 심판은 생성 모델(HCX)·파이프라인 LLM(gpt-4o-mini)과 다른 `RAGAS_JUDGE_MODEL`(기본 gpt-4.1-mini), 임베딩 `RAGAS_EMBED_MODEL`(기본 text-embedding-3-small).
+  응답은 `data/cache/ragas`에 캐시되어 같은 입력 재채점은 호출 0. `--no-judge-cache`는 심판 흔들림을 잴 때만.
+- Ragas 0.4.3은 `langchain_community.chat_models.vertexai`를 import해서 그대로는 실패한다. `ragas_metrics.load_ragas()`가 빈 모듈을 넣고 import한다(버전 고정).
+
+### 9.2 노드 trace 연결
+
+- 점수 < 0.5인 지표마다 담당 노드를 정한다: 검색 지표 → `search/<정답 표를 밀어낸 검색 노드>`(`trace.lost_at`), Faithfulness →
+  `statistics/<답 문장을 쓴 실전 1 span>`(fallback_chatbot · compose_llm · template · answer_final), Response Relevancy → 정답 아닌 표로 답했으면 검색 노드, 아니면 문장 span.
+- report.md·html: 지표 × 노드 저점 수, 가장 낮은 문항 10(trace_id), 원 e2e와 같은 문항별 워터폴.
+- `OTEL_EXPORTER_OTLP_ENDPOINT`가 있으면 문항마다 `eval.ragas` span이 원래 턴 trace에 link되고 `kosis.ragas.<지표>`·`kosis.ragas.node.<지표>` 속성이 붙는다
+  (Jaeger 태그 검색 예: `kosis.ragas.node.faithfulness=statistics/fallback_chatbot`).
+
+### 9.3 CI 회귀 게이트
+
+- ragas run마다 `evals/reports/quality_history.jsonl`에 집계 한 줄(커밋). `evals/quality_baseline.json`(커밋)과 **비교 키**(골든·split·tables.jsonl hash,
+  e2e 그래프+모델, 심판·임베딩, ragas 버전, 컨텍스트 포맷, k)가 같은 기록 중 run_id가 가장 큰 것을 지표별로 비교한다. 다른 그래프·모델 실험은 키가 달라 게이트에 안 걸린다.
+- 허용폭: 심판 지표는 기준선 파일의 `tolerance`(심판 흔들림 실측) 또는 0.03, 코드 비율 지표는 2문항(2/n), 답한 수는 2.
+- CI에는 데이터·키가 없어 평가를 **실행하지 못한다**. PR이 `src/`·`backend/`·`vendor/`를 바꾸고 기록을 안 올리면 경고만 뜬다.
+
+### 9.4 대체 정답 표 (T3-41)
+
+수치 골든 문항은 대표 표 하나로 만들었지만 같은 숫자를 가진 표가 여럿이다(예: 2025년 경기도 출생아 76,309명은 `DT_1B8000H`에도 `DT_1B81A12`에도 있음).
+
+```bash
+python -m evals.builders.alternates     # data/values 전수 스캔(약 1분) → evals/datasets/calculation_alternates.jsonl, 자기검증 실패 시 exit 1
+```
+
+- 규칙(`evaluators/alternates.py`): 골든의 **모든** 셀 사실(required + aux)이 한 표 안에서 같은 기간·같은 값·같은 시도(전국 문항은 지역 없는 셀)·
+  골든 분류 라벨 또는 합계·그 밖의 분류는 합계뿐·단위 호환이고, 골든에서 한 항목인 사실은 대체 표에서도 한 항목. LLM 없음, 숫자는 골든 그대로.
+- 라벨 상태: `auto`(값이 모두 정수 ≥ 100) / `needs_review`(작은 값·비율, 우연 일치 위험) / 사람이 바꾸는 `accepted`·`rejected`(재생성해도 유지).
+  정답 표 집합(`locate()`, ragas ID 지표)은 auto·accepted만 쓴다. `self_check` 줄 = 대표 표를 규칙이 다시 찾았는지.
+- 숫자 채점: e2e 답이 대표 표가 아닌 표에서 왔고 그 표가 규칙을 만족하면, 골든 사실의 source_ref를 그 표 셀(답이 인용한 셀 우선)로 옮겨 같은 채점기로 채점한다
+  (`graded_table` 열). L3(대표 표 오라클)는 경로가 바뀌지 않는다.
+- agent 계층 (T3-42): 같은 규칙. 숫자(calc_qid·calc_qids 하위 답)는 답의 **출처 표**(`source`, 없으면 호출의 `table_key`)가 대체 표면 그 셀로 채점하고
+  (`calc.graded_table`·`via_alternate`), 상태·툴 인자 판정도 그 턴의 대체 표를 정답에 더한다(`value_alternates` 열). 같은 대화에서 인정된 대체 표는
+  같은 표를 기대하는 다음 턴(calc_qid 없는 "그 표로 그려줘")에도 이어진다. T3-27 `same_values`(값만 같으면 통과)는 없앴다.
+  agent 표 키 판정은 라벨 status가 아니라 규칙만 본다(e2e 숫자 채점과 같고, e2e 정답 표 판정은 auto·accepted 라벨).
+- 라벨 파일 hash는 l3·e2e manifest의 `alternates`와 ragas 게이트 비교 키에 들어간다. 라벨이 바뀌면 기준선을 다시 promote한다.
+
+## 10. 평가 파이프라인 구조 — 오프라인 / 온라인 / 리포트 (T3-43, 고정)
+
+```
+                         Golden Dataset (질문 · 기준 정답 · 정답 통계표 ID · 기대 계산 결과)
+                                   ↓
+   Offline Evaluation (개발 / PR / 배포 전)          Online Evaluation (실제 사용자 요청)
+   고정 Golden Set · Ragas 평가 · Baseline 비교       Trace 수집 · 표본 추출 평가
+   · Regression Gate                                   · 품질 저하 감지 · 실패 케이스 수집
+                                   ↓
+                 Evaluation Report (지표별 점수 · 실패 유형 · 이전 버전 대비 변화)
+```
+
+```bash
+bash scripts/dev.sh suite --stage <ID>                    # 오프라인 (exit 1 run 실패 · 2 회귀 게이트 하락)
+bash scripts/dev.sh online --stage <ID>-online [--lookback 24h --limit 500 --sample 40]   # 온라인 (exit 3 품질 저하)
+bash scripts/dev.sh pipeline --stage <ID> [suite 인자]    # 둘 다, 오프라인 먼저 (exit = 처음 0이 아닌 값)
+```
+
+dev.sh는 Docker·Chroma·Jaeger를 띄우고 `uv run --group embed --group ragas`로 실행한다(그룹을 하나만 주면 다른 그룹이 sync로 지워진다).
+
+| 단계 | 오프라인 (`evals.suite`) | 온라인 (`--layer online`) |
+|---|---|---|
+| 입력 | 고정 골든셋(calculation·retrieval golden, 대체 표 라벨) | 서비스 trace(Jaeger, `deployment.environment.name=service`). 재현: `--from-run <agent run>` |
+| 평가 | L0~L4·agent → e2e 답을 `ragas`가 심판(e2e가 mock·skip이면 ragas skip) | 전 턴 코드 검사(최종 답 숫자 근거·출처, agent `answer.py`) + 결과 분포, 답한 턴 표본에 Ragas Faithfulness·Relevancy |
+| 비교 | 같은 조건 기준 run(`--baseline`) + **회귀 게이트**(이번 ragas summary vs `evals/quality_baseline.json`, CI와 같은 비교, 기준선 없음·키 다름은 skipped) | 같은 키 이전 온라인 기록(3개 이상)의 중앙값, 허용폭 = max(심판 흔들림 0.03, 2×표본 표준오차) |
+| 기록 | `quality_history.jsonl`(집계, 커밋) | `evals/datasets/online_history.jsonl`(로컬, 커밋 안 함: 트래픽이 매일 바뀜) |
+| 실패 | run 리포트의 실패 단계(`실패: retrieval` 등) | `evals/datasets/online_failures.jsonl`(로컬 전용, trace 단위 중복 제거, 30일 보존): 오류·근거 없는 숫자·출처 누락·Faithfulness 저점, 거절은 `refusal_review:<사유>`로 분리 → 사람이 검토해 골든셋 후보로 |
+| 리포트 | suite.html: 지표별 점수 · 실패 유형 · 기준 대비 차이 · 회귀 게이트 표 | online report.html: 지표 · 표준오차 · 직전 기록 중앙값 · 허용폭 · 저하 · 턴 결과 · 거절 사유 · 실패 케이스 |
+
+- 서비스 trace의 턴 루트 `invoke_agent`에 `kosis.turn.question`·`kosis.turn.answer`·`kosis.turn.table_key`·`kosis.turn.resolved_question`이 있다(T3-43).
+  이 속성이 없는 trace(그 전 기록)는 온라인 평가가 읽지 못하고 "질문 없는 trace"로 센다.
+- Jaeger(all-in-one)는 메모리 저장이라 재시작하면 trace가 사라진다. 운영에서는 저장소를 붙이거나 매일 온라인 평가를 돌려 기록을 남긴다.
+- 온라인 점수 행은 `eval.online` span으로 원래 서비스 trace에 link된다(`kosis.online.faithfulness` 등, OTLP endpoint가 있을 때).
 

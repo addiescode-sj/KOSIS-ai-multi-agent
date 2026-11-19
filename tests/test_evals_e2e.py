@@ -75,7 +75,7 @@ def test_the_table_phase1_answered_from_is_used_and_located():
     assert e2e.locate(item(), row, "FAIL")["cause"] == "retrieval"
     [right] = rows(graph(["101_DT_GOLD"]))
     assert e2e.locate(item(), right, "FAIL") | {"top_keys": None} == {
-        "used_table": "101_DT_GOLD", "right_table": True, "right_alternate": False, "l1_linked": False, "gold_rank": 1,
+        "used_table": "101_DT_GOLD", "right_table": True, "right_alternate": False, "l1_linked": False, "alt_linked": False, "gold_rank": 1,
         "top_keys": None, "gold_keys": ["101_DT_GOLD"], "cause": "answer"}
     # §6.3: with the L1 item of the same qid, an alternate key of its slot is the right table too
     l1 = RetrievalItem(qid="c1", split="test", qtype="sibling", source="v2", question="q",
@@ -238,6 +238,11 @@ def test_e2e_from_run_regrades_the_saved_rows(monkeypatch, tmp_path):
     assert again["answer"].outcome == "refused" and again["keys"] == ["101_DT_OTHER", "101_DT_GOLD"]
     assert again["used_table"] == "101_DT_OTHER" and again["spans"] == STEPS and not again["failed"]
     assert again["llm_calls"] == live["llm_calls"] and again["tokens_by_model"] == live["tokens_by_model"]
+    # T3-45: a crashed row saved used_table None; the golden table_key of the saved row must not stand in for it
+    crashed = {**saved, "answer": None, "error": "SchemaError: x", "used_table": None, "keys": [], "table_key": "101_DT_GOLD"}
+    (tmp_path / "results.jsonl").write_text(json.dumps(crashed, ensure_ascii=False, default=str) + "\n", encoding="utf-8")
+    assert read_rows(tmp_path, [item()])[0]["used_table"] is None
+    (tmp_path / "results.jsonl").write_text(json.dumps(saved, ensure_ascii=False, default=str) + "\n", encoding="utf-8")
     [missing] = read_rows(tmp_path, [CalcItem(qid="c9", kind="answerable", question="q", table_key="101_DT_GOLD", table_sha256="0")])
     assert missing["answer"] is None and missing["failed"] and missing["error"] == "not in the run"
     # the task reads it instead of running the graph

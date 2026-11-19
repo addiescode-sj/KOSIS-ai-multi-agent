@@ -1534,7 +1534,7 @@ embed = [
     { name = "torch", marker = "sys_platform != 'linux'" },
     { name = "torch", marker = "sys_platform == 'linux'", index = "https://download.pytorch.org/whl/cpu" },
 ]
-ragas = [{ name = "ragas" }]
+ragas = [{ name = "ragas", specifier = "==0.4.3" }]
 
 [[package]]
 name = "langchain"

@@ -9,7 +9,10 @@ line). A run whose needs are not met (no Chroma, no checkpoint, no key, ...) is 
 fails is recorded and the suite goes on. The suite folder `evals/reports/<time>-<prefix>-suite/` holds suite.md,
 suite.html and suite.json: the checks, each run's status and folder, and per run its headline metrics next to the
 baseline run with the same conditions (layer, retriever, golden hash, split, k, live vs regrade, llm).
-Exit code 1 when a run failed (a skipped run is not a failure). Reads no .env: set the values in the shell.
+
+Offline evaluation (T3-43): after e2e, `ragas` judges that e2e run's answers (skipped after a mock e2e), and the
+regression gate compares the ragas summary with evals/quality_baseline.json, as CI does (tests/test_quality_gate.py).
+Exit code 1 when a run failed (a skipped run is not a failure), 2 when the gate found a drop.
 """
 
 from __future__ import annotations
@@ -43,8 +46,11 @@ RUNS: list[tuple[str, list[str], set[str], str]] = [
     ("l2-v2", ["--layer", "l2", "--split", "all", "--query-golden", str(DATASETS / "query_golden_v2.jsonl")], {"data", "v2"}, "질의 파서, 골든 v2"),
     ("l3", ["--layer", "l3"], {"data", "llm"}, "에이전트 그래프 한 턴, 정답 표 검색(oracle) → summarize_stat 실호출"),
     ("e2e", ["--layer", "e2e"], {"data", "chroma", "rerank", "llm"}, "서비스 에이전트 그래프 한 턴 (검색 → summarize_stat)"),
+    # T3-43: judges this suite's e2e answers (--from-run is added by run()); skipped after a mock or missing e2e
+    ("ragas", ["--layer", "ragas"], {"data", "judge"}, "Ragas 심판 (e2e 답: Faithfulness·Relevancy·Context P/R) → 회귀 게이트"),
     ("agent", ["--layer", "agent"], {"agent"}, "멀티턴 시나리오 → 에이전트 (T3-06)"),
 ]
+GATE_DROP_EXIT = 2  # T3-43: a metric below the committed baseline (1 stays "a run failed")
 WARN_ONLY = {"sigungu"}  # checks no run needs: shown as ⚠, never skip a run
 # Conditions a baseline must share (manifest fields); llm missing on old live runs means hcx
 MATCH = ("layer", "retriever", "split", "top_k", "agent")
@@ -76,6 +82,11 @@ def check(llm: str, agent: str | None, scenarios: Path | None) -> dict[str, tupl
                   (True, "HCX_API_KEY 설정됨") if os.environ.get("HCX_API_KEY") else (False, "HCX_API_KEY 미설정 (또는 --llm mock)"))
     out["agent"] = ((True, f"{agent} · {scenarios}") if agent and scenarios and scenarios.exists()
                     else (False, "--agent module:function와 --scenarios 파일 필요"))
+    import importlib.util
+
+    ragas_ok = importlib.util.find_spec("ragas") is not None
+    out["judge"] = ((True, "OPENAI_API_KEY 설정됨 · ragas 설치됨") if os.environ.get("OPENAI_API_KEY") and ragas_ok
+                    else (False, "ragas 미설치 (uv sync --group embed --group ragas)" if not ragas_ok else "OPENAI_API_KEY 미설정"))
     return out
 
 
@@ -133,7 +144,11 @@ def metrics(m: dict) -> dict[str, float | int | str | None]:
         out = {"PASS 비율": v.get("PASS", 0) / n, "PASS": v.get("PASS", 0), "FAIL": v.get("FAIL", 0)}
         if layer == "e2e":
             out["검색 1위 = 정답 표"] = s["top1_right"]
+        # failure types (T3-43): the stage each failing question was blamed on (evals.trace.blame)
+        out |= {f"실패: {stage}": count for stage, count in sorted((s.get("failures") or {}).items())}
         return out
+    if layer == "ragas":
+        return {k: v["mean"] for k, v in s["metrics"].items()}
     if layer == "agent":
         return {k: s[k] for k in ("conversation_success", "pass^k", "turn_pass", "tool_selection", "param_accuracy",
                                   "state_accuracy", "numeric_accuracy", "unsupported_final_number_turns")}
@@ -177,17 +192,28 @@ def run(opts: argparse.Namespace, main: Callable[[list[str]], Path] | None = Non
     checks = checks if checks is not None else check(opts.llm, opts.agent, opts.scenarios)
     pool = manifests(opts.baseline or [])
     rows = []
+    e2e: dict | None = None  # this suite's e2e row: ragas judges its answers
+    ragas_summary: dict | None = None
     for name, args, needs, what in RUNS:
         if opts.only and name not in opts.only:
             continue
         row = {"name": name, "what": what, "status": "skipped", "reason": "", "run": None, "metrics": {}, "baseline": None, "base_metrics": {}}
+        if name == "e2e":
+            e2e = row  # the same dict: ragas sees its final status, skipped included
         if unmet := [n for n in sorted(needs) if not checks[n][0]]:
             row["reason"] = " · ".join(checks[n][1] for n in unmet)
             rows.append(row)
             continue
+        if name == "ragas" and (e2e is None or e2e["status"] != "ok"):
+            # a mock e2e has template answers: judging them would put non-scores into the committed quality history
+            row["reason"] = ("이번 스위트에 e2e가 없음 (--only에 e2e 포함)" if e2e is None
+                             else f"e2e가 {e2e['status']} (실제 모델 e2e만 심판)")
+            rows.append(row)
+            continue
+        extra = ["--from-run", e2e["run"]] if name == "ragas" else []
         try:
             with contextlib.redirect_stdout(io.StringIO()):  # each report is in its folder; keep the console to the suite
-                folder = main(argv_for(name, args, opts.llm, opts))
+                folder = main(argv_for(name, args + extra, opts.llm, opts))
         except SystemExit as e:  # argparse and the layers' own checks
             row.update(status="failed", reason=f"SystemExit: {e.code}")
         except Exception as e:  # noqa: BLE001 - one failing run must not stop the others
@@ -195,13 +221,39 @@ def run(opts: argparse.Namespace, main: Callable[[list[str]], Path] | None = Non
         else:
             m = json.loads((folder / "manifest.json").read_text(encoding="utf-8"))
             row.update(status="mock" if m.get("llm") == "mock" else "ok", run=str(folder), metrics=metrics(m))
+            if name == "ragas":
+                ragas_summary = m["summary"]
             if base := baseline_for(m, pool):
                 row.update(baseline=str(base[0]), base_metrics=metrics(base[1]))
             elif opts.baseline:
                 row["reason"] = "조건 같은 기준 run 없음"
         rows.append(row)
         print(f"{row['status']:>7}  {name:<18} {row['reason'] or row['run']}")
-    return {"stage": opts.stage, "llm": opts.llm, "baseline": opts.baseline, "checks": {k: list(v) for k, v in checks.items()}, "runs": rows}
+    g = gate(ragas_summary)
+    print(f"{g['status']:>7}  {'regression gate':<18} {g['reason']}")
+    return {"stage": opts.stage, "llm": opts.llm, "baseline": opts.baseline, "checks": {k: list(v) for k, v in checks.items()},
+            "runs": rows, "gate": g}
+
+
+def gate(summary: dict | None, baseline_path: Path | None = None) -> dict:
+    """Regression gate (T3-19 · T3-43) on this suite's ragas run: its summary against the committed baseline, the same
+    comparison as tests/test_quality_gate.py in CI. Never a silent pass: no ragas run or another key is 'skipped'."""
+    from evals import quality
+
+    path = baseline_path or quality.BASELINE
+    if summary is None:
+        return {"status": "skipped", "reason": "ragas run 없음 (실제 모델 e2e + judge 필요)", "rows": []}
+    if not path.exists():
+        return {"status": "skipped", "reason": f"기준선 없음 ({path.name})", "rows": []}
+    base = json.loads(path.read_text(encoding="utf-8"))
+    if base["key"] != summary["key"]:
+        diff = sorted(k for k in base["key"] if base["key"].get(k) != summary["key"].get(k))
+        return {"status": "skipped", "reason": f"비교 키가 기준선과 다름 ({', '.join(diff)}): 의도한 변화면 python -m evals.quality --promote",
+                "rows": []}
+    rows = quality.compare(base, {"n": summary["n"], "metrics": summary["gate"]})
+    drops = [r["metric"] for r in rows if not r["ok"]]
+    return {"status": "drop" if drops else "ok", "reason": f"하락: {', '.join(drops)}" if drops else f"{len(rows)}개 지표 기준선 이내",
+            "rows": rows}
 
 
 def _fmt(v) -> str:
@@ -223,6 +275,13 @@ def markdown(suite: dict) -> str:
              "## 실행", "", "| run | 무엇을 재나 | 상태 | run 폴더 · 사유 |", "| --- | --- | --- | --- |",
              *[f"| {r['name']} | {r['what']} | {r['status']} | {Path(r['run']).name if r['run'] else ''}{' · ' if r['run'] and r['reason'] else ''}{r['reason']} |"
                for r in suite["runs"]], ""]
+    g = suite.get("gate") or {"status": "skipped", "reason": "", "rows": []}
+    lines += ["## 회귀 게이트 (Regression Gate)", "",
+              f"- 상태 **{g['status']}** — {g['reason']} (기준선 `evals/quality_baseline.json`, CI `tests/test_quality_gate.py`와 같은 비교)", ""]
+    if g["rows"]:
+        lines += ["| 지표 | 기준선 | 이번 | 차이 | 허용폭 | 통과 |", "| --- | --- | --- | --- | --- | --- |",
+                  *[f"| {r['metric']} | {_fmt(r['baseline'])} | {_fmt(r['latest'])} | {_delta(r['baseline'], r['latest']) if r['latest'] is not None else ''} | "
+                    f"{_fmt(r['tolerance'])} | {'✓' if r['ok'] else '✕ 하락'} |" for r in g["rows"]], ""]
     for r in suite["runs"]:
         if not r["metrics"]:
             continue
@@ -275,7 +334,9 @@ def main(argv: list[str] | None = None) -> int:
     suite = run(opts)
     out = write(suite)
     print(f"-> {out / 'suite.html'}")
-    return 1 if any(r["status"] == "failed" for r in suite["runs"]) else 0
+    if any(r["status"] == "failed" for r in suite["runs"]):
+        return 1
+    return GATE_DROP_EXIT if suite["gate"]["status"] == "drop" else 0
 
 
 if __name__ == "__main__":

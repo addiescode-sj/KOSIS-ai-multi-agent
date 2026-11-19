@@ -250,15 +250,28 @@ def l3_body(m: dict, rows: list[dict]) -> str:
     ])
 
 
+def question_of(r: dict, width: int = 60) -> str:
+    """The row's question text, cut to `width` characters (the full text is in the cell's tooltip)."""
+    q = r.get("question") or ""
+    return q if len(q) <= width else q[:width - 1] + "…"
+
+
+def q_cell(r: dict) -> str:
+    return f'<td title="{esc(r.get("question") or "")}">{esc(question_of(r))}</td>'
+
+
 def error_info(errors: list[tuple[str, int]], rows: list[dict]) -> str:
-    """Under the error chart: what each error means, the stage it was blamed on and which questions have it."""
+    """Under the error chart: what each error means, the stage it was blamed on and which questions have it
+    (qid with its question, so a reader sees what was asked without opening results.jsonl)."""
     items = []
     for name, count in errors:
         hit = [r for r in rows if name in r.get("errors", [])]
         stages = sorted({r["failure"]["label"] for r in hit if r.get("failure")})
-        qids = ", ".join(r["qid"] for r in hit[:6]) + (" …" if len(hit) > 6 else "")
+        asked = "".join(f'<li><b>{esc(r["qid"])}</b> {esc(question_of(r))}</li>' for r in hit[:6])
+        more = f"<li>… 외 {len(hit) - 6}건</li>" if len(hit) > 6 else ""
         items.append(f'<li><b>{esc(name)}</b> {count}건 — {esc(ERROR_INFO.get(name, "설명 없음 (evaluators/calculation.py ERROR_INFO)"))}'
-                     f'<div class="tools">{"실패 단계: " + esc(", ".join(stages)) + " · " if stages else ""}문항: {esc(qids)}</div></li>')
+                     f'<div class="tools">{"실패 단계: " + esc(", ".join(stages)) if stages else ""}</div>'
+                     f'<ul class="tools">{asked}{more}</ul></li>')
     return f'<ul class="info">{"".join(items)}</ul>' if items else ""
 
 
@@ -276,6 +289,30 @@ def e2e_body(m: dict, rows: list[dict]) -> str:
         '<p class="note">틀린 표에서 PASS는 두 표의 숫자가 같을 때만 나온다.</p>',
         stacked_verdicts([(k, v) for k, v in split if v]), "</div>",
         '<div class="card"><h2>실패 원인</h2><p class="note">검색 = 1위가 다른 표 · 답 = 표는 맞았는데 답이 틀림.</p>', cause_chart, "</div></div>",
+        search_cards(s),
+    ])
+
+
+def search_cards(s: dict) -> str:
+    """T3-45: error tags split by whether the answer's table was right, and the gold table's rank per search node."""
+    if "errors_by_top1" not in s:  # runs graded before T3-45
+        return ""
+    by = s["errors_by_top1"]
+    tags = sorted(set(by["right"]) | set(by["wrong"]), key=lambda e: -(by["right"].get(e, 0) + by["wrong"].get(e, 0)))
+    tag_rows = "".join(f'<tr><td>{esc(e)}</td><td class="num">{by["right"].get(e, 0)}</td><td class="num">{by["wrong"].get(e, 0)}</td></tr>'
+                       for e in tags)
+    k = s.get("search_k", 5)
+    node_rows = "".join(f'<tr><td>{esc(name)}</td><td class="num">{c["top1"]}/{c["n"]}</td><td class="num">{c["topk"]}</td>'
+                        f'<td class="num">{c["missing"]}</td></tr>' for name, c in s.get("search_nodes", {}).items())
+    restored = (f'<p class="note">실행 중 예외 뒤 검색 후보를 노드 span에서 복원한 문항: {s["search_restored"]}</p>'
+                if s.get("search_restored") else "")
+    return "".join([
+        '<div class="grid2"><div class="card"><h2>오류 유형 — 맞힌 표 / 틀린 표</h2>',
+        '<p class="note">틀린 표에서 나온 셀 오류는 대부분 "다른 표의 셀을 정답 셀과 비교"한 결과다. 계획의 셀 선택 문제는 맞힌 표 열을 본다.</p>',
+        f'<table><tr><th>오류</th><th>맞힌 표</th><th>틀린 표</th></tr>{tag_rows}</table></div>',
+        '<div class="card"><h2>검색 노드별 정답 표 순위</h2>',
+        f'<p class="note">답할 문항(answerable·default_allowed) 전체에서 노드마다 정답 표 순위. 문항별 대표 노드(실패 단계)와 달리 모든 행을 센다.</p>{restored}',
+        f'<table><tr><th>노드</th><th>1위</th><th>top {k}</th><th>후보 밖</th></tr>{node_rows}</table></div></div>',
     ])
 
 
@@ -400,15 +437,15 @@ def rows_table(layer: str, rows: list[dict]) -> str:
                        f'<td class="num">{esc(r.get("rank") or ("답 없음" if not r["answerable"] else "-"))}</td><td>{esc(r.get("slot_ranks", ""))}</td>'
                        f'<td>{esc(", ".join(r["keys"][:3]))}</td><td class="num">{r["latency_ms"]:.1f}</td></tr>' for r in rows)
     elif layer == "e2e":
-        head = ["qid", "kind", "판정", "원인", "실패 단계", "쓴 표", "정답 순위", "오류", "ms", "토큰"]
-        body = "".join(f'<tr><td>{esc(r["qid"])}</td><td>{esc(r["kind"])}</td><td>{esc(r["verdict"])}</td><td>{esc(r["cause"])}</td>'
+        head = ["qid", "질문", "kind", "판정", "원인", "실패 단계", "쓴 표", "정답 순위", "오류", "ms", "토큰"]
+        body = "".join(f'<tr><td>{esc(r["qid"])}</td>{q_cell(r)}<td>{esc(r["kind"])}</td><td>{esc(r["verdict"])}</td><td>{esc(r["cause"])}</td>'
                        f'<td>{esc((r.get("failure") or {}).get("label", "-"))}</td>'
                        f'<td>{esc(r["used_table"] or "-")}{"" if r["right_table"] else " ✕"}</td><td class="num">{esc(r["gold_rank"] or "밖")}</td>'
                        f'<td>{esc(", ".join(r["errors"]))}</td><td class="num">{r.get("latency_ms", 0):.0f}</td>'
                        f'<td class="num">{r.get("input_tokens", 0) + r.get("output_tokens", 0):,}</td></tr>' for r in rows)
     else:
-        head = ["qid", "kind", "판정", "실패 단계", "오류", "ms", "토큰"]
-        body = "".join(f'<tr><td>{esc(r["qid"])}</td><td>{esc(r["kind"])}</td><td>{esc(r["verdict"])}</td>'
+        head = ["qid", "질문", "kind", "판정", "실패 단계", "오류", "ms", "토큰"]
+        body = "".join(f'<tr><td>{esc(r["qid"])}</td>{q_cell(r)}<td>{esc(r["kind"])}</td><td>{esc(r["verdict"])}</td>'
                        f'<td>{esc((r.get("failure") or {}).get("label", "-"))}</td><td>{esc(", ".join(r["errors"]))}</td>'
                        f'<td class="num">{r.get("latency_ms", 0):.0f}</td><td class="num">{r.get("input_tokens", 0) + r.get("output_tokens", 0):,}</td></tr>' for r in rows)
     return ('<details class="card"><summary>문항별 결과 표 (' + str(len(rows)) + "건)</summary><table><tr>"
@@ -417,7 +454,8 @@ def rows_table(layer: str, rows: list[dict]) -> str:
 
 LAYER_TITLES = {"l0": "L0 메타데이터", "l1": "L1 검색", "l1-gold": "L1 슬롯 필터 (정답 슬롯)", "l1-pred": "L1 슬롯 필터 (파서 슬롯)",
                 "l2": "L2 질의 이해", "ablation": "L1 슬롯 ablation", "l012": "L0 + L1 필터 + L2", "l3": "L3 계산",
-                "e2e": "L4 종단 간 (e2e)", "agent": "에이전트 (멀티턴 · 멀티쿼리)"}
+                "e2e": "L4 종단 간 (e2e)", "agent": "에이전트 (멀티턴 · 멀티쿼리)", "ragas": "Ragas 심판 지표",
+                "online": "온라인 평가 (실제 요청)"}
 NO_TRACE = "이 계층은 모델·그래프를 부르지 않아 trace가 없다(지연은 함수 실행 시간)."
 GUIDE = {  # layer -> how to read this page, one line per item
     "l0": ["채움률: 필터가 쓰는 메타데이터 필드가 채워진 표의 비율. 높을수록 좋다(골든 정답 표 기준이 더 중요).",
@@ -439,6 +477,13 @@ GUIDE = {  # layer -> how to read this page, one line per item
               "툴 선택: 툴 이름·순서가 정답과 정확히 같은 턴 비율. 빠진·불필요 호출은 툴별로 따로 센다.",
               "대화별 화면: 실패한 대화가 위에 펼쳐져 있다. 툴 칩에 마우스를 올리면 인자와 결과가 보인다.",
               "trace(워터폴): 턴 안의 노드(파랑)·툴(초록)·LLM 호출(주황) 시작과 길이. 빨간 테두리 = error span. --agent로 실제 실행한 run에만 있다."],
+    "ragas": ["저장된 e2e run을 다시 돌리지 않고 심판(LLM)이 채점한다. Faithfulness·Response Relevancy = 답 문장, Context Precision·Recall = 검색 상위 표.",
+              "ID Precision·Recall은 같은 검색 지표를 정답 표 ID로 코드가 계산한 값이다. LLM 값과 많이 다르면 심판을 의심한다.",
+              "저점(< 0.5) 문항은 trace의 담당 노드(search/… = 검색 그래프, statistics/… = 실전 1)로 묶는다. 문항 trace 워터폴은 원 e2e run과 같다.",
+              "CI 게이트: 이 run의 지표가 evals/quality_baseline.json보다 허용폭 넘게 떨어지면 tests/test_quality_gate.py가 실패한다."],
+    "online": ["서비스 trace(실제 요청)를 읽어 평가한다. 정답이 없으므로 숫자는 코드가 대화 근거(질문·계산 사실·합산)와 대조하고, 심판은 표본 답 문장만 채점한다.",
+               "저하: 같은 키의 이전 온라인 기록(3개 이상) 중앙값보다 허용폭(심판 흔들림·표본 표준오차 중 큰 값) 넘게 나빠지면 표시한다.",
+               "실패 케이스는 evals/datasets/online_failures.jsonl(로컬 전용)에 쌓인다. 거절은 실패가 아니라 사유별 검토 대상이다."],
 }
 ROW_CAP = 200  # rows shown in the result table; problem rows first, the rest are in results.jsonl
 
@@ -501,6 +546,12 @@ def summary_tiles(layer: str, s: dict) -> str:
                  *[tile(pct(a[f]), f) for f in ("regions", "period_start", "cycle") if a.get(f) is not None]]
     elif layer in ("ablation", "l1-gold", "l1-pred") and (c := (s.get("combos") or {})):
         tiles = [tile(pct(c[k]["filter_recall"]), f"filter recall · {k}") for k in ("none", "all") if k in c]
+    elif layer == "ragas":
+        tiles = [tile("—" if v["mean"] is None else f"{v['mean']:.3f}", f"{name} (n={v['n']})")
+                 for name, v in (s.get("metrics") or {}).items() if not name.startswith("id_")]
+    elif layer == "online":
+        tiles = [tile("—" if v is None else f"{v:.3f}", name) for name, v in (s.get("metrics") or {}).items()]
+        tiles.append(tile(str((s.get("drift") or {}).get("status", "—")), "품질 저하 판정"))
     return f'<div class="tiles">{"".join(tiles)}</div>' if tiles else ""
 
 
@@ -513,14 +564,19 @@ def generic_rows_table(rows: list[dict]) -> str:
     """Scalar columns of the rows, problem rows first, at most ROW_CAP rows."""
     if not rows:
         return ""
-    cols = [k for k, v in rows[0].items() if k != "layer" and (v is None or isinstance(v, (str, int, float, bool)))][:10]
+    cols = [k for k, v in rows[0].items() if k not in ("layer", "question", "answer")
+            and (v is None or isinstance(v, (str, int, float, bool)))][:10]
+    if any(r.get("question") for r in rows):  # the question right after the id: what was asked, at a glance
+        cols.insert(1, "question")
     shown = sorted(rows, key=lambda r: not _problem(r))[:ROW_CAP]
-    cell = lambda v: f'<td class="num">{v:.1f}</td>' if isinstance(v, float) else f"<td>{esc('' if v is None else v)}</td>"  # noqa: E731
-    body = "".join("<tr>" + "".join(cell(r.get(c)) for c in cols) + "</tr>" for r in shown)
+    num = lambda v: f"{v:.3f}" if abs(v) <= 1 else f"{v:.1f}"  # noqa: E731  (scores and rates keep their decimals)
+    cell = lambda r, c: (q_cell(r) if c == "question" else f'<td class="num">{num(r[c])}</td>' if isinstance(r.get(c), float)  # noqa: E731
+                         else f"<td>{esc('' if r.get(c) is None else r.get(c))}</td>")
+    body = "".join("<tr>" + "".join(cell(r, c) for c in cols) + "</tr>" for r in shown)
     n_bad = sum(map(_problem, rows))
     more = f" · {ROW_CAP}행까지 표시, 전체는 results.jsonl" if len(rows) > ROW_CAP else ""
     return (f'<details class="card"><summary>행별 결과 ({len(rows):,}건, 주의 {n_bad:,}건 먼저{more})</summary><table><tr>'
-            + "".join(f"<th>{esc(c)}</th>" for c in cols) + "</tr>" + body + "</table></details>")
+            + "".join(f"<th>{esc('질문' if c == 'question' else c)}</th>" for c in cols) + "</tr>" + body + "</table></details>")
 
 
 def tool_chips(calls: list[dict]) -> str:
@@ -699,7 +755,7 @@ def render(run: Path, questions: dict[str, str] | None = None) -> str:
         dedicated = {"l1": l1_body, "l3": l3_body, "e2e": e2e_body, "agent": agent_body}
         body = (dedicated[layer](m, rows) if layer in dedicated else summary_tiles(layer, m["summary"]) + md_html(report))
         body += failures_body(m, rows) + search_failures_body(m, rows)
-        if layer in ("l1", "l3", "e2e"):
+        if layer in ("l1", "l3", "e2e", "ragas"):
             body += traces_body(m, rows)
         ops = ops_body(m["ops"], rows, history_of(layer))
         table = rows_table(layer, rows) if layer in ("l1", "l3", "e2e") else "" if layer == "agent" else generic_rows_table(rows)

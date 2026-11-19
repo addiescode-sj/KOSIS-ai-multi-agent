@@ -45,9 +45,10 @@ embed = [
     # Listed only to pin its index below (no CUDA wheels in the Linux image)
     "torch",
 ]
-# Async answer-quality eval (KOS-82, KOS-116): uv sync --group ragas
+# Ragas judge layer (T3-19, KOS-82, KOS-116): uv sync --group embed --group ragas. Pinned: evals/evaluators/ragas_metrics.py
+# stubs an import 0.4.3 needs (langchain_community.chat_models.vertexai) and the quality gate key carries the version
 ragas = [
-    "ragas",
+    "ragas==0.4.3",
 ]
 
 [tool.uv]
