@@ -214,7 +214,7 @@ def single_turns(graph, questions: list[tuple[str, str]], telemetry: tuple[Trace
     records of the summarize_stat output), search_spans (search graph nodes, for blame's lost_at), keys (search
     candidates in rank order), used_table (the table phase 1 answered from), plus the turn record's ops fields
     (LLM calls and tokens from the chat spans, the same rule as the agent layer) and its trace / span ids."""
-    from evals.trace import NodeSpans
+    from evals.trace import NodeSpans, restore_search
 
     provider, memory = telemetry
     tracer = provider.get_tracer("kosis-agent")
@@ -248,6 +248,7 @@ def single_turns(graph, questions: list[tuple[str, str]], telemetry: tuple[Trace
                      "failed": error is not None})
         progress(n + 1, len(questions), qid, started, error)
     provider.force_flush()
+    restore_search(rows)  # T3-45: a turn that raised after search keeps its candidates (from the node spans)
     return rows
 
 

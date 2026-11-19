@@ -18,6 +18,7 @@ from pydantic import ValidationError
 
 from evals.ops import tokens_of
 from evals.schemas import CalcItem
+from evals.trace import restore_search
 
 OPS_DEFAULTS = {"latency_ms": 0.0, "llm_calls": 0, "input_tokens": 0, "output_tokens": 0, "model": None,
                 "tokens_by_model": {}, "retried": False}
@@ -53,12 +54,14 @@ def read_rows(path: Path, items: list[CalcItem]) -> list[dict]:
         answer = _answer(r["answer"]) if r.get("answer") else None
         keys = r.get("keys") or r.get("top_keys") or []  # top_keys (5) in rows written before T3-39
         rows.append({"qid": item.qid, "answer": answer, "error": r.get("error"), "keys": keys,
-                     "used_table": r.get("used_table") or r.get("table_key"),
+                     # T3-45: a saved None stays None; table_key is the golden table, only for rows without the field
+                     "used_table": r["used_table"] if "used_table" in r else r.get("table_key"),
                      "spans": r.get("spans") or [], "search_spans": r.get("search_spans") or [],
                      "retrieve_ms": r.get("retrieve_ms", 0.0), "trace_spans": r.get("trace_spans") or [],
                      **{k: r.get(k, d) for k, d in OPS_DEFAULTS.items()},
                      "trace_id": r.get("trace_id"), "span_id": r.get("span_id"),
                      "failed": answer is None})
+    restore_search(rows)  # T3-45: runs before the fix saved a crashed turn without its search candidates
     return rows
 
 
