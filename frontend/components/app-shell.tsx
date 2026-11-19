@@ -7,8 +7,8 @@ import type { ReactNode } from "react";
 import { cn } from "cn";
 
 const NAV = [
-  { href: "/", label: "새 대화", icon: MessageSquarePlus, active: (p: string) => p === "/" || p.startsWith("/c/") },
-  { href: "/conversations", label: "대화 목록", icon: History, active: (p: string) => p === "/conversations" },
+  { href: "/", label: "새 대화", icon: MessageSquarePlus, active: (p: string) => p === "/" || p.startsWith("/chat/") },
+  { href: "/chat", label: "대화 목록", icon: History, active: (p: string) => p === "/chat" },
 ];
 
 // Sidebar + sticky header of every customer screen (prototype Layout). Login, notifications, settings and help
@@ -34,7 +34,7 @@ export function AppShell({ title, sub, actions, query, children }: {
         </a>
         <nav className="flex-1 space-y-1 p-4">
           {NAV.map((n) => {
-            // A plain link for "새 대화": the `/` page swaps its URL to /c/<id> in place, so a client-side
+            // A plain link for "새 대화": the `/` page swaps its URL to /chat/<id> in place, so a client-side
             // navigation to `/` could land on the same, already-filled page.
             const Item = n.href === "/" ? "a" : Link;
             return (

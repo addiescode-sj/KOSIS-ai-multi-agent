@@ -2,18 +2,20 @@
 
 import { CircleCheck, MessageSquare, Search, Trash2 } from "lucide-react";
 import Link from "next/link";
-import { useState, useSyncExternalStore } from "react";
+import { useState } from "react";
 
 import { AppShell } from "@/components/app-shell";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogTitle } from "@/components/ui/dialog";
-import { type Conversation, conversations, matchConversations } from "@/lib/conversations";
+import { Dialog } from "@/components/ui/dialog";
+import { conversations, matchConversations } from "@/lib/chat/conversations";
+import { useConversations } from "@/lib/chat/use-conversations";
+import type { Conversation } from "@/types/conversation";
 
-const EMPTY: Conversation[] = [];
+// `/chat`: the conversations saved in this browser.
 
 export default function ConversationsPage() {
-  const list = useSyncExternalStore(conversations.subscribe, conversations.list, () => EMPTY);
+  const list = useConversations();
   const [query, setQuery] = useState("");
   const [pending, setPending] = useState<Conversation | null>(null);
   const [deleted, setDeleted] = useState(false);
@@ -41,7 +43,7 @@ export default function ConversationsPage() {
                 <span className="flex size-10 shrink-0 items-center justify-center rounded-full border border-brand-100 bg-brand-50 text-brand-600">
                   <MessageSquare size={17} />
                 </span>
-                <Link href={`/c/${c.id}`} className="min-w-0 flex-1">
+                <Link href={`/chat/${c.id}`} className="min-w-0 flex-1">
                   <p className="truncate text-[15px] font-medium">{c.title}</p>
                   <p className="mt-0.5 text-xs text-mute">
                     {new Date(c.updatedAt).toLocaleString("ko-KR")} · 질문 {c.messages.filter((m) => m.role === "user").length}개
@@ -59,12 +61,12 @@ export default function ConversationsPage() {
           </Card>
         )}
       </div>
-      <Dialog open={pending !== null} onOpenChange={(open) => !open && setPending(null)}>
-        <DialogContent>
-          <DialogTitle>이 대화를 삭제하시겠습니까?</DialogTitle>
-          <DialogDescription>‘{pending?.title}’ 대화를 이 브라우저에서 지웁니다. 삭제하면 되돌릴 수 없습니다.</DialogDescription>
-          <DialogFooter>
-            <DialogClose asChild><Button variant="secondary">취소</Button></DialogClose>
+      <Dialog.Root open={pending !== null} onOpenChange={(open) => !open && setPending(null)}>
+        <Dialog.Content variant="destructive">
+          <Dialog.Title>이 대화를 삭제하시겠습니까?</Dialog.Title>
+          <Dialog.Description>‘{pending?.title}’ 대화를 이 브라우저에서 지웁니다. 삭제하면 되돌릴 수 없습니다.</Dialog.Description>
+          <Dialog.Footer>
+            <Dialog.Close asChild><Button variant="secondary">취소</Button></Dialog.Close>
             <Button
               variant="destructive"
               onClick={() => {
@@ -75,9 +77,9 @@ export default function ConversationsPage() {
             >
               삭제
             </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+          </Dialog.Footer>
+        </Dialog.Content>
+      </Dialog.Root>
     </AppShell>
   );
 }

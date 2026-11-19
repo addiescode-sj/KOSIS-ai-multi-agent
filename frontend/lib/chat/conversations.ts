@@ -1,17 +1,11 @@
-import type { ChatMessage } from "./chat-types.ts";
-import { textOf } from "./chat-types.ts";
+import type { ChatMessage } from "../../types/chat.ts";
+import type { Conversation } from "../../types/conversation.ts";
+
+import { textOf } from "./text.ts";
 
 // Conversations live in this browser only (guest use): GET /threads/{id} returns text without results, and the
 // backend checkpointer is in memory, so the turns as they were shown (results, charts, sources) are kept here.
 // threadId is the backend's id for the follow-up turns; it is gone after a backend restart (the proxy says so).
-
-export type Conversation = {
-  id: string;
-  title: string;
-  threadId: string | null;
-  updatedAt: number; // epoch ms
-  messages: ChatMessage[];
-};
 
 type KV = Pick<Storage, "getItem" | "setItem">;
 

@@ -85,3 +85,4 @@ docs/              제출 문서, current-state.md
 - 제공 데이터는 `data/`(gitignored)에 두고 Docker 이미지에 넣지 않는다 (compose가 읽기 전용 마운트).
 - 비자명한 로직(툴 선택·계산·채점)은 pytest 하나 이상을 남긴다.
 - frontend는 Next.js 16 — 코드 작성 전 `frontend/AGENTS.md` 지침대로 `node_modules/next/dist/docs/`를 확인한다.
+- frontend 컴포넌트는 한 파일에 하나만 둔다(PR #32 리뷰). 공통 계약 타입은 `frontend/types/`, zod 스키마는 쓰는 곳 가까이(`lib/chat/`·`lib/search/`·라우트 폴더). 단위 테스트는 Jest(`cd frontend && npx jest`).

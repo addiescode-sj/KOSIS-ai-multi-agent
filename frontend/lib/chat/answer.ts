@@ -1,10 +1,9 @@
-import type { ChatMessage } from "./chat-types.ts";
+import type { AnswerKind, Citation, Headline, Tone } from "../../types/answer.ts";
+import type { ChatMessage } from "../../types/chat.ts";
 import type { ChatResult, Fact } from "./schemas.ts";
 
 // Pure view logic over a ChatResult. Nothing here makes a number: values come from phase 1 facts as they are,
 // and every sentence shown is the backend's own text.
-
-export type AnswerKind = "answered" | "partial" | "clarify" | "refused" | "failed";
 
 export function answerKind(result: ChatResult): AnswerKind {
   const outcome = result.outcome ?? (result.no_answer ? "refused" : "answered"); // records older than T3-23
@@ -12,8 +11,6 @@ export function answerKind(result: ChatResult): AnswerKind {
   if (outcome === "answered" && subs.some((s) => s.outcome !== "answered")) return "partial";
   return outcome;
 }
-
-export type Headline = { value: string; unit: string | null; period: string | null };
 
 // The first number the answer cites (its first fact part). Shown only when the cell has a value; a fact with a
 // derivation carries its own rounding, which display keeps; a source cell is shown with all its digits.
@@ -35,8 +32,6 @@ export function formatValue(fact: Pick<Fact, "value" | "round">): string {
   });
 }
 
-export type Citation = { survey: string; table: string; url: string | null; text: string };
-
 // 출처: KOSIS / 조사명 / 통계표명 (+링크). The table phase 1 answered from first, else the table search picked.
 export function citation(result: ChatResult): Citation | null {
   const source = result.stat_answer?.source;
@@ -55,8 +50,6 @@ export function citation(result: ChatResult): Citation | null {
 export function refusalReason(result: ChatResult): string | null {
   return result.stat_answer?.refusal?.reason ?? result.no_answer_reason ?? null;
 }
-
-export type Tone = "amber" | "red" | "gray";
 
 // Phase 1 RefusalReason (kosis_ai.schemas) → the title of the refusal card. The body is the backend's message.
 export const REFUSALS: Record<string, { title: string; tone: Tone }> = {

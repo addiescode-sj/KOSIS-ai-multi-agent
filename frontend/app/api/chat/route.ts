@@ -1,9 +1,11 @@
 import { createUIMessageStream, createUIMessageStreamResponse } from "ai";
 
-import type { ChatMessage } from "@/lib/chat-types";
-import { textOf } from "@/lib/chat-types";
-import { ChatRequestBody, ChatResult, Meta } from "@/lib/schemas";
+import { ChatResult } from "@/lib/chat/schemas";
+import { textOf } from "@/lib/chat/text";
 import { parseSSE } from "@/lib/sse";
+import type { ChatMessage } from "@/types/chat";
+
+import { ChatRequestBody, Meta } from "./schemas";
 
 // Proxy to the FastAPI agent graph (POST /chat/stream), re-sent as the AI SDK UI message stream:
 //   meta -> data-meta (thread_id for the next turn), each phase 2 search node -> data-node, stat -> data-stat,

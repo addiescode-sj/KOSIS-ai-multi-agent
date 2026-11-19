@@ -5,6 +5,13 @@ const nextConfig: NextConfig = {
   output: "standalone",
   cacheComponents: true,
   partialPrefetching: true,
+  // Routes renamed in PR #32 review: keep old links working
+  async redirects() {
+    return [
+      { source: "/c/:id", destination: "/chat/:id", permanent: true },
+      { source: "/conversations", destination: "/chat", permanent: true },
+    ];
+  },
   turbopack: {
     // Repo root has its own package-lock.json (harness scripts); pin the app root here
     root: __dirname,

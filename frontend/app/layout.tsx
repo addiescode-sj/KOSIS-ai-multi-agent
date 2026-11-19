@@ -1,6 +1,8 @@
 import type { Metadata } from "next";
 import "./globals.css";
 
+import { Providers } from "./providers";
+
 export const metadata: Metadata = {
   title: "KOSIS 통계 AI",
   description: "말로 물으면 KOSIS 통계표에서 코드가 계산한 수치와 출처를 함께 답합니다.",
@@ -16,7 +18,9 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
           href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css"
         />
       </head>
-      <body className="min-h-full">{children}</body>
+      <body className="min-h-full">
+        <Providers>{children}</Providers>
+      </body>
     </html>
   );
 }

@@ -6,7 +6,8 @@ import {
   Sector, Tooltip, XAxis, YAxis, type BarShapeProps, type PieSectorShapeProps, type TooltipContentProps,
 } from "recharts";
 
-import { type ChartView, type Point, toChartView } from "@/lib/chart";
+import { toChartView } from "@/lib/chat/chart";
+import type { ChartView, Point } from "@/types/chart";
 
 // Draws ChatResult.chart (phase 1 Vega-Lite) with Recharts through lib/chart.ts (T3-11 Change 1). Bar heights,
 // points and slices are the backend's values; labels and tooltips are its display strings (`표시`) as they are.

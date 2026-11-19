@@ -1,6 +1,6 @@
 import type { UIMessage } from "ai";
 
-import type { ChatResult } from "./schemas.ts";
+import type { ChatResult } from "../lib/chat/schemas.ts";
 
 // Data parts /api/chat writes into the assistant message (AI SDK UI message stream):
 //   node   — a finished phase 2 search node (parse, retrieve, rerank1, rerank2, gate, ...) and its seconds
@@ -19,7 +19,3 @@ export type ChatData = {
 };
 
 export type ChatMessage = UIMessage<never, ChatData>;
-
-export function textOf(message: Pick<ChatMessage, "parts">): string {
-  return message.parts.map((p) => (p.type === "text" ? p.text : "")).join("");
-}

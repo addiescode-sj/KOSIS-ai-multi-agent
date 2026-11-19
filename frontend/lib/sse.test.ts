@@ -1,6 +1,4 @@
-// Run: node --test lib/sse.test.ts (Node 24 strips the types)
-import assert from "node:assert/strict";
-import { test } from "node:test";
+import { expect, test } from "@jest/globals";
 
 import { parseSSE } from "./sse.ts";
 
@@ -22,7 +20,7 @@ test("events split across chunks, keep-alive comments and CRLF", async () => {
   ]);
   const events = [];
   for await (const e of parseSSE(body)) events.push(e);
-  assert.deepEqual(events, [
+  expect(events).toEqual([
     { event: "parse", data: '{"seconds": 0.1}' },
     { event: "result", data: '{"answer": "a: b"}' },
   ]);

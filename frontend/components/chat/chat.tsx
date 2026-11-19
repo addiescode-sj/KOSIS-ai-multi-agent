@@ -8,14 +8,17 @@ import { useEffect, useRef, useState } from "react";
 import { AppShell } from "@/components/app-shell";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { type ChatMessage, textOf } from "@/lib/chat-types";
-import { type Conversation, conversations, titleOf } from "@/lib/conversations";
+import { conversations, titleOf } from "@/lib/chat/conversations";
+import { EXAMPLES } from "@/lib/chat/examples";
+import { textOf } from "@/lib/chat/text";
+import type { ChatMessage } from "@/types/chat";
+import type { Conversation } from "@/types/conversation";
 
-import { AssistantMessage, EXAMPLES } from "./answer";
+import { AssistantMessage } from "./answer/assistant-message";
 import { Composer } from "./composer";
 
 // One conversation. `/` starts a new one (empty state = the prototype home); the first question moves the URL to
-// /c/<id> without a remount. Turns are saved to this browser (lib/conversations) when a reply ends, and the
+// /chat/<id> without a remount. Turns are saved to this browser (lib/conversations) when a reply ends, and the
 // backend thread_id from `meta` goes back with the next question so follow-ups carry the context (multi-turn).
 export function Chat({ id, initial, prefill }: { id: string; initial: Conversation | null; prefill?: string }) {
   const threadId = useRef<string | null>(initial?.threadId ?? null);
@@ -24,6 +27,9 @@ export function Chat({ id, initial, prefill }: { id: string; initial: Conversati
     id,
     messages: initial?.messages ?? [],
     transport,
+    // One render per 50 ms instead of per token: the draft is the whole text so far, so a skipped update loses
+    // nothing, and the smooth scroll below no longer restarts on every token.
+    throttle: 50,
     onData: (part) => {
       if (part.type === "data-meta") threadId.current = part.data.threadId;
     },
@@ -43,8 +49,8 @@ export function Chat({ id, initial, prefill }: { id: string; initial: Conversati
 
   function send(text: string) {
     if (!text.trim() || busy) return;
-    if (messages.length === 0 && window.location.pathname !== `/c/${id}`) {
-      window.history.replaceState(null, "", `/c/${id}`); // Next's router picks this up; no remount
+    if (messages.length === 0 && window.location.pathname !== `/chat/${id}`) {
+      window.history.replaceState(null, "", `/chat/${id}`); // Next's router picks this up; no remount
     }
     sendMessage({ text: text.trim() }, { body: { threadId: threadId.current } });
   }

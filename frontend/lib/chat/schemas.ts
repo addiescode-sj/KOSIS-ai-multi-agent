@@ -1,22 +1,10 @@
 import { z } from "zod";
 
-// Runtime mirrors of the backend Pydantic contracts the UI reads. Only the fields the screens use are listed;
-// unknown fields pass through (looseObject) so a backend addition never breaks the page.
-// Sources: ChatResult (src/kosis_agent/graph/state.py), TableCandidate (vendor/phase2 kosis_rag.schemas),
-// StatAnswer and parts (vendor/phase1 kosis_ai.schemas), SearchOutput (/tools/search_tables).
+import { TableCandidate } from "../search/schemas.ts";
 
-export const TableCandidate = z.looseObject({
-  key: z.string(),
-  org_id: z.string(),
-  tbl_id: z.string(),
-  table_name: z.string(),
-  survey_name: z.string(),
-  organization: z.string(),
-  period: z.string(),
-  url: z.string(),
-  score: z.number().nullish(),
-});
-export type TableCandidate = z.infer<typeof TableCandidate>;
+// Runtime mirrors of the backend Pydantic contracts the chat screens read. Only the fields the screens use are
+// listed; unknown fields pass through (looseObject) so a backend addition never breaks the page.
+// Sources: ChatResult (src/kosis_agent/graph/state.py), StatAnswer and parts (vendor/phase1 kosis_ai.schemas).
 
 export const Fact = z.looseObject({
   id: z.string(),
@@ -89,21 +77,3 @@ export const ChatResult = z.looseObject({
   sub_results: z.array(SubResult).nullish(),
 });
 export type ChatResult = z.infer<typeof ChatResult>;
-
-export const SearchOutput = z.looseObject({
-  question: z.string(),
-  route: z.string(),
-  picked: z.array(TableCandidate).default([]),
-  candidates: z.array(TableCandidate).default([]),
-  refusal_text: z.string().nullish(),
-});
-export type SearchOutput = z.infer<typeof SearchOutput>;
-
-// The first SSE event of a turn
-export const Meta = z.looseObject({ thread_id: z.string(), trace_id: z.string().nullish() });
-
-// What the browser posts to /api/chat besides the AI SDK messages
-export const ChatRequestBody = z.object({
-  messages: z.array(z.looseObject({ role: z.string(), parts: z.array(z.looseObject({ type: z.string() })) })),
-  threadId: z.string().min(1).nullish(),
-});

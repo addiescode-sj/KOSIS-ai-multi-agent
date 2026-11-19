@@ -3,12 +3,12 @@
 import { MessageSquareOff } from "lucide-react";
 import { useSearchParams } from "next/navigation";
 import Link from "next/link";
-import { use, useState, useSyncExternalStore } from "react";
+import { use, useState } from "react";
 
 import { AppShell } from "@/components/app-shell";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { conversations } from "@/lib/conversations";
+import { useConversation } from "@/lib/chat/use-conversations";
 
 import { Chat } from "./chat";
 
@@ -21,15 +21,11 @@ export function NewChat() {
   return <Chat key={id} id={id} initial={null} prefill={prefill} />;
 }
 
-// `/c/[id]`: a conversation saved in this browser, shown as it was (results, charts, sources) and continued.
+// `/chat/[id]`: a conversation saved in this browser, shown as it was (results, charts, sources) and continued.
 export function SavedChat({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
-  const conversation = useSyncExternalStore(
-    conversations.subscribe,
-    () => conversations.get(id),
-    () => undefined, // server render: not read yet
-  );
-  if (conversation === undefined) return null;
+  const conversation = useConversation(id);
+  if (conversation === undefined) return <AppShell title="대화" sub="이 브라우저에 저장된 대화를 읽는 중"><div /></AppShell>; // server render: storage not read yet
   if (conversation === null) {
     return (
       <AppShell title="대화를 찾을 수 없습니다">
