@@ -1,4 +1,5 @@
 import { defaultShouldDehydrateQuery, dehydrate, HydrationBoundary, QueryClient } from "@tanstack/react-query";
+import { connection } from "next/server";
 import { Suspense } from "react";
 
 import { AppShell } from "@/components/app-shell";
@@ -16,7 +17,9 @@ export default function Page({ searchParams }: PageProps<"/search">) {
   );
 }
 
-function SearchData({ q }: { q: string }) {
+async function SearchData({ q }: { q: string }) {
+  // QueryClient and dehydrate() read the current time: request time only, never in the prerendered shell
+  await connection();
   const queryClient = new QueryClient();
   if (q) void queryClient.prefetchQuery({ ...tablesQuery(q), queryFn: () => searchTables(q) }); // not awaited
   return (
