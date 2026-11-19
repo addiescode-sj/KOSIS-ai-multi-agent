@@ -4,6 +4,7 @@ import {
   AlertTriangle, Ban, CalendarX2, Check, CircleCheck, CircleSlash, ExternalLink, HelpCircle, Info, ListX, Loader2,
   Scale, SearchX, Sigma, type LucideIcon,
 } from "lucide-react";
+import dynamic from "next/dynamic";
 import type { ComponentProps, ReactNode } from "react";
 import { cn } from "cn";
 
@@ -15,7 +16,11 @@ import {
 import type { ChatMessage } from "@/lib/chat-types";
 import type { ChatResult } from "@/lib/schemas";
 
-import { VegaChart } from "./vega-chart";
+// Recharts loads only when an answer has a chart (the home page and refusals do not need it)
+const StatChart = dynamic(() => import("./stat-chart").then((m) => m.StatChart), {
+  ssr: false,
+  loading: () => <div className="h-[220px] animate-pulse rounded-xl bg-canvas" />,
+});
 
 export const EXAMPLES = ["2023년 합계출산율은?", "2024년 출생아 수와 사망자 수 알려 줘", "최근 5년 혼인 건수 추이", "서울 고령 인구 비율"];
 
@@ -146,7 +151,7 @@ function Answered({ result }: { result: ChatResult }) {
               {head.period && <p className="mt-3 text-xs text-mute">기준 기간: {head.period}</p>}
             </div>
           )}
-          {result.chart && <VegaChart spec={result.chart} />}
+          {result.chart && <StatChart spec={result.chart} />}
         </div>
       )}
       <div className="space-y-1 border-t border-line pt-5">
@@ -172,7 +177,7 @@ function Partial({ result }: { result: ChatResult }) {
       <div className="space-y-3 border-t border-line pt-5">
         <p className="flex items-center gap-2 text-sm font-semibold text-emerald-700"><CircleCheck size={16} />답변 가능한 내용</p>
         {ok.map((s) => <p key={s.question} className="text-[15px] leading-relaxed whitespace-pre-wrap">{s.text}</p>)}
-        {result.chart && <VegaChart spec={result.chart} />}
+        {result.chart && <StatChart spec={result.chart} />}
       </div>
       <div className="space-y-1.5 rounded-xl border border-dashed border-amber-300 bg-amber-50/60 p-4">
         <p className="flex items-center gap-2 text-sm font-semibold text-amber-800"><CircleSlash size={16} />답변하지 못한 내용</p>
