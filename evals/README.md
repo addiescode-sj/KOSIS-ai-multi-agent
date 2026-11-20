@@ -214,8 +214,9 @@ python -m evals.run_eval --layer e2e --stage <이름> --oracle   # 자기검증 
 python -m evals.run_eval --layer e2e --stage <이름> --calc-golden evals/datasets/calculation_golden.jsonl  # 예전 한 턴 계산 경로
 ```
 
-e2e는 `--calc-golden`이 없으면 이 시나리오를 돈다. 오프라인 스위트(`evals.suite`)의 e2e → Ragas → 회귀 게이트는 기준선 연속성을 위해
-계속 `calculation_golden.jsonl` 경로로 돈다(Ragas는 한 턴 계산 행을 읽음). 규칙을 고친 뒤에는 빌더를 다시 돌려 `rule_pred`를 새로 만든다.
+e2e는 `--calc-golden`이 없으면 이 시나리오를 돈다. 오프라인 스위트(`evals.suite`, `scripts/dev.sh suite`)의 `e2e` → Ragas → 회귀 게이트는
+기준선 연속성을 위해 계속 `calculation_golden.jsonl` 경로로 돌고(Ragas는 한 턴 계산 행을 읽음), 이 골든셋은 스위트의 `rules`(오프라인)와
+`e2e-scenarios`(live) 단계가 돈다. 하나만: `bash scripts/dev.sh suite --stage <ID> --only rules e2e-scenarios`. 규칙을 고친 뒤에는 빌더를 다시 돌려 `rule_pred`를 새로 만든다.
 
 ### 검색기를 바꿀 때 판정 풀 넓히기 (T3-22)
 

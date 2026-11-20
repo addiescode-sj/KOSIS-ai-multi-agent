@@ -22,7 +22,7 @@ def opts(**kw) -> Namespace:
                         "scenarios": None, "repeat": 1, **kw})
 
 
-ALL_OK = {n: (True, "ok") for n in ("data", "v2", "chroma", "rerank", "llm", "agent", "judge")}
+ALL_OK = {n: (True, "ok") for n in ("data", "v2", "chroma", "rerank", "llm", "agent", "judge", "e2e_golden")}
 
 
 def test_unready_runs_are_skipped_with_the_reason_and_failures_do_not_stop_the_suite(tmp_path):
@@ -117,3 +117,25 @@ def test_markdown_shows_checks_runs_and_deltas():
     md = suite.markdown(s)
     assert "| chroma | ✕ | 응답 없음 |" in md and "| Hit@5 | 0.700 | 0.750 | +0.050 |" in md and "경로 확인용" in md
     assert "report.html" in suite.html_page(s, md)
+
+
+def test_e2e_golden_runs_in_the_suite(tmp_path):
+    # T3-46: rules (offline label accuracy) and e2e-scenarios (the e2e golden set) are suite runs of their own
+    labels = {"fields": {"route": {"acc": 0.9, "n": 10}, "formula": {"acc": 0.6, "n": 5}, "op": {"acc": 1.0, "n": 1}}}
+    agent_rates = {k: 0.5 for k in ("conversation_success", "turn_pass", "tool_selection", "state_accuracy", "numeric_accuracy")}
+    calls = []
+
+    def fake_main(argv):
+        calls.append(argv)
+        layer = argv[argv.index("--layer") + 1]
+        summary = labels if layer == "rules" else {**agent_rates, "labels": labels}
+        return manifest(tmp_path / f"run-{len(calls)}", layer, argv[argv.index("--stage") + 1], summary, llm="hcx")
+
+    s = suite.run(opts(llm="hcx", only=["rules", "e2e-scenarios"]), main=fake_main, checks=ALL_OK)
+    runs = {r["name"]: r for r in s["runs"]}
+    assert runs["rules"]["metrics"] == {"라벨 route": 0.9, "라벨 formula": 0.6}
+    assert runs["e2e-scenarios"]["metrics"]["conversation_success"] == 0.5 and runs["e2e-scenarios"]["metrics"]["라벨 route"] == 0.9
+    e2e = calls[1]
+    assert "--calc-golden" not in e2e and "--split" in e2e and "--llm" in e2e  # the scenario path, live model
+    skipped = suite.run(opts(only=["rules"]), main=fake_main, checks={**ALL_OK, "e2e_golden": (False, "없음")})
+    assert skipped["runs"][0]["status"] == "skipped"

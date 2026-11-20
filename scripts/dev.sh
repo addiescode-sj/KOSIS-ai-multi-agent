@@ -10,7 +10,8 @@
 #
 # Evaluation pipeline (T3-43, plans/T3-43.md):
 #   bash scripts/dev.sh suite --stage <ID>                  # offline: fixed golden set, L0-L4 + agent, e2e -> Ragas,
-#                                                            #   baseline comparison, regression gate (exit 2 on a drop)
+#                                                            #   baseline comparison, regression gate (exit 2 on a drop),
+#                                                            #   + T3-46 e2e golden: rules (offline) · e2e-scenarios (live)
 #   bash scripts/dev.sh online --stage <ID>-online [--lookback 24h --sample 40]
 #                                                            # online: service traces from Jaeger -> code checks on every
 #                                                            #   turn, Ragas on a sample, drift (exit 3), failure cases
