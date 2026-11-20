@@ -45,7 +45,9 @@ RUNS: list[tuple[str, list[str], set[str], str]] = [
     ("l2-v1", ["--layer", "l2", "--split", "all"], {"data"}, "질의 파서 (규칙)"),
     ("l2-v2", ["--layer", "l2", "--split", "all", "--query-golden", str(DATASETS / "query_golden_v2.jsonl")], {"data", "v2"}, "질의 파서, 골든 v2"),
     ("l3", ["--layer", "l3"], {"data", "llm"}, "에이전트 그래프 한 턴, 정답 표 검색(oracle) → summarize_stat 실호출"),
-    ("e2e", ["--layer", "e2e"], {"data", "chroma", "rerank", "llm"}, "서비스 에이전트 그래프 한 턴 (검색 → summarize_stat)"),
+    # T3-46: the calculation golden path (ragas and the regression gate read its rows); e2e-scenarios is the new set
+    ("e2e", ["--layer", "e2e", "--calc-golden", str(DATASETS / "calculation_golden.jsonl")], {"data", "chroma", "rerank", "llm"},
+     "서비스 에이전트 그래프 한 턴 (검색 → summarize_stat), 계산 골든 90문항"),
     # T3-43: judges this suite's e2e answers (--from-run is added by run()); skipped after a mock or missing e2e
     ("ragas", ["--layer", "ragas"], {"data", "judge"}, "Ragas 심판 (e2e 답: Faithfulness·Relevancy·Context P/R) → 회귀 게이트"),
     ("agent", ["--layer", "agent"], {"agent"}, "멀티턴 시나리오 → 에이전트 (T3-06)"),

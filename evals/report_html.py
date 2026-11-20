@@ -749,7 +749,10 @@ def render(run: Path, questions: dict[str, str] | None = None) -> str:
     meta = (f'{esc(m["run_id"])} · {esc(target)} · {"split " + esc(m["split"]) + " · " if m.get("split") else ""}'
             f'{golden_label(m)} · tables.jsonl {esc(m["source_snapshot"]["tables.jsonl"][:12])} · '
             f'git {esc(m["git"][:8])}{" (dirty)" if m.get("git_dirty") else ""}')
-    if layer == "l012":
+    if layer == "e2e" and "labels" in (m.get("summary") or {}):  # T3-46: e2e golden scenarios = agent rows + labels
+        body = agent_body(m, rows) + md_html("## 분류 라벨" + report.split("## 분류 라벨", 1)[-1])
+        ops, table = ops_body(m["ops"], rows, history_of(layer)), ""
+    elif layer == "l012":
         body, ops, table = l012_body(m, rows, report), "", ""
     else:
         dedicated = {"l1": l1_body, "l3": l3_body, "e2e": e2e_body, "agent": agent_body}

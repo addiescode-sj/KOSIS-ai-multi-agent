@@ -147,8 +147,16 @@ def scan(items: list[CalcItem], values_dir: Path | None = None) -> list[dict]:
         cells = cells_with_values(path, values)
         if not cells:
             continue
+        # T3-46: index by value so each item scans only its own values' cells (cells are exact is_in hits, so
+        # fits() never accepts a cell outside them); 0/1/small rates of 525 items made the full scan quadratic
+        by_value: dict[float, list[Cell]] = defaultdict(list)
+        for c in cells:
+            by_value[c.value].append(c)
         for item in targets:
-            if (refs := match(item, cells)) is None:
+            wanted = {float(f.value) for f in cell_facts(item)}
+            if any(v not in by_value for v in wanted):
+                continue
+            if (refs := match(item, [c for v in wanted for c in by_value[v]])) is None:
                 continue
             if path.stem == item.table_key:
                 self_found.add(item.qid)

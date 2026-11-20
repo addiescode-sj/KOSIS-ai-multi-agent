@@ -10,7 +10,9 @@ from evals.evaluators import calculation
 from evals.schemas import ROOT, AgentScenario, load_jsonl
 from evals.tasks.common import calc_items
 
-TASK_NAMES = {"multiturn": "멀티턴 (MT-*)", "multiquery": "멀티쿼리 (MQ-*)", "other": "기타"}
+TASK_NAMES = {"multiturn": "멀티턴 (MT-*)", "multiquery": "멀티쿼리 (MQ-*)", "e2e_numbers": "① 숫자 추출·계산 (E2E-N)",
+              "e2e_formula": "② 수식 선택 (E2E-F)", "e2e_rewrite": "③ 멀티턴·멀티쿼리 재작성 (E2E-R)",
+              "e2e_classify": "④ 질문 분류 (E2E-C)", "other": "기타"}
 
 
 def paths(scenarios) -> list:
