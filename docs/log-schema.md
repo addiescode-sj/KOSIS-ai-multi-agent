@@ -35,7 +35,7 @@
 | 열 | 뜻 | 비고 |
 |---|---|---|
 | `request_id` | 질문 1건의 ID = 그 턴의 **OTel trace id** (32자리 hex, 기본 키) | 서비스가 SSE 첫 이벤트 `meta`로 이미 보낸다. 피드백·화면 이벤트가 이 값으로 붙고, 그대로 Jaeger 검색어다. 추적이 꺼진 no-op 값(0)은 막는다 |
-| `conversation_id`, `turn_index` | 대화(`thread_id` = `gen_ai.conversation.id`, 최대 64자 문자열)와 턴 번호(`kosis.turn.index`, **0부터**) | 외래 키가 아닌 값이다(아래 설명). `(conversation_id, turn_index)` 인덱스, 재시도가 있어 unique가 아니다 |
+| `conversation_id`, `turn_index` | 대화(`thread_id` = `gen_ai.conversation.id`, 최대 64자 문자열)와 턴 번호(`kosis.turn.index`, **0부터**) | 외래 키가 아닌 값이다(아래 설명). `(conversation_id, turn_index)` 인덱스, 재시도가 있어 unique가 아니다. 클라이언트가 64자보다 긴 `thread_id`를 보내면 그 sha256(64자)을 넣는다(행이 거부되지 않고, 대화마다 값이 하나) |
 | `prev_request_id` | 같은 대화의 직전 질문 | 재질문 탐지(KOS-176) |
 | `session_id` | 브라우저 세션(임의 UUID) | 사람을 식별하지 않는다. 하네스 요청은 비어 있다 |
 | `is_member`, `is_internal` | 회원 여부, 팀·하네스 트래픽 여부 | 지표는 `is_internal`을 뺀다 |
@@ -69,6 +69,7 @@
 
 서비스는 턴마다 `invoke_agent` 루트 span 아래에 노드·툴·LLM span을 남긴다(`kosis_agent/observability/tracing.py`).
 `row_from_turn(끝난 span 목록, ChatResult)`이 그 값을 한 행으로 옮긴다. 언제 부르고 어디에 쓸지는 수집(KOS-170)이 정한다.
+단, **루트 span이 끝난 뒤(`root.end()` 다음)** 불러야 한다. 끝나지 않은 루트면 `latency_ms`가 비어 있다. 루트에 대화 ID나 턴 번호가 없으면 `ValueError`를 낸다(없는 값으로 채우면 다른 질문과 잘못 이어진다).
 
 | 열 | 가져오는 곳 |
 |---|---|
@@ -79,7 +80,7 @@
 | `picked_key`, `survey_name` | `ChatResult.table_key`, 같은 키의 `picked[].survey_name` |
 | `has_numbers`, `has_chart` | 답함이고 `stat_answer`가 있음, `chart`가 있음 |
 | `latency_ms` | 루트 span 길이 |
-| `failed_stage` | 루트 아래 span을 시작 순서대로 읽은 단계(`step_spans`, 저장 안 함) 중 처음으로 `ok`가 아닌 것. `kind`: `gen_ai.operation.name`이 `chat`이면 `llm`, `execute_tool`이면 `tool`, 나머지 `node`. `stage`: 자기 이름 또는 가장 가까운 상위 span 이름으로 정한다(`search`·`search_tables` → search, `statistics`·`summarize_stat` → stat, `chart`·`make_chart` → chart, 그 밖 → agent) |
+| `failed_stage` | 루트 아래 span을 시작 순서대로 읽은 단계(`step_spans`, 저장 안 함) 중 처음으로 `ok`가 아닌 것. **이탈(`aborted`)이면 비운다**: 스트림이 닫힐 때(`GeneratorExit`) 돌던 노드 span이 오류로 끝날 수 있어, 그대로 두면 사용자가 떠난 것이 실패 단계로 잡힌다. `kind`: `gen_ai.operation.name`이 `chat`이면 `llm`, `execute_tool`이면 `tool`, 나머지 `node`. `stage`: 자기 이름 또는 가장 가까운 상위 span 이름으로 정한다(`search`·`search_tables` → search, `statistics`·`summarize_stat` → stat, `chart`·`make_chart` → chart, 그 밖 → agent) |
 | `llm_calls`, 토큰 | 같은 단계 중 `kind = llm`의 수, `gen_ai.usage.*` 합 |
 | `question` | 수집이 가린 원문. 하네스면 버린다 |
 | `first_token_ms`, `session_id`, `is_member`, `input_method`, `prev_request_id` | 화면·수집이 넘긴 값 |
@@ -179,7 +180,7 @@ CREATE INDEX ix_request_logs_session_id ON request_logs (session_id);
 | 요약 | 질문 수 | `request_logs` | 확인 (`question_count`) |
 | | 답함·거절·되묻기·오류 비율 | `request_logs.outcome` | 확인 (`outcome_share`) |
 | | 👍 비율 | `feedback` | SQL만 (KOS-158 뒤) |
-| | 응답 지연 p50·p95 | `request_logs.latency_ms` | 확인 (`latency`) |
+| | 응답 지연 p50·p95 | `request_logs.latency_ms`, 끝까지 간 턴만(이탈·오류 제외) | 확인 (`latency`) |
 | 답 품질 | 거절 사유 분포 | `reason_code` | 확인 (`refusal_reasons`) |
 | | 👎 이유 분포 | `feedback` | SQL만 |
 | | 👍 이유 분포 | `feedback` | SQL만 |
@@ -191,13 +192,14 @@ CREATE INDEX ix_request_logs_session_id ON request_logs (session_id);
 | | 출처 클릭률 | `ui_events` ÷ `has_numbers` | SQL만 |
 | | 답 전 이탈률 | `outcome = 'aborted'` | 확인 (`outcome_share`의 한 줄) |
 | 성능·비용 | 단계별 지연 p50·p95, 오류율 | Prometheus `kosis.agent.step.duration` | 조회식만 (10장, 계측은 에이전트 담당) |
-| | 첫 글자까지 시간 | `first_token_ms` | 확인 (`first_token`) |
+| | 첫 글자까지 시간 | `first_token_ms`, 끝까지 간 턴만(이탈·오류 제외) | 확인 (`first_token`) |
 | | 질문당 LLM 호출·토큰 | `llm_calls`, 토큰 | 확인 (`llm_usage`) |
 | | 모델별 토큰·비용 | Prometheus `gen_ai.client.token.usage` (이미 계측됨) | 조회식만 (10장), 비용은 모델별 토큰에 단가표를 곱함 |
 | | 로그 품질 | `ingest_rejects`, 짝 없는 질문 | SQL만 (KOS-170 뒤) |
 
 - DB 확인 9개(SQL 9개), DB SQL만 7개, Prometheus 조회식 2개(로그 버전 3에서 옮김). 지표는 19줄이 됐다("질문당 LLM 호출·토큰·비용"을 DB·Prometheus 두 줄로 나눔). 초안의 "답 전 이탈률"은 화면 이벤트 `stream_abort`로 세려 했으나, 서버가 아는 `outcome = 'aborted'`로 바꿔 지금 확인할 수 있게 했다.
-- 모든 지표는 `is_internal`을 빼고, UTC로 저장된 시각을 KST 날짜로 바꿔 하루 단위로 센다.
+- 모든 지표는 `is_internal`을 빼고 KST 하루 단위로 센다. KST 날짜를 UTC 범위 `[00:00 KST, 다음 날 00:00 KST)`로 바꿔 `created_at`과 비교한다(`day_range`, `created_at` 인덱스를 탄다).
+- 응답 지연·첫 글자 시간은 이탈·오류 턴을 뺀다. 이탈은 사용자가 떠난 시점, 오류는 예외 시점에서 끝나 값이 짧게 잡히고 분위수를 끌어내린다. 이탈률은 `outcome_share`가 따로 보여 준다.
 
 <details><summary>아직 테이블이 없어 SQL만 적어 둔 지표</summary>
 
@@ -295,11 +297,13 @@ TEST_DATABASE_URL=postgresql+psycopg://kosis:kosis@localhost:5432/kosis_test PYT
 - 이름에는 고정된 값만 넣는다: 노드·툴·모델 이름, 상태, 예외 **이름**(`error.type`).
 - 하네스 트래픽: 평가는 별도 provider(`deployment.environment.name=eval`)라 서비스 메트릭에 섞이지 않는다. HTTP로 서비스를 부르는 하네스 요청은 `kosis.internal=true` 속성을 붙인다(요청 표시는 수집 KOS-170이 정함).
 - 질문 한 건과 잇기: 히스토그램에 trace id를 속성으로 넣지 않는다. 대신 exemplar로 붙인다. `LiveSpans`는 현재 context 없이 부모를 직접 넘기므로, 기록할 때 해당 span의 context를 넘겨야 exemplar가 붙는다.
-- 히스토그램 구간(초): `0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 20, 30, 45, 60, 120`. 기본 구간은 rerank1(CPU 25~40초)을 구분하지 못한다. View로 지정한다.
+- 히스토그램 구간은 세 메트릭 모두 View로 지정한다. OTel SDK 기본 구간(`0, 5, 10, 25, …`)으로는 아래 조회식이 동작하지 않는다.
+  - `kosis.agent.step.duration`(초): `0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 20, 30, 45, 60, 120`. 기본 구간은 rerank1(CPU 25~40초)을 구분하지 못한다.
+  - `kosis.agent.node.visits`, `kosis.llm.attempts`(횟수): `1, 2, 3, 5, 10`. 10.3의 "2번 이상" 조회식이 `le="1"` 구간을 읽는데, 기본 구간에는 1 경계가 없어 빈 결과가 된다.
 
 ### 10.3 조회식 (PromQL)
 
-Prometheus OTLP 수신은 이름의 `.`을 `_`로 바꾸고 단위 접미사를 붙인다(`kosis.agent.step.duration` → `kosis_agent_step_duration_seconds`). 서비스·평가 구분(`deployment.environment.name`)은 resource 속성이라, 수신 설정에서 라벨로 올려야 한다(10.4). 아래 `$env`는 `deployment_environment_name="service"`다.
+Prometheus OTLP 수신은 이름의 `.`을 `_`로 바꾸고 단위 접미사를 붙인다(`kosis.agent.step.duration` → `kosis_agent_step_duration_seconds`). 서비스·평가 구분(`deployment.environment.name`)은 resource 속성이라, 수신 설정에서 라벨로 올려야 한다(10.4). 아래 `$env`는 `deployment_environment_name="service", kosis_internal!="true"`다. 평가 provider는 첫 조건이, HTTP로 서비스를 부르는 하네스 요청은 둘째 조건이 뺀다(DB 지표가 `is_internal`을 빼는 것과 같은 기준). 속성이 없는 사용자 요청은 `!="true"`에 걸리지 않는다.
 
 ```promql
 # 단계별 지연 p95 (하루)
@@ -322,6 +326,7 @@ sum by (gen_ai_request_model) (increase(kosis_llm_finishes_total{$env, gen_ai_re
 
 - 메트릭 화면 성능·비용 탭은 이 조회식을 Prometheus HTTP API로 읽는다. 요약·답 품질·사용 패턴 탭은 지금처럼 DB SQL이다.
 - 일별 집계(`daily_metrics`, KOS-167)에 노드 지표를 함께 남기려면 정제 배치가 하루 한 번 위 조회식 결과를 받아 적는다. Prometheus 보관 기간이 지나도 일별 값이 남는다.
+  - 조회 시각은 **KST 자정**으로 준다(HTTP API `query`의 `time` = 그날 다음 날 00:00 KST). 그래야 `[1d]` 창이 DB 지표와 같은 하루가 된다.
 - 손 계산 대조는 계측(10.2)이 들어온 뒤 메모리 메트릭 리더로 한다. 이 문서 단계에서는 조회식만 있다.
 
 ### 10.4 수집 구성 (인프라 담당에게 요청)
@@ -331,6 +336,7 @@ sum by (gen_ai_request_model) (increase(kosis_llm_finishes_total{$env, gen_ai_re
   - ① 서비스 메트릭 내보내기를 HTTP 방식으로 바꾼다(`opentelemetry-exporter-otlp-proto-http`, endpoint `http://prometheus:9090/api/v1/otlp/v1/metrics`).
   - ② 사이에 OpenTelemetry Collector를 둔다(OTLP gRPC 수신 → Prometheus 내보내기).
 - 수신 설정에서 `deployment.environment.name`을 라벨로 올린다(`otlp.promote_resource_attributes`). 그래야 서비스와 평가를 나눌 수 있다.
+- exemplar(질문 한 건과 잇기, 10.2)를 저장하려면 Prometheus를 `--enable-feature=exemplar-storage`로 띄운다. 끄면 exemplar는 버려진다.
 - 보관 기간: 메트릭에는 원문이 없어 30일 규칙 대상이 아니다. 일별 값은 `daily_metrics`가 따로 남긴다.
 - Jaeger: 질문 한 건의 단계를 볼 곳이다. 루트 span에 원문(`kosis.turn.question` 등, T3-43)이 있으므로 **Jaeger 보관 기간을 30일 이하**로 두거나, 서비스 trace에서 원문 속성을 끈다.
 
@@ -338,8 +344,8 @@ sum by (gen_ai_request_model) (increase(kosis_llm_finishes_total{$env, gen_ai_re
 
 | # | 누구 | 내용 |
 |---|---|---|
-| 1 | 에이전트 계측 (T3-30~32 담당) | 10.2의 메트릭 4개 추가, 구간 View, exemplar용 span context 전달, 하네스 HTTP 요청의 `kosis.internal` |
-| 2 | 인프라 (KOS-158 / compose) | Prometheus(OTLP 수신) 또는 Collector 추가, 내보내기 방식 맞추기, resource 속성 라벨, Jaeger 보관 기간 |
+| 1 | 에이전트 계측 (T3-30~32 담당) | 10.2의 메트릭 4개 추가, 구간 View 3개(지연·재방문·재시도), exemplar용 span context 전달, 하네스 HTTP 요청의 `kosis.internal` |
+| 2 | 인프라 (KOS-158 / compose) | Prometheus(OTLP 수신, exemplar 저장) 또는 Collector 추가, 내보내기 방식 맞추기, resource 속성 라벨, Jaeger 보관 기간 |
 | 3 | 수집 (KOS-170) | 쓰는 순간 `step_spans`로 `failed_stage`·LLM 합계 계산. 행에는 단계 저장 안 함 |
 | 4 | 정제 (KOS-167) | `daily_metrics`에 10.3 조회식의 하루 값 적재 |
 
@@ -353,3 +359,20 @@ sum by (gen_ai_request_model) (increase(kosis_llm_finishes_total{$env, gen_ai_re
 | `failed_stage`, LLM 합계 | `spans`에서 계산해 저장 | 쓰는 순간 span에서 계산해 저장(같은 값) |
 
 - 쌓인 행이 아직 없어(마이그레이션 전) 버전 2 → 3 변환 규칙은 필요 없다.
+
+## 11. 리뷰 반영 (11/20, 김병석)
+
+로그 버전은 3 그대로다(열·제약 변화 없음). 쌓인 행이 없어 변환도 필요 없다.
+
+| # | 문제 | 고친 것 |
+|---|---|---|
+| 1 | 재방문·재시도 조회식이 `le="1"`을 읽는데 기본 히스토그램 구간에 1이 없다 | 두 메트릭에 구간 View `1, 2, 3, 5, 10` (10.2) |
+| 2 | 하네스 HTTP 요청이 Prometheus 지표에 섞인다 | `$env`에 `kosis_internal!="true"` (10.3) |
+| 3 | 응답 지연·첫 글자 분위수에 이탈·오류 턴이 들어가 짧게 잡힌다 | `latency`·`first_token`은 끝까지 간 턴만 (`log_metrics._FINISHED`). 시드의 이탈·오류 행에도 시간을 넣어 빠지는지 고정 |
+| 4 | 이탈한 턴의 노드 span이 오류로 끝나면 실패 단계로 집계된다 | `aborted`면 `failed_stage` = NULL |
+| 5 | 대화 ID가 없으면 `"None"`, 64자를 넘으면 INSERT 실패로 로그 유실, 턴 번호가 없으면 0 | 없으면 `ValueError`, 긴 ID는 sha256(64자) |
+| 6 | 답에 쓴 표가 `picked`에 없으면 다른 표의 조사명이 들어간다 | 일치하는 것이 없으면 `survey_name` = NULL |
+| 7 | KST 날짜 조건이 `created_at` 인덱스를 타지 못한다 | UTC 범위 비교 (`day_range`) |
+| 8 | 규칙 위반 테스트가 아무 예외나 통과시킨다 | `IntegrityError`로 좁힘 |
+
+- 문서에 더한 것: `row_from_turn`은 `root.end()` 뒤에 부른다(2.1), `daily_metrics` 조회 시각은 KST 자정(10.3), exemplar 저장 옵션(10.4).
