@@ -6,7 +6,7 @@ The filter is built the way ConditionRetriever builds it, ParsedQuery.to_filter(
 emptied, so a run with every slot on and pred slots is the T2-14 search (tests/test_evals_ablation.py checks it).
 
 Filter recall and candidate counts come from filters.filter_tables over the whole registry, no search needed.
-With a retriever (Chroma, `with_filter`), the same filter feeds the search and the ranked keys are kept, at most
+With a retriever (dense, `with_filter`), the same filter feeds the search and the ranked keys are kept, at most
 MAX_RESULTS, so every combination is cut to the same length. BM25 is not used here: ConditionRetriever filters
 its top 20 after the search, which is not the same as filtering first.
 """

@@ -32,13 +32,13 @@ def test_run_eval_arguments_win_over_shell_and_env_file(tmp_path, monkeypatch):
     from evals.run_eval import SEARCH_ARGS, apply_settings
 
     env = tmp_path / ".env"
-    env.write_text("CHROMA_COLLECTION=from_file\nRERANK_CKPT=from_file.pt\n", encoding="utf-8")
+    env.write_text("VECTOR_COLLECTION=from_file\nRERANK_CKPT=from_file.pt\n", encoding="utf-8")
     monkeypatch.setenv("KOSIS_DOTENV", "on")
-    monkeypatch.setenv("CHROMA_COLLECTION", "from_shell")  # monkeypatch restores both after the test
+    monkeypatch.setenv("VECTOR_COLLECTION", "from_shell")  # monkeypatch restores both after the test
     monkeypatch.setenv("RERANK_CKPT", "from_shell.pt")
     monkeypatch.setenv("EMBED_CKPT", "from_shell.pt")
     values = {field: None for field in SEARCH_ARGS} | {"collection": "from_arg", "embed_ckpt": "base"}
     args = argparse.Namespace(env_file=env, no_env_file=False, **values)
     assert apply_settings(args) == env
-    assert os.environ["CHROMA_COLLECTION"] == "from_arg" and os.environ["EMBED_CKPT"] == "base"
+    assert os.environ["VECTOR_COLLECTION"] == "from_arg" and os.environ["EMBED_CKPT"] == "base"
     assert os.environ["RERANK_CKPT"] == "from_shell.pt"  # no argument: the shell still beats .env

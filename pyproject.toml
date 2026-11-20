@@ -22,7 +22,6 @@ dependencies = [
     "python-dotenv>=1.0",
     # Phase 2 runtime (vendor/phase2/pyproject.toml)
     "rank-bm25>=0.2.2",
-    "chromadb-client==1.5.9",
     # Data: conversation history and eval results (PostgreSQL), cache / session / job queue (Redis)
     "sqlalchemy>=2.0",
     "psycopg[binary]>=3.2",
@@ -31,6 +30,7 @@ dependencies = [
     # Observability
     "opentelemetry-sdk>=1.45",
     "opentelemetry-exporter-otlp-proto-grpc>=1.45",
+    "pgvector>=0.4",
 ]
 
 [dependency-groups]
@@ -44,6 +44,9 @@ embed = [
     "sentence-transformers",
     # Listed only to pin its index below (no CUDA wheels in the Linux image)
     "torch",
+]
+migrate = [
+    "chromadb-client==1.5.9",
 ]
 # Ragas judge layer (T3-19, KOS-82, KOS-116): uv sync --group embed --group ragas. Pinned: evals/evaluators/ragas_metrics.py
 # stubs an import 0.4.3 needs (langchain_community.chat_models.vertexai) and the quality gate key carries the version

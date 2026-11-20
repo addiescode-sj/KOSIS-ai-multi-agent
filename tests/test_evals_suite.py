@@ -22,7 +22,7 @@ def opts(**kw) -> Namespace:
                         "scenarios": None, "repeat": 1, **kw})
 
 
-ALL_OK = {n: (True, "ok") for n in ("data", "v2", "chroma", "rerank", "llm", "agent", "judge", "e2e_golden")}
+ALL_OK = {n: (True, "ok") for n in ("data", "v2", "vectors", "rerank", "llm", "agent", "judge", "e2e_golden")}
 
 
 def test_unready_runs_are_skipped_with_the_reason_and_failures_do_not_stop_the_suite(tmp_path):
@@ -34,10 +34,10 @@ def test_unready_runs_are_skipped_with_the_reason_and_failures_do_not_stop_the_s
             raise SystemExit("golden missing")
         return manifest(tmp_path / f"run-{len(calls)}", "l1", argv[argv.index("--stage") + 1], L1, retriever="bm25-record", top_k=10)
 
-    checks = {**ALL_OK, "chroma": (False, "Chroma localhost:8001 응답 없음")}
+    checks = {**ALL_OK, "vectors": (False, "PostgreSQL localhost:5432 응답 없음")}
     s = suite.run(opts(only=["l1-bm25-record", "l1-hybrid", "l2-v1"]), main=fake_main, checks=checks)
     status = {r["name"]: (r["status"], r["reason"]) for r in s["runs"]}
-    assert status["l1-hybrid"] == ("skipped", "Chroma localhost:8001 응답 없음")
+    assert status["l1-hybrid"] == ("skipped", "PostgreSQL localhost:5432 응답 없음")
     assert status["l2-v1"] == ("failed", "SystemExit: golden missing")
     assert status["l1-bm25-record"][0] == "ok" and len(calls) == 2  # the skipped run never ran
     assert calls[0][calls[0].index("--stage") + 1] == "new-l1-bm25-record"  # one stage per run: no folder clash
@@ -111,11 +111,11 @@ def test_gate_states(tmp_path):
 
 
 def test_markdown_shows_checks_runs_and_deltas():
-    s = {"stage": "new", "llm": "mock", "baseline": ["old"], "checks": {"chroma": [False, "응답 없음"]},
+    s = {"stage": "new", "llm": "mock", "baseline": ["old"], "checks": {"vectors": [False, "응답 없음"]},
          "runs": [{"name": "l1-bm25-record", "what": "BM25", "status": "ok", "reason": "", "run": "/r/20261106-new-l1",
                    "metrics": {"Hit@5": 0.75}, "baseline": "/r/old", "base_metrics": {"Hit@5": 0.7}}]}
     md = suite.markdown(s)
-    assert "| chroma | ✕ | 응답 없음 |" in md and "| Hit@5 | 0.700 | 0.750 | +0.050 |" in md and "경로 확인용" in md
+    assert "| vectors | ✕ | 응답 없음 |" in md and "| Hit@5 | 0.700 | 0.750 | +0.050 |" in md and "경로 확인용" in md
     assert "report.html" in suite.html_page(s, md)
 
 

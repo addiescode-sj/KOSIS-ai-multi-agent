@@ -1,13 +1,13 @@
 """Run the phase 2 offline build CLI (kosis_rag_build.cli) from this repo, no PYTHONPATH needed (T3-23).
 
-    python scripts/kosis_build.py chroma --model bge-m3-ft --ckpt base --text-format n2-L60 --tables data/tables.jsonl
-    python scripts/kosis_build.py chroma --list
+    python scripts/kosis_build.py vectors --model bge-m3-ft --ckpt base --text-format n2-L60 --tables data/tables.jsonl
+    python scripts/kosis_build.py vectors --list
 
 Same commands and arguments as `python -m kosis_rag_build.cli`. Settings: arguments first, then the environment
-(<repo>/.env loaded first, shell values win: CHROMA_HOST CHROMA_PORT CHROMA_COLLECTION EMBED_CKPT RERANK_CKPT
+(<repo>/.env loaded first, shell values win: DATABASE_URL VECTOR_COLLECTION EMBED_CKPT RERANK_CKPT
 TEXT_FORMAT OPENAI_API_KEY). Give --ckpt explicitly when building: without it EMBED_CKPT from .env is used
 (--ckpt base = the untrained bge-m3). The build writes its own collection (--collection, default a new
-kosis_a_bgeft_<time>); CHROMA_COLLECTION is only the one --list marks as active.
+kosis_a_bgeft_<time>); VECTOR_COLLECTION is only the one --list marks as active.
 """
 
 import os

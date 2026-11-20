@@ -1,4 +1,4 @@
-"""L0: metadata quality over the table registry (fill rates, unmapped fields, Chroma load check)."""
+"""L0: metadata quality over the table registry (fill rates, unmapped fields, vector store load check)."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ METADATA_SAMPLE = DATASETS / "metadata_sample.jsonl"  # L0 accuracy sample, labe
 
 
 def run(args) -> tuple[list[dict], dict, str]:
-    """L0 metadata quality over the registry; the load check runs only with --retriever chroma (needs the server)."""
+    """L0 metadata quality over the registry; the load check runs only with --retriever dense (needs the vector store)."""
     from evals.evaluators import metadata
     from evals.runners import retrieval as runner
 
@@ -19,8 +19,8 @@ def run(args) -> tuple[list[dict], dict, str]:
     sample = ({json.loads(line)["key"]: json.loads(line) for line in METADATA_SAMPLE.read_text(encoding="utf-8").splitlines()
                if line.strip()} if METADATA_SAMPLE.exists() else None)
     loaded = None
-    if args.retriever == "chroma":
-        loaded = set(runner.connect_chroma().collection.get(include=[])["ids"])
+    if args.retriever in runner.DENSE:
+        loaded = set(runner.connect_dense().collection.get(include=[])["ids"])
     s = metadata.score(records, gold, sample, loaded)
     rows = [{"key": k, **metadata.fields(r), "latency_ms": 0.0} for k, r in records.items()]
     lines = ["| 필드 | 채움률 (전체) | 채움률 (골든 정답 표) |", "| --- | --- | --- |"]
@@ -37,7 +37,7 @@ def run(args) -> tuple[list[dict], dict, str]:
         "- 정규화 정확도: " + (", ".join(f"{k} {fmt(v)}" for k, v in s["accuracy"].items()) + f" (표본 {s['n_sample']})"
                          if s["accuracy"] else f"표본 대기 ({METADATA_SAMPLE.relative_to(ROOT)} 없음)"),
         "- 적재 일치: " + (("일치" if s["load"]["match"] else f"불일치 — 빠짐 {s['load']['missing']}, 남음 {s['load']['extra']}")
-                        + f" ({s['load']['loaded']}개)" if "load" in s else "확인 안 함 (--retriever chroma 로 확인)"),
+                        + f" ({s['load']['loaded']}개)" if "load" in s else "확인 안 함 (--retriever dense 로 확인)"),
     ]) + "\n"
     return rows, s, report
 
