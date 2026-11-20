@@ -8,8 +8,11 @@ Draft: `request_logs` has no Alembic migration yet (the number is agreed with th
 sits on its own LogBase and the migration check of T3-18 (Base.metadata) does not see it.
 
 Text as typed lives in `question` only. It is masked before it is stored, never stored for harness requests
-(is_internal), and set to NULL after the retention period; every other column is kept. `spans` holds the steps of the
-request with the keys of SPAN_KEYS only: exception messages and other free text can carry pieces of the question.
+(is_internal), and set to NULL after the retention period; every other column is kept.
+
+Log version 3: the row has no per-step column. Node, tool and LLM step timings are OpenTelemetry metrics sent to
+Prometheus (docs/log-schema.md 10). The steps of a turn are still read once at write time, with the keys of SPAN_KEYS
+only (exception messages and other free text can carry pieces of the question), to fill failed_stage and the LLM totals.
 """
 
 from __future__ import annotations
@@ -20,17 +23,15 @@ from datetime import datetime
 from sqlalchemy import Boolean, CheckConstraint, DateTime, Index, Integer, String, Text, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
-from kosis_store.models import JSONType
-
 # the four ChatResult outcomes, error (an exception) and aborted (the user left before the answer ended)
 OUTCOMES = ("answered", "refused", "clarify", "failed", "error", "aborted")
 INPUT_METHODS = ("typed", "suggestion")
 SPAN_STATUSES = ("ok", "refused", "error")
-# stage: search | stat | chart | agent; kind: node | tool | llm; model: the LLM of an llm span (cost = tokens x price)
+# the keys of one step read at write time (not stored); stage: search | stat | chart | agent; kind: node | tool | llm
 SPAN_KEYS = ("name", "kind", "stage", "ms", "status", "error_type", "input_tokens", "output_tokens", "model")
 UNKNOWN_REASON = "unknown"  # a refusal the agent gave no reason for (multi-query turns, a failed reason lookup)
 NO_TRACE = "0" * 32  # trace id of a no-op tracer: tracing was off, the row would have no usable key
-LOG_VERSION = 2  # 2: trace id key, string conversation id, 0-based turn index, failed outcome, model per span
+LOG_VERSION = 3  # 2: trace id key, string conversation id, 0-based turn index, failed outcome; 3: no steps column
 
 
 def _in(column: str, values: tuple[str, ...]) -> str:
@@ -70,7 +71,7 @@ class RequestLog(LogBase):
 
     outcome: Mapped[str] = mapped_column(String(16))
     reason_code: Mapped[str | None] = mapped_column(String(64))  # why it was refused or asked back
-    failed_stage: Mapped[str | None] = mapped_column(String(32))  # failed_stage(spans)
+    failed_stage: Mapped[str | None] = mapped_column(String(32))  # failed_stage(steps), worked out at write time
     picked_key: Mapped[str | None] = mapped_column(String(64), index=True)  # the table the answer used
     survey_name: Mapped[str | None] = mapped_column(String(200))
     has_numbers: Mapped[bool] = mapped_column(Boolean, default=False)  # denominator of the citation click rate
@@ -81,7 +82,6 @@ class RequestLog(LogBase):
     llm_calls: Mapped[int] = mapped_column(Integer, default=0)
     input_tokens: Mapped[int] = mapped_column(Integer, default=0)
     output_tokens: Mapped[int] = mapped_column(Integer, default=0)
-    spans: Mapped[list] = mapped_column(JSONType, default=list)  # clean_spans(...)
 
     # Filled by the multi-turn quality detection (KOS-176) while the text still exists
     rephrase_of: Mapped[str | None] = mapped_column(String(32))

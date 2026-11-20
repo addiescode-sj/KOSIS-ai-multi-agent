@@ -1,8 +1,9 @@
 """Metric definitions over request_logs (plans/T3-36.md, docs/log-schema.md): the one place they are written.
 
-PostgreSQL only (percentile_cont, jsonb_array_elements). Every metric takes :day, a date in KST: rows are stored in
+PostgreSQL only (percentile_cont). Every metric takes :day, a date in KST: rows are stored in
 UTC and turned into a KST date here. Team and harness traffic (is_internal) is left out. The metrics that need the
 feedback table (KOS-158) or the screen events table (KOS-170) are in docs/log-schema.md until those tables exist.
+Per-step latency and tokens per model are Prometheus queries (log version 3, docs/log-schema.md 10), not SQL here.
 """
 
 from __future__ import annotations
@@ -38,12 +39,6 @@ METRICS: dict[str, str] = {
         FROM (SELECT conversation_id, count(DISTINCT turn_index) AS turns FROM request_logs
               WHERE {_DAY} GROUP BY conversation_id) c
         GROUP BY 1 ORDER BY 1""",
-    "stage_latency": f"""
-        SELECT span->>'name' AS name,
-               percentile_cont(0.5) WITHIN GROUP (ORDER BY (span->>'ms')::numeric) AS p50,
-               percentile_cont(0.95) WITHIN GROUP (ORDER BY (span->>'ms')::numeric) AS p95
-        FROM request_logs, jsonb_array_elements(spans) AS span
-        WHERE {_DAY} AND span ? 'ms' GROUP BY 1 ORDER BY 1""",
     "first_token": f"""
         SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY first_token_ms) AS p50,
                percentile_cont(0.95) WITHIN GROUP (ORDER BY first_token_ms) AS p95
@@ -52,14 +47,6 @@ METRICS: dict[str, str] = {
         SELECT round(avg(llm_calls), 2) AS calls, round(avg(input_tokens), 2) AS input_tokens,
                round(avg(output_tokens), 2) AS output_tokens
         FROM request_logs WHERE {_DAY}""",
-    # cost = tokens x the unit price of each model; one turn can call several models (interpreter, rerank, phase 1),
-    # so the model is per llm step, and the price list is configuration (evals pricing.json), not a column
-    "llm_by_model": f"""
-        SELECT span->>'model' AS model, count(*) AS calls,
-               sum(coalesce((span->>'input_tokens')::int, 0)) AS input_tokens,
-               sum(coalesce((span->>'output_tokens')::int, 0)) AS output_tokens
-        FROM request_logs, jsonb_array_elements(spans) AS span
-        WHERE {_DAY} AND span->>'kind' = 'llm' GROUP BY 1 ORDER BY 1""",
 }
 
 # Retention: the text goes, the row stays. Returns the rows it changed.

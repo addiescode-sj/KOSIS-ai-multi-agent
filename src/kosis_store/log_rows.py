@@ -3,7 +3,8 @@
 The service already records each turn as OTel spans (kosis_agent.observability.tracing, T3-30~32): a root
 `invoke_agent` span with the turn's outcome, node spans, `execute_tool <tool>` spans and `chat <model>` spans with token
 counts. row_from_turn reads those finished spans and the turn's ChatResult; it does not trace anything itself. When to
-call it and where to write the row is the collector's job (KOS-170).
+call it and where to write the row is the collector's job (KOS-170). The steps are read to fill failed_stage and the LLM
+totals and are not stored: step timings go to Prometheus as metrics (log version 3, docs/log-schema.md 10).
 
 The names below are the tracing module's. They are repeated here so the store does not import the agent package;
 tests/test_log_schema.py checks they still match.
@@ -141,6 +142,5 @@ def row_from_turn(spans: Iterable, result: dict | None, *, aborted: bool = False
         "llm_calls": len(llm),
         "input_tokens": sum(s.get("input_tokens", 0) for s in llm),
         "output_tokens": sum(s.get("output_tokens", 0) for s in llm),
-        "spans": steps,
         "log_version": LOG_VERSION,
     }

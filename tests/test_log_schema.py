@@ -43,36 +43,26 @@ def _rows() -> list[RequestLog]:
         # 15:30 UTC on 11/19 is 00:30 on 11/20 in KST: counted on 11/20
         _log(conversation_id=A, turn_index=0, question="2023년 출생아 수", question_len=11, created_at=_at(19, 15, 30),
                    picked_key="K1", survey_name="S1", latency_ms=1000, first_token_ms=200, llm_calls=2,
-                   input_tokens=100, output_tokens=50,
-                   spans=[_span("retrieve", 300), _span("compute", 500, stage="stat"),
-                          _span("chat HCX-005", 400, stage="stat", kind="llm", model="HCX-005", input_tokens=100,
-                                output_tokens=50)], **ok),
+                   input_tokens=100, output_tokens=50, **ok),
         _log(conversation_id=A, turn_index=1, question="그 표에서 서울만", question_len=9, created_at=_at(20, 1),
                    picked_key="K1", survey_name="S1", latency_ms=3000, first_token_ms=400, llm_calls=2,
-                   input_tokens=100, output_tokens=50,
-                   spans=[_span("retrieve", 500), _span("compute", 700, stage="stat")], **ok),
+                   input_tokens=100, output_tokens=50, **ok),
         _log(conversation_id=B, turn_index=0, question="2031년 인구", question_len=8, created_at=_at(20, 2),
                    outcome="refused", reason_code="no_period", failed_stage="stat", latency_ms=2000, llm_calls=1,
-                   input_tokens=100,
-                   spans=[_span("retrieve", 400), _span("compute", 100, status="refused", stage="stat")]),
+                   input_tokens=100),
         _log(conversation_id=C, turn_index=0, question="오늘 날씨", question_len=5, created_at=_at(20, 3),
-                   outcome="refused", reason_code="no_table", failed_stage="search", latency_ms=500,
-                   spans=[_span("retrieve", 200), _span("gate", 10, status="refused")]),
+                   outcome="refused", reason_code="no_table", failed_stage="search", latency_ms=500),
         _log(conversation_id=D, turn_index=0, question="시도별 혼인 건수", question_len=9, created_at=_at(20, 4),
                    picked_key="K2", survey_name="S2", latency_ms=4000, first_token_ms=600, llm_calls=3,
-                   input_tokens=300, output_tokens=150,
-                   spans=[_span("retrieve", 600), _span("compute", 900, stage="stat"),
-                          _span("chat gpt-4o-mini", 200, stage="agent", kind="llm", model="gpt-4o-mini",
-                                input_tokens=300, output_tokens=150)], **ok),
+                   input_tokens=300, output_tokens=150, **ok),
         _log(conversation_id=D, turn_index=1, question="그거 말고", question_len=5, created_at=_at(20, 5),
                    outcome="clarify", reason_code="ambiguous", latency_ms=800, llm_calls=1, input_tokens=100,
-                   output_tokens=20, spans=[_span("retrieve", 100)]),
+                   output_tokens=20),
         _log(conversation_id=D, turn_index=2, question="출생아 수로", question_len=6, created_at=_at(20, 6),
                    picked_key="K1", survey_name="S1", latency_ms=2000, first_token_ms=300, llm_calls=2,
-                   input_tokens=100, output_tokens=50, spans=[], **ok),
+                   input_tokens=100, output_tokens=50, **ok),
         _log(conversation_id=D, turn_index=3, question="전년 대비", question_len=5, created_at=_at(20, 7),
-                   outcome="error", failed_stage="search",
-                   spans=[_span("retrieve", 50, status="error", error_type="TimeoutError")]),
+                   outcome="error", failed_stage="search"),
         _log(conversation_id=E, turn_index=0, question="인구 추이", question_len=5, created_at=_at(20, 8),
                    outcome="aborted"),
         # left out of every metric: harness traffic (no text), the next KST day, and an old row for the purge
@@ -117,8 +107,9 @@ def test_guest_row_needs_no_conversation_and_keeps_defaults(tmp_path):
     with session_scope(engine) as s:
         row = s.scalars(select(RequestLog)).one()
         assert len(row.request_id) == 32 and row.created_at is not None
-        assert (row.is_member, row.is_internal, row.input_method, row.spans, row.llm_calls, row.log_version) == (
-            False, False, "typed", [], 0, 2)
+        assert (row.is_member, row.is_internal, row.input_method, row.llm_calls, row.log_version) == (
+            False, False, "typed", 0, 3)
+        assert not hasattr(row, "spans")  # log version 3: steps are Prometheus metrics, not a column
 
 
 @offline
@@ -202,7 +193,7 @@ def test_log_rows_uses_the_tracing_names():
 @offline
 def test_a_service_turn_becomes_one_valid_row(tmp_path):
     from kosis_agent.observability.tracing import trace_id
-    from kosis_store.log_rows import row_from_turn
+    from kosis_store.log_rows import row_from_turn, step_spans
 
     finished, root = _service_turn("refused")
     result = {"outcome": "refused", "answer_origin": "refusal", "table_key": None, "picked": [], "chart": None}
@@ -211,12 +202,14 @@ def test_a_service_turn_becomes_one_valid_row(tmp_path):
     assert row["request_id"] == trace_id(root) and row["conversation_id"] == "thread-1" and row["turn_index"] == 2
     # no reason on the trace (the made-up graph has no ChatResult): unknown, not a rejected row
     assert (row["outcome"], row["reason_code"], row["failed_stage"]) == ("refused", "unknown", "search")
-    steps = {s["name"]: s for s in row["spans"]}
+    assert "spans" not in row  # log version 3: step timings are metrics (docs/log-schema.md 10)
+    finished_root = next(s for s in finished if s.name == "invoke_agent")  # the ended copy, as row_from_turn reads it
+    steps = {s["name"]: s for s in step_spans(finished, finished_root)}
     chat_name = next(n for n in steps if n.startswith("chat "))
     assert {n: (s["kind"], s["stage"]) for n, s in steps.items()} == {
         "search": ("node", "search"), "execute_tool search_tables": ("tool", "search"),
         "statistics": ("node", "stat"), chat_name: ("llm", "stat")}
-    assert all(set(s) <= set(SPAN_KEYS) for s in row["spans"])
+    assert all(set(s) <= set(SPAN_KEYS) for s in steps.values())
     assert (row["llm_calls"], row["input_tokens"], row["output_tokens"]) == (1, 120, 30)
     assert row["latency_ms"] is not None and row["question_len"] == len("2023년 출생아 수")
 
@@ -234,7 +227,7 @@ def test_an_error_turn_keeps_the_error_type_and_drops_its_message():
     finished, _ = _service_turn(fail=True)
     row = row_from_turn(finished, None, question="2023년 출생아 수")
     assert (row["outcome"], row["reason_code"], row["failed_stage"]) == ("error", "TimeoutError", "search")
-    assert "출생아" not in str(row["spans"])  # the exception message never reaches the steps
+    assert "출생아" not in str({k: v for k, v in row.items() if k != "question"})  # the exception message is not kept
 
 
 @offline
@@ -284,13 +277,6 @@ def test_metrics_match_hand_counts(pg):
     assert got["top_tables"] == [{"picked_key": "K1", "survey_name": "S1", "n": 3},
                                  {"picked_key": "K2", "survey_name": "S2", "n": 1}]
     assert got["turns_per_conversation"] == [{"turns": "1", "n": 3}, {"turns": "2", "n": 1}, {"turns": "4+", "n": 1}]
-    # retrieve ms: 50, 100, 200, 300, 400, 500, 600 · compute ms: 100, 500, 700, 900 · gate: 10 · one call per model
-    assert {r["name"]: (float(r["p50"]), float(r["p95"])) for r in got["stage_latency"]} == {
-        "compute": (600, pytest.approx(870)), "gate": (10, 10), "retrieve": (300, pytest.approx(570)),
-        "chat HCX-005": (400, 400), "chat gpt-4o-mini": (200, 200)}
-    assert got["llm_by_model"] == [
-        {"model": "HCX-005", "calls": 1, "input_tokens": 100, "output_tokens": 50},
-        {"model": "gpt-4o-mini", "calls": 1, "input_tokens": 300, "output_tokens": 150}]
     # first_token_ms: 200, 300, 400, 600
     assert (got["first_token"][0]["p50"], got["first_token"][0]["p95"]) == (350, pytest.approx(570))
     usage = got["llm_usage"][0]  # calls 11, input 800, output 320 over 9 questions
@@ -309,10 +295,4 @@ def test_purge_removes_old_text_and_keeps_the_rows(pg):
         assert s.scalar(select(func.count()).select_from(RequestLog)) == 12
         assert s.scalar(select(func.count()).select_from(RequestLog).where(
             RequestLog.question.is_not(None), RequestLog.created_at < cutoff)) == 0
-        assert inspect_type(pg) == "JSONB"
 
-
-def inspect_type(engine) -> str:
-    from sqlalchemy import inspect
-
-    return next(c for c in inspect(engine).get_columns("request_logs") if c["name"] == "spans")["type"].__class__.__name__
