@@ -9,9 +9,11 @@ from __future__ import annotations
 import os
 import uuid
 from datetime import date, datetime, timezone
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import create_engine, func, select
+from sqlalchemy.exc import IntegrityError
 
 from kosis_store.db import session_scope
 from kosis_store.log_metrics import METRICS, metric, purge_questions
@@ -62,9 +64,10 @@ def _rows() -> list[RequestLog]:
                    picked_key="K1", survey_name="S1", latency_ms=2000, first_token_ms=300, llm_calls=2,
                    input_tokens=100, output_tokens=50, **ok),
         _log(conversation_id=D, turn_index=3, question="전년 대비", question_len=5, created_at=_at(20, 7),
-                   outcome="error", failed_stage="search"),
+                   outcome="error", failed_stage="search", latency_ms=100),
+        # error and aborted turns have times too, but they did not run to the end: left out of latency and first token
         _log(conversation_id=E, turn_index=0, question="인구 추이", question_len=5, created_at=_at(20, 8),
-                   outcome="aborted"),
+                   outcome="aborted", latency_ms=300, first_token_ms=100),
         # left out of every metric: harness traffic (no text), the next KST day, and an old row for the purge
         _log(conversation_id=F, turn_index=0, is_internal=True, created_at=_at(20, 9), picked_key="K2",
                    latency_ms=9000, **ok),
@@ -93,7 +96,7 @@ def _sqlite(tmp_path):
 ])
 def test_rows_that_break_a_rule_are_rejected(tmp_path, bad):
     engine = _sqlite(tmp_path)
-    with pytest.raises(Exception), session_scope(engine) as s:
+    with pytest.raises(IntegrityError), session_scope(engine) as s:  # a CHECK, not some other failure
         s.add(RequestLog(**{"request_id": uuid.uuid4().hex, "conversation_id": A, "turn_index": 0, **bad}))
     with session_scope(engine) as s:
         assert s.scalar(select(func.count()).select_from(RequestLog)) == 0
@@ -136,7 +139,7 @@ def test_failed_stage_is_the_first_span_that_did_not_end_ok():
 
 # ---------------------------------------------------------------- a real service turn -> one row (log_rows)
 
-def _service_turn(outcome: str = "refused", fail: bool = False):
+def _service_turn(outcome: str = "refused", fail: bool = False, thread: str = "thread-1"):
     """One turn traced the way the service traces it (start_turn + LiveSpans, T3-30~32), on made-up nodes:
     search node -> search_tables tool, statistics node -> one chat model call. Returns (finished spans, root)."""
     from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
@@ -152,7 +155,7 @@ def _service_turn(outcome: str = "refused", fail: bool = False):
     memory = InMemorySpanExporter()
     provider = TracerProvider()
     provider.add_span_processor(SimpleSpanProcessor(memory))
-    root, spans = start_turn(provider.get_tracer("test"), "thread-1", 2)
+    root, spans = start_turn(provider.get_tracer("test"), thread, 2)
 
     @tool
     def search_tables(question: str) -> str:
@@ -243,6 +246,37 @@ def test_aborted_and_harness_turns():
         "answered", "K1", "인구동향조사", True, True)
     assert row["question"] is None and row["is_internal"]  # harness text is never kept
     assert row_from_turn(finished, answered, aborted=True)["outcome"] == "aborted"
+    # the picked list does not hold the answer's table: no survey name rather than another table's
+    other = {**answered, "picked": [{"key": "K0", "survey_name": "S0"}]}
+    assert row_from_turn(finished, other)["survey_name"] is None
+
+
+@offline
+def test_an_aborted_turn_has_no_failed_stage():
+    from kosis_store.log_rows import row_from_turn
+
+    finished, _ = _service_turn(fail=True)  # a span ended as an error, as closing the stream can do
+    row = row_from_turn(finished, None, aborted=True)
+    assert (row["outcome"], row["failed_stage"]) == ("aborted", None)
+
+
+@offline
+def test_conversation_id_fits_the_column_and_must_exist(tmp_path):
+    from kosis_store.log_rows import row_from_turn
+
+    long_id = "x" * 300  # the client may send any thread_id
+    finished, _ = _service_turn("answered", thread=long_id)
+    row = row_from_turn(finished, {"outcome": "answered"})
+    assert len(row["conversation_id"]) == 64 and row["conversation_id"] != long_id[:64]
+    assert row_from_turn(finished, {"outcome": "answered"})["conversation_id"] == row["conversation_id"]  # stable
+    engine = _sqlite(tmp_path)
+    with session_scope(engine) as s:
+        s.add(RequestLog(**row))
+
+    for attributes in ({"kosis.turn.index": 0}, {"gen_ai.conversation.id": "c0ffee"}):
+        root = SimpleNamespace(name="invoke_agent", attributes=attributes)
+        with pytest.raises(ValueError):
+            row_from_turn([root], None)
 
 
 PG_URL = os.environ.get("TEST_DATABASE_URL", "").strip()
@@ -270,14 +304,14 @@ def test_metrics_match_hand_counts(pg):
     assert {r["outcome"]: (r["n"], float(r["share"])) for r in got["outcome_share"]} == {
         "aborted": (1, 0.1111), "answered": (4, 0.4444), "clarify": (1, 0.1111), "error": (1, 0.1111),
         "refused": (2, 0.2222)}
-    # latency_ms: 500, 800, 1000, 2000, 2000, 3000, 4000
+    # latency_ms of turns that ran to the end: 500, 800, 1000, 2000, 2000, 3000, 4000 (error, aborted left out)
     assert (got["latency"][0]["p50"], got["latency"][0]["p95"]) == (2000, pytest.approx(3700))
     assert got["refusal_reasons"] == [{"reason_code": "no_period", "n": 1}, {"reason_code": "no_table", "n": 1}]
     assert got["failed_stages"] == [{"failed_stage": "search", "n": 2}, {"failed_stage": "stat", "n": 1}]
     assert got["top_tables"] == [{"picked_key": "K1", "survey_name": "S1", "n": 3},
                                  {"picked_key": "K2", "survey_name": "S2", "n": 1}]
     assert got["turns_per_conversation"] == [{"turns": "1", "n": 3}, {"turns": "2", "n": 1}, {"turns": "4+", "n": 1}]
-    # first_token_ms: 200, 300, 400, 600
+    # first_token_ms: 200, 300, 400, 600 (aborted 100 left out)
     assert (got["first_token"][0]["p50"], got["first_token"][0]["p95"]) == (350, pytest.approx(570))
     usage = got["llm_usage"][0]  # calls 11, input 800, output 320 over 9 questions
     assert (float(usage["calls"]), float(usage["input_tokens"]), float(usage["output_tokens"])) == (1.22, 88.89, 35.56)
@@ -295,4 +329,3 @@ def test_purge_removes_old_text_and_keeps_the_rows(pg):
         assert s.scalar(select(func.count()).select_from(RequestLog)) == 12
         assert s.scalar(select(func.count()).select_from(RequestLog).where(
             RequestLog.question.is_not(None), RequestLog.created_at < cutoff)) == 0
-

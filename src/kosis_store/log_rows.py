@@ -12,6 +12,7 @@ tests/test_log_schema.py checks they still match.
 
 from __future__ import annotations
 
+import hashlib
 from typing import Any, Iterable
 
 from kosis_store.log_models import LOG_VERSION, UNKNOWN_REASON, clean_spans, failed_stage
@@ -19,6 +20,7 @@ from kosis_store.log_models import LOG_VERSION, UNKNOWN_REASON, clean_spans, fai
 ROOT_SPAN = "invoke_agent"
 TOOL_PREFIX = "execute_tool "
 CHAT = "chat"  # gen_ai.operation.name of every LLM call span: the eval ops count LLM calls the same way (T3-31)
+CONVERSATION_ID_MAX = 64  # request_logs.conversation_id is VARCHAR(64); a sha256 hex digest is exactly 64
 
 # The stage a span belongs to: its own name, else the nearest ancestor's. Main graph nodes and the three tools;
 # phase 1 and 2 nodes inside a tool take the tool's stage.
@@ -83,6 +85,15 @@ def _outcome(root, result: dict | None, aborted: bool) -> str:
     return (result or {}).get("outcome") or "error"
 
 
+def _conversation_id(value) -> str:
+    """The thread id as stored. The client may send any string as thread_id, so one longer than the column becomes its
+    sha256 hex digest (64 chars): still one value per conversation, and the row is not rejected."""
+    text = str(value)
+    if len(text) <= CONVERSATION_ID_MAX:
+        return text
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
 def row_from_turn(spans: Iterable, result: dict | None, *, aborted: bool = False, first_token_ms: int | None = None,
                   question: str | None = None, session_id=None, is_member: bool = False, is_internal: bool = False,
                   input_method: str = "typed", prev_request_id: str | None = None) -> dict:
@@ -92,7 +103,7 @@ def row_from_turn(spans: Iterable, result: dict | None, *, aborted: bool = False
     result: the turn's ChatResult as a dict (model_dump), None when the turn raised before it had one.
     aborted: the client left before the answer ended (the stream was closed).
     question: the text already masked by the collector; dropped for harness traffic (is_internal).
-    Raises ValueError when the spans hold no turn root.
+    Raises ValueError when the spans hold no turn root, or the root has no conversation id or turn index.
 
     Side effects: none.
     """
@@ -101,6 +112,9 @@ def row_from_turn(spans: Iterable, result: dict | None, *, aborted: bool = False
     if root is None:
         raise ValueError(f"no {ROOT_SPAN} span: not a service turn")
     a = root.attributes or {}
+    for name in ("gen_ai.conversation.id", "kosis.turn.index"):
+        if a.get(name) is None:  # a row with a made-up conversation or turn would silently join the wrong question
+            raise ValueError(f"{ROOT_SPAN} span has no {name}")
     r = result or {}
     steps = step_spans(spans, root)
     outcome = _outcome(root, result, aborted)
@@ -111,18 +125,20 @@ def row_from_turn(spans: Iterable, result: dict | None, *, aborted: bool = False
     if outcome == "refused" and not reason:
         reason = UNKNOWN_REASON
 
-    stage = failed_stage(steps)
+    # An aborted turn did not fail: closing the stream (GeneratorExit) can end the running node span as an error,
+    # which would count the user's leaving as a failed stage.
+    stage = None if outcome == "aborted" else failed_stage(steps)
     if stage is None and outcome == "refused":  # nothing raised: the refusal came from the gate or from phase 1
         stage = "stat" if r.get("answer_origin") == "stat" else "search"
 
     key = r.get("table_key")
-    picked = [c for c in r.get("picked") or [] if c.get("key") == key] or r.get("picked") or []
+    picked = [c for c in r.get("picked") or [] if c.get("key") == key]  # no match: no survey name, not another table's
     llm = [s for s in steps if s["kind"] == "llm"]
     text = None if is_internal else question
     return {
         "request_id": format(root.context.trace_id, "032x"),
-        "conversation_id": str(a.get("gen_ai.conversation.id")),
-        "turn_index": int(a.get("kosis.turn.index", 0)),
+        "conversation_id": _conversation_id(a["gen_ai.conversation.id"]),
+        "turn_index": int(a["kosis.turn.index"]),
         "prev_request_id": prev_request_id,
         "session_id": session_id,
         "is_member": is_member,
