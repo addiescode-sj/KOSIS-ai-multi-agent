@@ -174,6 +174,7 @@ uv run python -m evals.run_eval --layer e2e --agent <module:function> --stage <�
 |---|---|---|
 | `calculation_golden.jsonl` | `python -m evals.builders.phase1` | 실전 1 골든 90문항, 10표. clarify·default·causal 같은 어려운 유형 |
 | `calculation_golden_diverse.jsonl` | `python -m evals.builders.diverse --rewrites evals/datasets/calculation_diverse_rewrites.jsonl` | 14개 조사, 72표, 264문항 (`D-` qid). value·compare·trend·거절 |
+| `calculation_golden_wide.jsonl` (T3-46) | `python -m evals.builders.diverse --total 500 --seed 46 --out evals/datasets/calculation_golden_wide.jsonl --rewrites evals/datasets/calculation_wide_rewrites.jsonl` | 숫자 답이 있는 500문항(value 241 · compare 176 · trend 83), 382표, 14개 조사. 조사별 균등 할당(표가 모자란 조사만 표당 2문항), 조사 안에서는 메뉴 경로별로 돌아가며 표당 1문항. 한 표 최대 0.4%, 한 조사 최대 9.8%. 거절 문항 없음 |
 
 기본값은 실전 1 파일만 읽는다. 둘 다 쓰려면 `--calc-golden`에 두 파일을 함께 넘긴다.
 
@@ -185,6 +186,7 @@ uv run python -m evals.run_eval --layer l3 --stage <이름> --interval 5 \
 diverse 문항의 숫자는 빌더가 Parquet 셀에서 직접 뽑는다. 질문 문장은 사람(또는 Claude)이 다시 쓰는데,
 `check_question`이 연도·라벨·항목명이 남아 있고 다른 숫자가 없는지 확인한 뒤에만 반영한다. 통과하지 못하면 템플릿 문장을 그대로 쓴다.
 `calculation_diverse_review_sample.csv`(5문항마다 1개)의 `ok`·`note` 열은 사람이 검수할 때 채운다.
+`--extend`로 만든 파일은 새 문항만 `<out>.draft.csv`·`<out>.review.csv`에 쓴다 (wide: `calculation_golden_wide.review.csv`).
 
 ### 검색기를 바꿀 때 판정 풀 넓히기 (T3-22)
 

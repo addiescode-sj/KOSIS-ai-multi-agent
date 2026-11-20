@@ -398,7 +398,8 @@ def write(scenarios: list[AgentScenario], made: list[CalcItem], out: Path = OUT,
     dump = lambda rows: "".join(r.model_dump_json(exclude_none=True) + "\n" for r in rows)  # noqa: E731
     out.write_text(dump(scenarios), encoding="utf-8")
     out_structure.write_text(dump([without_calc(s) for s in scenarios]), encoding="utf-8")
-    out_calc.write_text(dump(made), encoding="utf-8")
+    # calc items use the one calculation-golden format (CalcItem, exclude_defaults) like every other calc file
+    out_calc.write_text("".join(i.model_dump_json(exclude_defaults=True) + "\n" for i in made), encoding="utf-8")
     OUT_PARAPHRASE.write_text(dump(paraphrased(scenarios)), encoding="utf-8")
 
 

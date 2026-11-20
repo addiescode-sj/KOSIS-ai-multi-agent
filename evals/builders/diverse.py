@@ -19,6 +19,7 @@ import json
 import random
 import re
 from collections import Counter
+from itertools import zip_longest
 from pathlib import Path
 
 import pyarrow.parquet as pq
@@ -27,12 +28,12 @@ from kosis_ai.schemas import Cell, Fact
 
 from evals.builders.phase1 import sha256
 from evals.evaluators.calculation import _NUMBER, allowed_text_numbers
-from evals.schemas import DATASETS, ROOT, TABLES, CalcItem
+from evals.schemas import DATASETS, ROOT, TABLES, CalcItem, load_jsonl
 
 OUT = DATASETS / "calculation_golden_diverse.jsonl"
 DRAFT = DATASETS / "calculation_diverse_draft.csv"
 REVIEW = DATASETS / "calculation_diverse_review_sample.csv"  # every 5th item, for a person to check the wording
-TOTALS = {"계", "합계", "총계", "전체", "소계", "전국", "총인구", "Total", "전규모"}
+TOTALS = {"계", "합계", "총계", "총합계", "전체", "소계", "전국", "총인구", "Total", "전규모"}
 SYMBOLS = {"x_secret", "dash", "asterisk"}
 ANNUAL = {"Y", "F", "IR"}  # IR (세종시 특별센서스) periods are plain years too
 # Items no population table carries: a no_item question asks one of these with the table's own labels
@@ -164,7 +165,9 @@ def make_items(key: str, sha: str, df, dims: list[str], rng: random.Random, refu
         # siblings only: a mixed 특성별 dim codes its groups by prefix (A03xx 기업형태, A04xx 매출규모)
         pairs = [i for i in range(len(codes) - 1)
                  if len(codes[i]) == len(codes[i + 1]) and codes[i][:-2] == codes[i + 1][:-2]
-                 and not (codes[i].endswith("0") and codes[i][:-1] == codes[i + 1][:-1])]  # 수원시 41110 vs 장안구 41111
+                 and not (codes[i].endswith("0") and codes[i][:-1] == codes[i + 1][:-1])  # 수원시 41110 vs 장안구 41111
+                 # T3-46: one dim can mix units (구성비 % next to 평균 수입액 백만원), a difference needs one unit
+                 and cell(pool.iloc[i].drop("_t")).unit_or_suffix() == cell(pool.iloc[i + 1].drop("_t")).unit_or_suffix()]
         if pairs:
             i = rng.choice(pairs)
             a, b = cell(pool.iloc[i].drop("_t")), cell(pool.iloc[i + 1].drop("_t"))
@@ -175,7 +178,7 @@ def make_items(key: str, sha: str, df, dims: list[str], rng: random.Random, refu
                 question=f"{year_text(latest)} {subject(a, skip=dname)}: {josa(la, '과와')} {lb}의 차이는?",
                 required_facts=[fact("f1", a, many), fact("f2", b, many),
                                 Fact(id="f3", value=round(a.value - b.value, digits),
-                                     unit="%p" if unit == "%" else unit, derivation="f1 - f2", round=digits)])
+                                     unit="%p" if a.unit_or_suffix() == "%" else a.unit_or_suffix(), derivation="f1 - f2", round=digits)])
             break
 
     # trend: the base series, first year with a value vs latest
@@ -236,7 +239,9 @@ def wanted_words(item: CalcItem) -> tuple[set[str], list[str], str | None]:
         for name, label in (f.dims or {}).items():
             if name == "항목":
                 item_name = label
-            elif not is_total(label) and label not in labels_:
+            # T3-46: only grand totals may be left out; a subtotal (아시아주계, 화장실_재래식_계) or a word ending in 계
+            # (자녀 승계) names a different cell than the total, so the question has to say it
+            elif label.replace(" ", "") not in TOTALS and label not in labels_:
                 labels_.append(label)
     if item.kind == "not_answerable" and "no_item" in item.allowed_reasons:
         item_name = next((i for i in FOREIGN_ITEMS if i in item.question), None)
@@ -251,10 +256,11 @@ def label_ok(label: str, question: str) -> bool:
     q = squash(question)
     core = squash(re.sub(r"\(.*?\)", "", label)) or squash(label)
     short = SHORT.get(label) or REGION_SUFFIX.sub("", label)
-    return core in q or (len(short) >= 2 and short in q)
+    return core in q or (len(short) >= 2 and squash(short) in q)  # q is squashed, so short must be too
 
 
-def check_question(item: CalcItem, template: str, question: str, item_term: str | None, item_name: str | None) -> list[str]:
+def check_question(item: CalcItem, template: str, question: str, item_term: str | None, item_name: str | None,
+                   table_name: str = "") -> list[str]:
     """Reasons a rewritten question loses what the template pins down; empty means accepted."""
     problems = []
     years, labels_, _ = wanted_words(item.model_copy(update={"question": template}))
@@ -271,11 +277,87 @@ def check_question(item: CalcItem, template: str, question: str, item_term: str 
             if not (item_term and squash(item_term) in squash(question) and shares):
                 problems.append(f"item {item_name!r} missing (item_term {item_term!r})")
     # template digits come from cell labels and item names (code), e.g. '12세 이상' or a no_item question's labels
+    # T3-46: a 구성비 cell (%) read as a count ("개인사업체는 몇 곳이야?" for 53.4%) asks for a number the table lacks
+    if item.required_facts and item.required_facts[0].unit == "%" and COUNT_WORDS.search(question):
+        problems.append("asks a count but the cell is %")
     allowed = allowed_text_numbers(item.required_facts + item.aux_facts) | years | set(_NUMBER.findall(template))
+    allowed |= set(_NUMBER.findall(table_name))  # T3-46: '1인가구', '12세 이상' from the table's own name
     stray = [n for n in _NUMBER.findall(question) if n not in allowed and n.replace(",", "") not in allowed]
     if stray:
         problems.append(f"stray numbers {stray}")
     return problems
+
+
+COUNT_WORDS = re.compile(r"몇\s*(?:곳|명|개|가구|건|호|세대|사람)|수는\s*몇")
+TYPES = ("value", "compare", "trend")
+
+
+def quotas(counts: dict[str, int], total: int, per_table: int) -> dict[str, int]:
+    """Water-fill: every survey gets the same number of questions, capped at per_table questions per table it has."""
+    left, out = dict(counts), {}
+    while left:
+        share = total / len(left)
+        capped = {k: n * per_table for k, n in left.items() if n * per_table <= share}
+        if not capped:
+            base, extra = divmod(total, len(left))
+            out |= {k: base + (i < extra) for i, k in enumerate(sorted(left))}
+            break
+        for k, cap in capped.items():
+            out[k], total = cap, total - cap
+            del left[k]
+    return out
+
+
+def balanced(rows: list[dict], total: int, seed: int, values: Path, per_table: int = 2) -> tuple[list[CalcItem], dict[str, str | None]]:
+    """T3-46: `total` answerable questions spread evenly over surveys and, inside a survey, over its menu sections.
+
+    One question per table; a survey with fewer tables than its share asks a second question type on the same
+    tables. Smallest surveys go first, so a table that yields nothing leaves its share to the bigger surveys."""
+    rng = random.Random(seed)
+    by_survey: dict[str, list[dict]] = {}
+    for r in rows:
+        if r["info"]["coverage"] != "C_수집누락" and ANNUAL & set(r["prd_se"] or []) and (values / r["info"]["parquet"]).exists():
+            by_survey.setdefault(r["info"]["survey_name"], []).append(r)
+    out: list[CalcItem] = []
+    names: dict[str, str | None] = {}
+    turn = 0
+    order = sorted(by_survey, key=lambda k: (len(by_survey[k]), k))
+    for n, name in enumerate(order):
+        rest = {k: len(by_survey[k]) for k in order[n:]}
+        need = quotas(rest, total - len(out), per_table)[name]
+        groups: dict[str, list[dict]] = {}
+        for r in sorted(by_survey[name], key=lambda r: r["info"]["key"]):
+            groups.setdefault(r["info"]["menu_path"].rsplit(" > ", 1)[0], []).append(r)
+        lanes = [rng.sample(g, len(g)) for _, g in sorted(groups.items())]
+        rng.shuffle(lanes)
+        tables = [r for tier in zip_longest(*lanes) for r in tier if r]  # round-robin over menu sections
+        picked: list[CalcItem] = []
+        made: list[tuple[dict[str, CalcItem], str]] = []
+        for r in tables:
+            if len(picked) >= need:
+                break
+            path = values / r["info"]["parquet"]
+            df, dims = load(path)
+            items = make_items(r["info"]["key"], sha256(path), df, dims, random.Random(f"{seed}-{r['info']['key']}"), 0)
+            by_type = {i.type: i for i in items if i.kind == "answerable"}
+            for i in items:
+                names[i.qid] = next((f.dims["항목"] for f in i.required_facts if f.dims and "항목" in f.dims), None) \
+                    or (df.item_name.iloc[0] if df.item_id.nunique() == 1 else None)
+            if not by_type:
+                continue
+            want = TYPES[turn % len(TYPES)]
+            turn += 1
+            first = by_type.get(want) or next(by_type[t] for t in TYPES if t in by_type)
+            picked.append(first)
+            made.append((by_type, first.type))
+        for by_type, used in made:  # second question type on the same tables, only when tables ran out
+            if len(picked) >= need:
+                break
+            other = [t for t in TYPES if t in by_type and t != used]
+            if other:
+                picked.append(by_type[other[0]])
+        out += picked
+    return out, names
 
 
 def item_name_of(item: CalcItem, df_items: dict[str, str]) -> str | None:
@@ -291,15 +373,27 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--seed", type=int, default=31)
     parser.add_argument("--rewrites", type=Path, help="jsonl of {qid, question, item_term?} written from the draft")
     parser.add_argument("--out", type=Path, default=OUT)
+    parser.add_argument("--extend", type=Path, help="T3-46: keep this golden file's items as they are and add tables it lacks")
+    parser.add_argument("--total", type=int, help="T3-46: this many answerable questions balanced over surveys and tables")
     args = parser.parse_args(argv)
 
     rows = [json.loads(line) for line in args.tables.read_text(encoding="utf-8").splitlines() if line.strip()]
     meta = {r["info"]["key"]: r["info"] for r in rows}
+    base, dropped = [], []
+    if args.extend:
+        # T3-46: an item whose table has no Parquet in data/values cannot be answered by phase 1, so it leaves the set
+        for it in load_jsonl(args.extend, CalcItem):
+            (base if (args.values / meta[it.table_key]["parquet"]).exists() else dropped).append(it)
+        used = {it.table_key for it in base} | {it.table_key for it in dropped}
+        rows = [r for r in rows if r["info"]["key"] not in used and (args.values / r["info"]["parquet"]).exists()]
+    offset = len({it.table_key for it in base})  # refusal reasons keep rotating after the base tables
     items, item_names = [], {}
-    for n, r in enumerate(sample(rows, args.per_stratum, args.seed)):
+    if args.total:
+        items, item_names = balanced(rows, args.total, args.seed, args.values)
+    for n, r in enumerate([] if args.total else sample(rows, args.per_stratum, args.seed)):
         path = args.values / r["info"]["parquet"]
         df, dims = load(path)
-        made = make_items(r["info"]["key"], sha256(path), df, dims, random.Random(f"{args.seed}-{r['info']['key']}"), n)
+        made = make_items(r["info"]["key"], sha256(path), df, dims, random.Random(f"{args.seed}-{r['info']['key']}"), offset + n)
         for it in made:
             item_names[it.qid] = next((f.dims.get("항목") for f in it.required_facts + it.aux_facts if f.dims and "항목" in f.dims), None) \
                 or (df.item_name.iloc[0] if df.item_id.nunique() == 1 else None)
@@ -313,16 +407,19 @@ def main(argv: list[str] | None = None) -> int:
         name = item_name_of(it, item_names)
         rw = rewrites.get(it.qid)
         if rw:
-            problems = check_question(it, it.question, rw["question"], rw.get("item_term"), name)
+            problems = check_question(it, it.question, rw["question"], rw.get("item_term"), name, meta[it.table_key]["table_name"])
             if problems:
                 rejected.append(f"{it.qid}: {'; '.join(problems)}")
             else:
                 it = it.model_copy(update={"question": rw["question"]})
                 kept += 1
         out.append(it)
+    out = base + out
 
     args.out.write_text("".join(i.model_dump_json(exclude_defaults=True) + "\n" for i in out), encoding="utf-8")
-    for path, chosen in [(DRAFT, out), (REVIEW, out[::5])]:
+    new = out[len(base):]  # base items were drafted and reviewed with the file they come from
+    drafts = (DRAFT, REVIEW) if args.out == OUT else (args.out.with_suffix(".draft.csv"), args.out.with_suffix(".review.csv"))
+    for path, chosen in zip(drafts, (new, new[::5])):
         with path.open("w", encoding="utf-8-sig", newline="") as f:
             w = csv.writer(f)
             w.writerow(["qid", "kind", "survey", "table_name", "item_name", "question", "facts", "ok", "note"])
@@ -335,7 +432,10 @@ def main(argv: list[str] | None = None) -> int:
     surveys = Counter(meta[k]["survey_name"] for k in tables)
     info = {"items": len(out), "tables": len(tables), "surveys": len(surveys), "max_table_share": round(max(tables.values()) / len(out), 3),
             "kinds": Counter(f"{i.kind}/{i.type}" for i in out), "rewritten": kept, "rejected": rejected,
-            "seed": args.seed, "per_stratum": args.per_stratum, "tables.jsonl": sha256(args.tables), "sha256": sha256(args.out)}
+            "seed": args.seed, "per_stratum": args.per_stratum, "total": args.total,
+            "per_survey": Counter(meta[i.table_key]["survey_name"] for i in out),
+            **({"extends": {"file": args.extend.name, "sha256": sha256(args.extend), "kept": len(base),
+                            "dropped_no_parquet": sorted({i.table_key for i in dropped}), "dropped_items": len(dropped)}} if args.extend else {}), "tables.jsonl": sha256(args.tables), "sha256": sha256(args.out)}
     args.out.with_suffix(".meta.json").write_text(json.dumps(info, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps({k: v for k, v in info.items() if k != "rejected"}, ensure_ascii=False))
     for line in rejected:

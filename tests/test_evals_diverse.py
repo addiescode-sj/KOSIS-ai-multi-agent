@@ -6,7 +6,8 @@ import pandas as pd
 
 from kosis_ai.schemas import FactPart, Refusal, Source, StatAnswer, StatResult
 
-from evals.builders.diverse import cell, check_question, josa, make_items
+from evals.builders.diverse import cell, check_question, josa, label_ok, make_items, quotas
+from evals.schemas import CalcItem
 from evals.evaluators.calculation import grade
 
 DIMS = ["dim1"]
@@ -51,6 +52,17 @@ def test_items_grade_pass_on_their_own_cells():
         assert trend.required_facts[2].value == 55.0  # (15.5 / 10 - 1) * 100, by code
 
 
+def test_compare_pair_never_mixes_units():
+    # T3-46: 구성비(%) next to 평균(백만원) in one dim: the only sibling pair with one unit is A0303/A0304
+    df = frame()
+    extra = [{**df.iloc[0].to_dict(), "period": "2024", "dim1_code": code, "dim1_label": label, "unit": unit,
+              "value": v, "value_raw": str(v)} for code, label, unit, v in
+             [("A0303", "평균", "백만원", 30.0), ("A0304", "10억원 미만", "%", 2.0), ("A0305", "10억원 이상", "%", 1.0)]]
+    df = pd.concat([df[~df.dim1_code.isin(["A0301", "A0302"])], pd.DataFrame(extra)], ignore_index=True)
+    cmp = next(i for i in make_items("358_DT_T", "sha", df, DIMS, random.Random(0), 0) if i.type == "compare")
+    assert {f.source_ref.split("|")[2] for f in cmp.required_facts if f.source_ref} == {"A0304", "A0305"}
+
+
 def test_check_question_keeps_year_label_item_and_no_stray_numbers():
     df = frame()
     item = make_items("358_DT_T", "sha", df, DIMS, random.Random(0), 1)[0]  # value item
@@ -65,3 +77,33 @@ def test_check_question_keeps_year_label_item_and_no_stray_numbers():
 def test_josa():
     assert josa("입국자", "은는") == "입국자는" and josa("순이동", "은는") == "순이동은"
     assert josa("회사 법인", "과와") == "회사 법인과" and josa("영주(F-5)", "과와") == "영주(F-5)와"
+
+
+def test_quotas_spread_evenly_and_cap_small_surveys():
+    # T3-46: a survey with 3 tables gets at most 6 questions (2 per table); the rest is split evenly
+    q = quotas({"tiny": 3, "mid": 40, "big": 1875}, 100, 2)
+    assert q == {"tiny": 6, "mid": 47, "big": 47} and sum(q.values()) == 100
+
+
+def test_check_question_requires_subtotals_and_rejects_count_for_percent():
+    # T3-46: '아시아주계' is a subtotal (not the grand total), so a question without it asks a different cell
+    item = CalcItem(qid="q", kind="answerable", type="value", question="2025년 단기체류외국인은?", table_key="k",
+                    table_sha256="s", required_facts=[{"id": "f1", "value": 5.0, "unit": "%", "period": "2025",
+                                                       "dims": {"국적별": "아시아주계"}, "source_ref": "T|A|2025"}])
+    assert check_question(item, item.question, "2025년 단기체류외국인은 몇 %야?", None, None)
+    assert check_question(item, item.question, "2025년 아시아주계 단기체류외국인은 몇 %야?", None, None) == []
+    assert check_question(item, item.question, "2025년 아시아주계 단기체류외국인은 몇 명이야?", None, None)  # % cell
+    assert label_ok("지사(점) 영업장 공장 출장소", "2024년 지사(점) 영업장 공장 출장소 비율은?")
+
+
+def test_calc_builders_write_one_format(tmp_path, monkeypatch):
+    # T3-46: every calculation golden file is CalcItem dumped with exclude_defaults (no [] / null, no extra fields)
+    from evals.builders import multiturn
+    item = CalcItem(qid="q", kind="answerable", type="value", question="2025년 x는?", table_key="k", table_sha256="s",
+                    required_facts=[{"id": "f1", "value": 1, "unit": "명", "period": "2025", "source_ref": "T|A|2025"}])
+    out = tmp_path / "calc.jsonl"
+    monkeypatch.setattr(multiturn, "OUT_PARAPHRASE", tmp_path / "p.jsonl")  # never touch the real dataset
+    multiturn.write([], [item], tmp_path / "a.jsonl", tmp_path / "b.jsonl", out)
+    assert out.read_text(encoding="utf-8") == item.model_dump_json(exclude_defaults=True) + "\n"
+    assert set(CalcItem.model_fields) == {"qid", "kind", "type", "question", "table_key", "table_sha256", "required_facts",
+                                          "aux_facts", "allowed_reasons", "default_applied", "clarify_options", "eda_traps", "split"}
