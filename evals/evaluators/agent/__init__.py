@@ -65,7 +65,9 @@ ERRORS = {  # error -> what it means (report legend)
     "chart_data_mismatch": "차트(Vega-Lite data.values)에 summarize_stat 사실 값이 아닌 숫자가 그려짐",
     "wrong_chart_type": "차트 종류 말이 없는 턴에서 그린 차트 계열(막대·꺾은선·원형)이 기대 종류와 다름",
 }
-TASK_PREFIXES = {"MT-": "multiturn", "MQ-": "multiquery"}  # sid prefixes the builders write (builders/multiturn, multiquery)
+TASK_PREFIXES = {"MT-": "multiturn", "MQ-": "multiquery",  # sid prefixes the builders write (builders/multiturn, multiquery)
+                 # T3-46 e2e golden (builders/e2e_golden): one task per failure type
+                 "E2E-N-": "e2e_numbers", "E2E-F-": "e2e_formula", "E2E-R-": "e2e_rewrite", "E2E-C-": "e2e_classify"}
 TASK_METRICS = ("n_turns", "n_conversations", "conversation_success", "pass^k", "turn_pass", "tool_selection", "param_accuracy",
                 "state_accuracy", "numeric_accuracy", "n_numeric", "combine_accuracy", "n_combine", "unsupported_final_number_turns",
                 "missing_source_turns", "chart_turn_pass", "n_chart_turns", "auto_chart_agreement", "n_auto_chart")

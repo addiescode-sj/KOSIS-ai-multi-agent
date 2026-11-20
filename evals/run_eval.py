@@ -37,15 +37,19 @@ from kosis_agent.observability.tracing import SERVICE
 from evals import ops, quality, report_html, trace
 from evals.evaluators import alternates
 from evals.schemas import AGENT_SCENARIOS, DATASETS, GOLDEN, QUERY_GOLDEN, ROOT, TABLES
-from evals.tasks import ablation, agent, common, l0_metadata, l1_retrieval, l2_query, l3_calculation, l4_e2e, l012, online, ragas
+from evals.tasks import ablation, agent, common, l0_metadata, l1_retrieval, l2_query, l3_calculation, l4_e2e, l012, online, ragas, rules
 
 # T3-29: one module per evaluation task, each with run(args) -> (rows, summary, report) and, where it has them,
 # owners(rows, summary) for the "고칠 담당" section and target(args, op) for its ops_history line.
 TASKS = {"l0": l0_metadata, "l1": l1_retrieval, "l2": l2_query, "ablation": ablation, "l012": l012, "l3": l3_calculation,
-         "e2e": l4_e2e, "agent": agent, "ragas": ragas, "online": online}
+         "e2e": l4_e2e, "agent": agent, "ragas": ragas, "online": online, "rules": rules}
 DEGRADED_EXIT = 3  # online: a drop against the earlier online records (T3-43); dev.sh passes it on
 REPORTS = ROOT / "evals" / "reports"
 CALC_GOLDEN = DATASETS / "calculation_golden.jsonl"
+# T3-46: e2e runs the e2e golden scenarios (failure types + gold labels, evals/builders/e2e_golden.py) unless
+# --calc-golden names a calculation file (the old one-question path, which ragas and the regression gate read)
+E2E_SCENARIOS = DATASETS / "e2e_golden.jsonl"
+E2E_CALC = DATASETS / "e2e_golden_calc.jsonl"
 POOL = DATASETS / "retrieval_pool.csv"
 # T3-23: search settings as arguments (argument > shell > .env > default). Each sets the variable evals/config.py reads.
 SEARCH_ARGS = {
@@ -100,7 +104,7 @@ def owner_section(layer: str, rows: list[dict], summary: dict) -> str:
 def main(argv: list[str] | None = None) -> Path:
     """Run one layer; returns the run folder (evals.suite reads it)."""
     parser = argparse.ArgumentParser(description="Run one evaluation layer (L1 retrieval, L3 calculation, e2e).")
-    parser.add_argument("--layer", choices=("l0", "l1", "l2", "ablation", "l012", "l3", "e2e", "agent", "ragas", "online"), required=True)  # e2e: first part of L4
+    parser.add_argument("--layer", choices=("l0", "l1", "l2", "ablation", "l012", "l3", "e2e", "agent", "ragas", "online", "rules"), required=True)  # e2e: first part of L4
     parser.add_argument("--stage", required=True, help="what this run measures, e.g. T2-04-bm25")
     parser.add_argument("--split", choices=("dev", "test", "all"), help="default: dev for l012 (the slot baselines), test otherwise")
     parser.add_argument("--retriever", default="bm25-catalog", help="l1, e2e: oracle (l1 only) | bm25-catalog | bm25-record | chroma")
@@ -112,8 +116,8 @@ def main(argv: list[str] | None = None) -> Path:
     parser.add_argument("--golden", type=Path, default=GOLDEN, help="l0, l1, ablation, l012, e2e (§6.3 table slots by qid): retrieval golden (v2: retrieval_golden_v2.jsonl)")
     parser.add_argument("--query-golden", type=Path, default=QUERY_GOLDEN, help="l2, ablation, l012, e2e (§6.3 연도·지역 by qid): query golden (v2: query_golden_v2.jsonl)")
     parser.add_argument("--pool", type=Path, default=POOL, help="l1: judged pool for unjudged@k (v2: retrieval_pool_v2.csv)")
-    parser.add_argument("--calc-golden", type=Path, nargs="+", default=[CALC_GOLDEN],
-                        help="l3, e2e: golden files, e.g. calculation_golden.jsonl calculation_golden_diverse.jsonl")
+    parser.add_argument("--calc-golden", type=Path, nargs="+",
+                        help="l3, e2e, ragas: calculation golden files (default calculation_golden.jsonl; e2e without it runs e2e_golden.jsonl scenarios)")
     parser.add_argument("--interval", type=float, default=0.0, help="l3, e2e: seconds between model calls")
     parser.add_argument("--llm", choices=("hcx", "mock"), default="hcx",
                         help="l3, e2e: hcx (HCX_API_KEY, costs) | mock (no call: checks the path, scores are not scores; not in ops_history)")
@@ -137,6 +141,11 @@ def main(argv: list[str] | None = None) -> Path:
         settings.add_argument("--" + field.replace("_", "-"), type=int if field in ("chroma_port", "answer_k") else str,
                               help=f"{name}: {what}")
     args = parser.parse_args(argv)
+    # T3-46: e2e without --calc-golden = the scenario path (e2e golden + its calc file); rules reads the same scenarios
+    args.e2e_scenarios = args.layer == "e2e" and args.calc_golden is None
+    if args.e2e_scenarios or args.layer == "rules":
+        args.scenarios = [E2E_SCENARIOS] if args.scenarios == [AGENT_SCENARIOS] else args.scenarios
+    args.calc_golden = args.calc_golden or [E2E_CALC if args.e2e_scenarios else CALC_GOLDEN]
     apply_settings(args)
     args.split = args.split or ("dev" if args.layer == "l012" else "test")
     args.k = args.k or (5 if args.layer == "ragas" else 10)
@@ -146,7 +155,7 @@ def main(argv: list[str] | None = None) -> Path:
     # T3-32: spans went out live (one service kosis-agent, environment eval) when the OTLP endpoint is set
     live = args.telemetry is not None or (args.layer == "agent" and bool(args.agent))
     exported = live and bool(os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT"))
-    if args.layer in ("l3", "e2e"):  # only these rows carry verdict/spans for trace.blame
+    if args.layer in ("l3", "e2e") and not args.e2e_scenarios:  # only these rows carry verdict/spans for trace.blame
         for r in rows:
             r["failure"] = trace.blame(r)
         summary["failures"] = dict(Counter(r["failure"]["stage"] for r in rows if r["failure"]))
@@ -177,7 +186,7 @@ def main(argv: list[str] | None = None) -> Path:
     else:
         op = ops.summarize(rows)
         report += common.ops_section(op)
-    live_llm = args.layer in ("l3", "e2e") and not args.from_run  # runs that call summarize_stat now
+    live_llm = args.layer in ("l3", "e2e") and not args.from_run and not args.oracle  # runs that call summarize_stat now
     run_id = f"{dt.datetime.now():%Y%m%d-%H%M%S}-{args.stage}"
     out = REPORTS / run_id
     out.mkdir(parents=True)
@@ -189,7 +198,8 @@ def main(argv: list[str] | None = None) -> Path:
     manifest = {
         "run_id": run_id, "layer": args.layer, "stage": args.stage, "split": args.split,
         "golden": {"l0·l1": ref(args.golden), "l2": ref(args.query_golden)} if args.layer == "l012"
-        else calc_ref(args.calc_golden) if args.layer in ("l3", "e2e", "ragas") else calc_ref(args.scenarios) if args.layer == "agent"
+        else calc_ref(args.scenarios + args.calc_golden) if args.layer == "e2e" and args.e2e_scenarios
+        else calc_ref(args.calc_golden) if args.layer in ("l3", "e2e", "ragas") else calc_ref(args.scenarios) if args.layer in ("agent", "rules")
         else ref(golden),
         "source_snapshot": {"tables.jsonl": sha256(TABLES)},
         # T3-41: the alternate gold tables e2e grading and locate() read (a label change moves e2e and ragas numbers)
@@ -219,7 +229,7 @@ def main(argv: list[str] | None = None) -> Path:
         online.record_history(run_id, summary)
     if args.llm == "mock" and live_llm:
         pass  # a mock run checks the path; its numbers stay out of the committed history
-    elif args.from_run or args.layer == "online":
+    elif args.from_run or args.oracle or args.layer in ("online", "rules"):  # oracle / rules: nothing ran, no latency or tokens
         pass  # a regrade copies the past run's latencies and tokens; online traffic stays out of the committed history
     elif args.layer == "l012":
         for name, o in op.items():

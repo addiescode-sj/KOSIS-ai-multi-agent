@@ -118,7 +118,6 @@ def test_run_eval_e2e_writes_report_and_links_verdicts(monkeypatch, tmp_path):
 
     golden = tmp_path / "calculation_golden.jsonl"
     golden.write_text(item().model_dump_json() + "\n", encoding="utf-8")
-    monkeypatch.setattr(run_eval, "CALC_GOLDEN", golden)
     monkeypatch.setattr(run_eval, "REPORTS", tmp_path / "reports")
     monkeypatch.setattr(run_eval, "ROOT", tmp_path)  # golden path in the manifest is relative to ROOT
     history: list[str] = []
@@ -134,7 +133,8 @@ def test_run_eval_e2e_writes_report_and_links_verdicts(monkeypatch, tmp_path):
         return provider, mine
 
     monkeypatch.setattr(runner, "tracing", traced)
-    out = run_eval.main(["--layer", "e2e", "--agent", "tests.test_evals_e2e:build_fake", "--stage", "t"])
+    # T3-46: the calculation golden path is the one named by --calc-golden (without it e2e runs the scenarios)
+    out = run_eval.main(["--layer", "e2e", "--agent", "tests.test_evals_e2e:build_fake", "--stage", "t", "--calc-golden", str(golden)])
     assert [out] == list((tmp_path / "reports").iterdir()) and len(history) == 1  # main returns the run folder
     report = (out / "report.md").read_text(encoding="utf-8")
     assert "검색 1위가 정답 표: 0/1" in report and "retrieval 0" in report  # refusal with an allowed reason passes
@@ -152,7 +152,7 @@ def test_run_eval_e2e_writes_report_and_links_verdicts(monkeypatch, tmp_path):
 
     # T3-21 --llm mock: the path runs, the run says it is mock, and its numbers stay out of ops_history
     mock = run_eval.main(["--layer", "e2e", "--agent", "tests.test_evals_e2e:build_fake", "--stage", "t-mock",
-                          "--llm", "mock"])
+                          "--llm", "mock", "--calc-golden", str(golden)])
     assert json.loads((mock / "manifest.json").read_text(encoding="utf-8"))["llm"] == "mock"
     assert "llm mock: 경로 확인용, 점수 아님" in (mock / "report.md").read_text(encoding="utf-8") and len(history) == 1
 
@@ -251,3 +251,11 @@ def test_e2e_from_run_regrades_the_saved_rows(monkeypatch, tmp_path):
     _, summary, report = l4_e2e.run(Namespace(calc_golden=[golden], golden=tmp_path / "none", query_golden=tmp_path / "none",
                                               from_run=tmp_path, agent=None, llm="hcx", stage="t", interval=0, telemetry=None))
     assert summary["verdicts"]["all"] == {"PASS": 1} and "과거 실행 재채점" in report and summary["top1_right"] == 0
+
+
+def test_by_survey_counts_pass_per_golden_table_survey():
+    # T3-46: survey of the golden table (not the answered one), unknown tables under "?"
+    from evals.tasks.l4_e2e import by_survey
+    rows = [{"table_key": "a", "verdict": "PASS"}, {"table_key": "a", "verdict": "FAIL"},
+            {"table_key": "b", "verdict": "PASS"}, {"table_key": "z", "verdict": "PARTIAL"}]
+    assert by_survey(rows, {"a": "인구동향조사", "b": "장래인구추계"}) == {"인구동향조사": [1, 2], "장래인구추계": [1, 1], "?": [0, 1]}

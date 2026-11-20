@@ -34,6 +34,7 @@ from opentelemetry.trace import Link, SpanContext, StatusCode, TraceFlags
 
 from kosis_agent.observability.tracing import CHAT, ROOT_SPAN, TOOL_PREFIX, agent_turn, record_error, resource, short
 
+from evals.evaluators.labels import state_labels
 from evals.schemas import AgentScenario
 
 ENVIRONMENT = "eval"  # deployment.environment.name of every eval trace (the service says "service")
@@ -160,9 +161,10 @@ def run(graph, scenarios: list[AgentScenario], repeat: int = 1,
             thread = f"{scenario.sid}#{r}"
             records = out[(scenario.sid, r)] = []
             done += 1
+            active = None  # the table the conversation ended the previous turn on (T3-46 labels: rule 1 vs rule 6)
             for i, turn in enumerate(scenario.turns):
                 memory.clear()
-                answer, error, started = "", None, time.perf_counter()
+                answer, error, started, state = "", None, time.perf_counter(), {}
                 with agent_turn(tracer, thread, i, meter) as (root, spans):
                     try:
                         state = graph.invoke({"messages": [("user", turn.question)]},
@@ -171,7 +173,10 @@ def run(graph, scenarios: list[AgentScenario], repeat: int = 1,
                     except Exception as e:  # noqa: BLE001 - a failed turn is graded, not raised
                         error = f"{type(e).__name__}: {e}"
                         record_error(root, e)  # T3-44: span gets a cut copy, the record keeps the full error
-                records.append({**turn_record(list(memory.get_finished_spans()), answer, error), "run": r})
+                labels = state_labels(state, turn.question, had_table=active is not None) if isinstance(state, dict) and state else None
+                active = state.get("active_table") if isinstance(state, dict) else active
+                records.append({**turn_record(list(memory.get_finished_spans()), answer, error), "run": r,
+                                "labels": labels.model_dump(exclude_none=True) if labels else None})
                 progress(done, total, f"{thread} turn {i}", started, error)
                 if error:
                     break

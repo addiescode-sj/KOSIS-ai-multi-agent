@@ -45,10 +45,16 @@ RUNS: list[tuple[str, list[str], set[str], str]] = [
     ("l2-v1", ["--layer", "l2", "--split", "all"], {"data"}, "질의 파서 (규칙)"),
     ("l2-v2", ["--layer", "l2", "--split", "all", "--query-golden", str(DATASETS / "query_golden_v2.jsonl")], {"data", "v2"}, "질의 파서, 골든 v2"),
     ("l3", ["--layer", "l3"], {"data", "llm"}, "에이전트 그래프 한 턴, 정답 표 검색(oracle) → summarize_stat 실호출"),
-    ("e2e", ["--layer", "e2e"], {"data", "chroma", "rerank", "llm"}, "서비스 에이전트 그래프 한 턴 (검색 → summarize_stat)"),
+    # T3-46: the calculation golden path (ragas and the regression gate read its rows); e2e-scenarios is the new set
+    ("e2e", ["--layer", "e2e", "--calc-golden", str(DATASETS / "calculation_golden.jsonl")], {"data", "chroma", "rerank", "llm"},
+     "서비스 에이전트 그래프 한 턴 (검색 → summarize_stat), 계산 골든 90문항"),
     # T3-43: judges this suite's e2e answers (--from-run is added by run()); skipped after a mock or missing e2e
     ("ragas", ["--layer", "ragas"], {"data", "judge"}, "Ragas 심판 (e2e 답: Faithfulness·Relevancy·Context P/R) → 회귀 게이트"),
     ("agent", ["--layer", "agent"], {"agent"}, "멀티턴 시나리오 → 에이전트 (T3-06)"),
+    # T3-46: the e2e golden set (failure types + gold classification labels, evals/builders/e2e_golden.py)
+    ("rules", ["--layer", "rules", "--split", "all"], {"e2e_golden"}, "규칙 분류 정확도 (오프라인: 정답 표로 규칙 실행값 vs 정답 라벨)"),
+    ("e2e-scenarios", ["--layer", "e2e", "--split", "all"], {"data", "chroma", "rerank", "llm", "e2e_golden"},
+     "e2e 골든 시나리오 (서비스 그래프, 툴·상태·숫자 + 분류 라벨)"),
 ]
 GATE_DROP_EXIT = 2  # T3-43: a metric below the committed baseline (1 stays "a run failed")
 WARN_ONLY = {"sigungu"}  # checks no run needs: shown as ⚠, never skip a run
@@ -80,6 +86,9 @@ def check(llm: str, agent: str | None, scenarios: Path | None) -> dict[str, tupl
                      else (False, f"RERANK_CKPT 파일 없음: {rerank}" if rerank else "RERANK_CKPT 미설정"))
     out["llm"] = ((True, "mock (호출 없음)") if llm == "mock" else
                   (True, "HCX_API_KEY 설정됨") if os.environ.get("HCX_API_KEY") else (False, "HCX_API_KEY 미설정 (또는 --llm mock)"))
+    golden = [p.name for p in (DATASETS / "e2e_golden.jsonl", DATASETS / "e2e_golden_calc.jsonl") if not p.exists()]
+    out["e2e_golden"] = (not golden, f"없음: {', '.join(golden)} (python -m evals.builders.e2e_golden)" if golden
+                         else "e2e_golden.jsonl 있음")
     out["agent"] = ((True, f"{agent} · {scenarios}") if agent and scenarios and scenarios.exists()
                     else (False, "--agent module:function와 --scenarios 파일 필요"))
     import importlib.util
@@ -112,7 +121,7 @@ def _chroma(spec) -> tuple[bool, str]:
 def argv_for(name: str, args: list[str], llm: str, opts: argparse.Namespace) -> list[str]:
     """run_eval args of one run: the stage, and the llm / interval / retriever / agent options it takes."""
     out = [*args, "--stage", f"{opts.stage}-{name}"]
-    if name in ("l3", "e2e"):
+    if name in ("l3", "e2e", "e2e-scenarios"):
         out += ["--llm", llm, "--interval", str(opts.interval if opts.interval is not None else (0 if llm == "mock" else 5))]
     # e2e runs the service graph (T3-32): its search settings are the shell's, and --llm mock turns every model off
     if name == "agent":
@@ -138,6 +147,12 @@ def metrics(m: dict) -> dict[str, float | int | str | None]:
         c = s["combos"]
         return {"filter recall (all)": c["all"]["filter_recall"], "후보 중앙값 (all)": c["all"]["candidates_median"],
                 "Hit@5 (all)": c["all"].get("hit@5"), "Hit@5 (none)": c["none"].get("hit@5")}
+    if layer == "rules" or (layer == "e2e" and "labels" in s):  # T3-46: label accuracy (+ the agent rates for e2e)
+        fields = (s.get("labels") or s)["fields"]
+        out = {f"라벨 {f}": v["acc"] for f, v in fields.items() if f in ("route", "reading", "outcome", "qtype", "formula", "resolved_question")}
+        if layer == "e2e":
+            out = {k: s[k] for k in ("conversation_success", "turn_pass", "tool_selection", "state_accuracy", "numeric_accuracy")} | out
+        return out
     if layer in ("l3", "e2e"):
         v = s["verdicts"]["all"]
         n = sum(v.values()) or 1

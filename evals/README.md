@@ -174,8 +174,11 @@ uv run python -m evals.run_eval --layer e2e --agent <module:function> --stage <�
 |---|---|---|
 | `calculation_golden.jsonl` | `python -m evals.builders.phase1` | 실전 1 골든 90문항, 10표. clarify·default·causal 같은 어려운 유형 |
 | `calculation_golden_diverse.jsonl` | `python -m evals.builders.diverse --rewrites evals/datasets/calculation_diverse_rewrites.jsonl` | 14개 조사, 72표, 264문항 (`D-` qid). value·compare·trend·거절 |
+| `calculation_golden_wide.jsonl` (T3-46) | `python -m evals.builders.diverse --total 500 --seed 46 --out evals/datasets/calculation_golden_wide.jsonl --rewrites evals/datasets/calculation_wide_rewrites.jsonl` | 숫자 답이 있는 500문항(value 241 · compare 176 · trend 83), 382표, 14개 조사. 조사별 균등 할당(표가 모자란 조사만 표당 2문항), 조사 안에서는 메뉴 경로별로 돌아가며 표당 1문항. 한 표 최대 0.4%, 한 조사 최대 9.8%. 거절 문항 없음 |
 
-기본값은 실전 1 파일만 읽는다. 둘 다 쓰려면 `--calc-golden`에 두 파일을 함께 넘긴다.
+기본값: l3·ragas는 실전 1 파일(`calculation_golden.jsonl`, l3의 오라클 검색이 그 질문으로 표를 찾음), e2e는 `--calc-golden`이 없으면 e2e 골든 시나리오(아래 "e2e 전용 골든셋"). wide는 e2e 골든의 재료다.
+다른 파일을 쓰려면 `--calc-golden`에 넘긴다. 90문항 기준선과 비교할 때는 `--calc-golden evals/datasets/calculation_golden.jsonl`.
+새 문항을 붙인 뒤에는 대체 정답 표 라벨을 다시 만든다: `python -m evals.builders.alternates --calc-golden evals/datasets/calculation_golden.jsonl evals/datasets/calculation_golden_wide.jsonl`.
 
 ```bash
 uv run python -m evals.run_eval --layer l3 --stage <이름> --interval 5 \
@@ -185,6 +188,35 @@ uv run python -m evals.run_eval --layer l3 --stage <이름> --interval 5 \
 diverse 문항의 숫자는 빌더가 Parquet 셀에서 직접 뽑는다. 질문 문장은 사람(또는 Claude)이 다시 쓰는데,
 `check_question`이 연도·라벨·항목명이 남아 있고 다른 숫자가 없는지 확인한 뒤에만 반영한다. 통과하지 못하면 템플릿 문장을 그대로 쓴다.
 `calculation_diverse_review_sample.csv`(5문항마다 1개)의 `ok`·`note` 열은 사람이 검수할 때 채운다.
+`--extend`로 만든 파일은 새 문항만 `<out>.draft.csv`·`<out>.review.csv`에 쓴다 (wide: `calculation_golden_wide.review.csv`).
+
+### e2e 전용 골든셋 (T3-46)
+
+`python -m evals.builders.e2e_golden` → `e2e_golden.jsonl`(AgentScenario 617개, 722턴) + `e2e_golden_calc.jsonl`(숫자 정답 CalcItem).
+wide 계산 골든 525문항(145표·14조사)을 재료로, 실패 유형 네 가지와 턴별 정답 라벨을 코드로 만든다(LLM 0).
+
+| 실패 유형 (sid) | 문항 | 내용 |
+|---|---|---|
+| ① 숫자 추출·계산 (`E2E-N`) | 250 | value·compare, 조사별 균등 |
+| ② 수식 선택 (`E2E-F`) | 132 | trend(% 계열은 pp_diff, pct_change 금지 / 수량은 pct_change), "몇 배"(ratio), "연평균 증가율"(cagr) |
+| ③ 재작성 (`E2E-R`) | 125 | 2턴: 시도 이월·연도 정정·상대 연도("작년은?")·지시어·차트만·주제 전환, 멀티쿼리(두 표, "둘의 차이는?") |
+| ④ 질문 분류 (`E2E-C`) | 110 | 거절(no_period·missing_value·범위 밖)·인과("왜")·평가("높은 편이야?" → 되묻기)·비율 합산(not_aggregatable)·연도 생략(기본값) |
+
+턴마다 `expect.labels`(정답)와 `expect.rule_pred`(지금 규칙을 정답 표로 오프라인 실행한 값)를 담는다. 라벨 어휘는 코드의 규칙 분류
+그대로다: `route`(rag·rewrite·clarify·refuse) · `reading`(new·chart_only·reference·carry_over·defer, context.py 규칙 1~6) ·
+`resolved_question` · `sub_questions`·`op` · `outcome`·`judge_rule`·`refusal_reasons`·`default_applied`(실전 1 judge) ·
+`qtype`(rule_plan) · `formula`·`formula_forbidden`(CombineFn) · `chart_request`. 정의는 `plans/T3-46.md` "정답 라벨".
+
+```bash
+python -m evals.run_eval --layer rules --stage <이름>          # 오프라인: rule_pred vs 정답 라벨 (LLM·검색 0)
+python -m evals.run_eval --layer e2e --stage <이름>            # live: 서비스 그래프로 시나리오 실행, 툴·상태·숫자 + 라벨 채점
+python -m evals.run_eval --layer e2e --stage <이름> --oracle   # 자기검증 (모든 비율 1.000)
+python -m evals.run_eval --layer e2e --stage <이름> --calc-golden evals/datasets/calculation_golden.jsonl  # 예전 한 턴 계산 경로
+```
+
+e2e는 `--calc-golden`이 없으면 이 시나리오를 돈다. 오프라인 스위트(`evals.suite`, `scripts/dev.sh suite`)의 `e2e` → Ragas → 회귀 게이트는
+기준선 연속성을 위해 계속 `calculation_golden.jsonl` 경로로 돌고(Ragas는 한 턴 계산 행을 읽음), 이 골든셋은 스위트의 `rules`(오프라인)와
+`e2e-scenarios`(live) 단계가 돈다. 하나만: `bash scripts/dev.sh suite --stage <ID> --only rules e2e-scenarios`. 규칙을 고친 뒤에는 빌더를 다시 돌려 `rule_pred`를 새로 만든다.
 
 ### 검색기를 바꿀 때 판정 풀 넓히기 (T3-22)
 

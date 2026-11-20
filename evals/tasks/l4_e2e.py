@@ -6,10 +6,11 @@ phase 1 (search picked[0]); a search gate refusal is graded as a refusal. --retr
 
 from __future__ import annotations
 
+import json
 from collections import Counter
 
 from evals.evaluators import alternates
-from evals.schemas import CalcItem, QueryItem, RetrievalItem, load_items, load_jsonl
+from evals.schemas import TABLES, CalcItem, QueryItem, RetrievalItem, load_items, load_jsonl
 from evals.trace import node_ranks
 from evals.tasks.common import (MOCK_NOTE, answer_owners, calc_items, grade, pct, single_turn_rows, summarize_stat_target,
                                 verdict_table)
@@ -34,9 +35,56 @@ def l1_item(index: dict[str, RetrievalItem], item: CalcItem) -> RetrievalItem | 
     return index.get(item.qid) or index.get(item.question)
 
 
+def survey_names(path=TABLES) -> dict[str, str]:
+    """Table key -> survey name (data/tables.jsonl)."""
+    if not path.exists():
+        return {}
+    return {(i := json.loads(line)["info"])["key"]: i["survey_name"] for line in path.read_text(encoding="utf-8").splitlines() if line.strip()}
+
+
+def by_survey(rows: list[dict], names: dict[str, str]) -> dict[str, list[int]]:
+    """T3-46: [PASS, n] per survey of the golden table, most questions first."""
+    out: dict[str, list[int]] = {}
+    for r in rows:
+        c = out.setdefault(names.get(r["table_key"], "?"), [0, 0])
+        c[0] += r["verdict"] == "PASS"
+        c[1] += 1
+    return dict(sorted(out.items(), key=lambda kv: -kv[1][1]))
+
+
+def scenario_run(args) -> tuple[list[dict], dict, str]:
+    """T3-46 (option C): e2e over the e2e golden scenarios (evals/builders/e2e_golden.py) — the agent layer's runner
+    and grader (tools, state, numbers, answers) on the service graph, plus each turn's labels from the graph state
+    (evals.runners.agent records them) against the gold labels. --oracle: predictions = gold (self-check 1.000)."""
+    from evals.evaluators import labels as lab
+    from evals.tasks import agent as agent_task
+    from evals.tasks.rules import parser
+
+    args.agent = args.agent or (None if args.oracle or args.from_run else SERVICE_GRAPH)
+    rows, summary, report = agent_task.run(args)
+    gold = {(s.sid, i): t.expect.labels for s in agent_task.load_scenarios(args.scenarios) for i, t in enumerate(s.turns)}
+    parse = parser()
+    for r in rows:
+        want = gold.get((r["sid"], r["turn"]))
+        got = want if args.oracle else (lab.TurnLabels.model_validate(r["labels"]) if r.get("labels") else None)
+        r["gold_labels"] = want.model_dump(exclude_none=True) if want else {}
+        r["pred_labels"] = got.model_dump(exclude_none=True) if got else {}
+        r["label_hits"] = lab.grade(want, got, parse)
+    summary["labels"] = lab.summarize(rows)
+    report = report.replace("# Agent (multi-turn · multi-query)", "# L4 end to end (e2e 골든 시나리오, T3-46)", 1)
+    report += "\n".join(["", "## 분류 라벨 (그래프 상태 vs 정답 라벨)", "",
+                         "- 그래프 상태에서 읽은 라벨: reading·resolved_question(연도·시도)·sub_questions·op·outcome·"
+                         "refusal_reasons·default_applied·qtype(실전 1 analyze.rules span)·formula(답 fact 계산식)·"
+                         "chart_request. judge_rule은 상태에 없어 `--layer rules`(오프라인)에서만 잰다.", "",
+                         *lab.report_lines(summary["labels"]), ""])
+    return rows, summary, report
+
+
 def run(args) -> tuple[list[dict], dict, str]:
     """L4 end to end: the agent graph picks the table and answers, then the same grader as L3. --from-run regrades
-    a past e2e run's saved answers and rankings (no model, no search)."""
+    a past e2e run's saved answers and rankings (no model, no search). Without --calc-golden: scenario_run (T3-46)."""
+    if getattr(args, "e2e_scenarios", False):
+        return scenario_run(args)
     from evals.runners import e2e
     from evals.runners.agent import load_graph
     from evals.runners.stat import read_rows
@@ -72,7 +120,8 @@ def run(args) -> tuple[list[dict], dict, str]:
     k = max((len(r["keys"]) for r in rows), default=5)
     nodes = node_ranks(rows, k)
     restored = sum(bool(a.get("search_restored")) for a in raw)
-    summary = {"verdicts": verdicts, "errors": dict(errors), "top1_right": len(right), "by_top1": split, "causes": causes,
+    surveys = by_survey(rows, survey_names())
+    summary = {"by_survey": surveys, "verdicts": verdicts, "errors": dict(errors), "top1_right": len(right), "by_top1": split, "causes": causes,
                "template": template, "errors_by_top1": errors_by_top1, "search_nodes": nodes, "search_k": k,
                "search_restored": restored}
     n = len(rows) or 1
@@ -99,14 +148,19 @@ def run(args) -> tuple[list[dict], dict, str]:
           for side, tags in errors_by_top1.items()),
         "- 검색 노드별 정답 표 순위 (답할 문항, T3-45): " + (" → ".join(
             f"{name} 1위 {c['top1']}/{c['n']} · top{k} {c['topk']} · 후보 밖 {c['missing']}" for name, c in nodes.items()) or "노드 span 없음"),
+        "- 조사별 PASS (T3-46, 정답 표의 조사): " + " · ".join(f"{name} {pct(*c)}" for name, c in surveys.items()),
         *([f"- 실행 중 예외 뒤 검색 후보 복원 (T3-45): {restored}문항 — 검색 노드 span에서 keys·used_table"] if restored else []),
     ]) + "\n"
     return rows, summary, report
 
 
 def owners(rows: list[dict], summary: dict) -> dict[str, list[str]]:
+    if "labels" in summary:  # scenario rows have no L3 verdict to blame
+        return {}
     return answer_owners(rows, e2e=True)
 
 
 def target(args, op: dict) -> str:
+    if getattr(args, "e2e_scenarios", False):
+        return f"{args.agent or ('oracle' if args.oracle else 'from-run')}+e2e_golden"
     return f"{args.agent or SERVICE_GRAPH}+{summarize_stat_target(op)}"

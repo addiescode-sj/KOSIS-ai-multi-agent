@@ -154,10 +154,44 @@ class ExpectedCall(BaseModel):
         return self
 
 
+FailureType = Literal["numbers", "formula", "rewrite", "classify"]  # T3-46 e2e golden: ① ② ③ ④
+Route = Literal["rag", "rewrite", "clarify", "refuse"]
+ReadingLabel = Literal["new", "chart_only", "reference", "carry_over", "defer"]
+
+
+class TurnLabels(BaseModel):
+    """T3-46: one turn's classification in the vocabulary the rules use today (plans/T3-46.md "정답 라벨").
+
+    As gold (TurnExpect.labels) a field left None is not graded. The same model holds a prediction: rule_pred (the
+    rules run offline on the gold table, evals.evaluators.labels.rule_labels) or a live turn's labels (graph state)."""
+
+    model_config = ConfigDict(extra="forbid")
+    failure_type: FailureType | None = None
+    route: Route | None = None
+    reading: ReadingLabel | None = None  # graph/context.py read_turn, derived (evaluators.labels.reading_of)
+    resolved_question: str | None = None  # graded by its years and 시도 (phase 2 parse), not word for word
+    sub_questions: list[str] | None = None  # graph/multiquery.py split; graded by count ([] or 1 = not split)
+    op: Literal["diff", "sum", "ratio"] | None = None
+    outcome: Literal["answered", "refused", "clarify"] | None = None  # phase 1 judge Verdict.outcome
+    judge_rule: str | None = None  # Verdict.rule (causal, no_period, symbol, evaluative, not_aggregatable, ...)
+    refusal_reasons: list[RefusalReason] | None = None  # gold: any of these; pred: the one given
+    default_applied: bool | None = None  # phase 1 filled a condition the question left out (a period)
+    qtype: QuestionType | None = None  # rule_plan Plan.type
+    formula: list[str] | None = None  # CombineFn names the answer must compute (gold ⊆ pred)
+    formula_forbidden: list[str] | None = None  # CombineFn names that would be wrong (pct_change on a % series)
+    # pred only (rule_pred): plan steps compute drops when meaningless (optional, e.g. pct_change of a %), and whether
+    # the rules left the plan to the model (route "unresolved": no formula decided by rules)
+    formula_optional: list[str] | None = None
+    plan_unresolved: bool | None = None
+    chart_request: Literal["bar", "line", "pie"] | None = None
+
+
 class TurnExpect(BaseModel):
     """What one turn must do. A multi-query turn ("찾아서, 계산해서, 그려줘") lists several calls in order."""
 
     model_config = ConfigDict(extra="forbid")
+    labels: TurnLabels | None = None  # T3-46 gold classification of the turn
+    rule_pred: TurnLabels | None = None  # T3-46 what today's rules decide offline (gold table), stored at build
 
     tools: list[ExpectedCall] = Field(default_factory=list)  # in call order; [] = answer without a tool
     table_key: str | None = None  # the table the turn ends on (conversation state); None = not graded
