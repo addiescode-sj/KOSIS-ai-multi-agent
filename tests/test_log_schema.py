@@ -39,7 +39,7 @@ def _span(name, ms, status="ok", stage="search", kind="node", **more):
 
 def _rows() -> list[RequestLog]:
     """Nine user questions on 11/20 KST in five conversations, one harness request, one question on 11/21 KST and one
-    40 days old. Hand counts for each metric are in test_metrics_match_hand_counts."""
+    111 days old (past the 90-day retention). Hand counts for each metric are in test_metrics_match_hand_counts."""
     ok = dict(outcome="answered", has_numbers=True)
     return [
         # 15:30 UTC on 11/19 is 00:30 on 11/20 in KST: counted on 11/20
@@ -74,7 +74,7 @@ def _rows() -> list[RequestLog]:
         _log(conversation_id=F, turn_index=1, question="다음 날 질문", question_len=7, created_at=_at(20, 15, 30),
                    picked_key="K2", latency_ms=7000, **ok),
         _log(conversation_id=F, turn_index=2, question="오래된 질문", question_len=6,
-                   created_at=datetime(2026, 10, 1, tzinfo=timezone.utc), picked_key="K2", latency_ms=7000, **ok),
+                   created_at=datetime(2026, 8, 1, tzinfo=timezone.utc), picked_key="K2", latency_ms=7000, **ok),
     ]
 
 
@@ -320,7 +320,7 @@ def test_metrics_match_hand_counts(pg):
 
 @pytest.mark.postgres
 def test_purge_removes_old_text_and_keeps_the_rows(pg):
-    cutoff = datetime(2026, 10, 21, tzinfo=timezone.utc)  # 30 days before 11/20
+    cutoff = datetime(2026, 8, 22, tzinfo=timezone.utc)  # 90 days before 11/20
     with session_scope(pg) as s:
         assert purge_questions(s, cutoff) == 1
         assert purge_questions(s, cutoff) == 0  # running it again changes nothing

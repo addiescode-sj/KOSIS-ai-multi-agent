@@ -22,7 +22,7 @@
 | 암묵 피드백 연구: [ACL 2024](https://aclanthology.org/2024.acl-long.598.pdf), [EMNLP 2021 재질문 탐지](https://preview.aclanthology.org/moar-dois/2021.emnlp-main.143.pdf), [arXiv 2010.12251](https://arxiv.org/pdf/2010.12251v2.pdf) | 같은 질문을 바꿔 다시 묻기, 중간 이탈, "아니" 같은 정정 표현이 불만족 신호다. 대화 맥락과 턴 사이 시간 간격을 쓰면 판별이 좋아진다 | `prev_request_id`, `turn_index`, `created_at`, `input_method`, `outcome=aborted`, 탐지 결과 자리 `rephrase_of`·`negative_reaction` |
 | 개인정보보호위원회 생성형 AI 개인정보 처리 안내서(2025-08, [보도](https://byline.network/2025/08/6-277/)) | 처리 목적·범위를 먼저 정하고, 서비스 단계에서 이용자에게 투명하게 알린다 | 원문이 들어가는 열을 한정하고(3장), 보관 기간과 "대화를 지워도 로그는 남는다"를 개인정보 안내에 적는다 |
 
-- 확인하지 못한 것: 프롬프트(질문 원문) 보관 기간의 구체 기준. 안내서 원문을 직접 읽지 못했다. **30일은 팀 제안값**이다.
+- 확인하지 못한 것: 프롬프트(질문 원문) 보관 기간의 구체 기준. 안내서 원문을 직접 읽지 못했다. **90일은 팀 결정값**이다(기능명세서 FEAT-039·045, 회원 대화 보관 90일과 같은 기간).
 - 검토하고 쓰지 않은 구조
   - 이벤트 한 줄씩 쌓는 단일 `events` 테이블: 원문이 JSON 안에 섞여 "원문만 지운다"가 어렵고, 규칙을 DB 제약으로 걸 수 없다.
   - Langfuse 자체 호스팅: 서비스가 여러 개 늘어 인프라 범위이고, 원문이 도구 DB에 들어가 삭제를 우리 코드로 보장하기 어렵다.
@@ -40,7 +40,7 @@
 | `session_id` | 브라우저 세션(임의 UUID) | 사람을 식별하지 않는다. 하네스 요청은 비어 있다 |
 | `is_member`, `is_internal` | 회원 여부, 팀·하네스 트래픽 여부 | 지표는 `is_internal`을 뺀다 |
 | `input_method` | `direct`(직접 입력) · `clarify_option`(되묻기 선택지 버튼) | 추천 질문은 1차 범위 밖(11/18)이라 값이 없다 |
-| `question`, `question_len` | 가린 질문 원문, 글자 수 | 원문은 30일 뒤 NULL, 글자 수는 남는다 |
+| `question`, `question_len` | 가린 질문 원문, 글자 수 | 원문은 90일 뒤 NULL, 글자 수는 남는다 |
 | `outcome` | `answered` · `refused` · `clarify` · `failed` · `error` · `aborted` | 앞의 넷은 `ChatResult.outcome`, `error`는 예외, `aborted`는 답이 끝나기 전에 떠남 |
 | `reason_code` | 거절·되묻기 사유 코드, 오류면 예외 이름 | 거절이면 꼭 있어야 한다. 에이전트가 사유를 주지 않은 거절(멀티쿼리 등)은 `unknown` |
 | `failed_stage` | 처음으로 정상 종료하지 않은 단계(`search`·`stat`·`chart`·`agent`) | 쓰는 순간 단계에서 계산(`failed_stage`) |
@@ -136,8 +136,8 @@ CREATE INDEX ix_request_logs_session_id ON request_logs (session_id);
 ## 3. 개인정보·보관 규칙
 
 - **원문이 들어가는 곳은 두 열뿐이다:** `request_logs.question`, `feedback.reason`. 둘 다 저장 전에 전화번호·이메일 패턴을 가린다(가림 함수는 KOS-170).
-- **단계는 허용 키만 읽는다:** `name`, `kind`, `stage`, `ms`, `status`, `error_type`, `input_tokens`, `output_tokens`, `model` (`clean_spans`). 로그 버전 3부터 행에 저장하지 않지만, 메트릭 속성도 같은 원칙을 따른다(10장). 툴 인자·결과(`gen_ai.tool.call.arguments`·`.result`)는 질문과 답 원문이 들어 있어 옮기지 않는다. 예외 메시지, 검색 상위 표 목록, 실전 1의 `unresolved` 같은 값은 넣지 않는다. 질문 조각이 섞일 수 있고, 섞이면 30일 삭제가 닿지 않는다.
-- **보관:** 30일(제안값)이 지나면 `question`만 NULL로 바꾼다. 행과 나머지 열은 남는다(`purge_questions`, 다시 돌려도 결과가 같다). 실행 주기는 정제 배치(KOS-167)가 정한다.
+- **단계는 허용 키만 읽는다:** `name`, `kind`, `stage`, `ms`, `status`, `error_type`, `input_tokens`, `output_tokens`, `model` (`clean_spans`). 로그 버전 3부터 행에 저장하지 않지만, 메트릭 속성도 같은 원칙을 따른다(10장). 툴 인자·결과(`gen_ai.tool.call.arguments`·`.result`)는 질문과 답 원문이 들어 있어 옮기지 않는다. 예외 메시지, 검색 상위 표 목록, 실전 1의 `unresolved` 같은 값은 넣지 않는다. 질문 조각이 섞일 수 있고, 섞이면 90일 삭제가 닿지 않는다.
+- **보관:** 90일이 지나면 `question`만 NULL로 바꾼다. 행과 나머지 열은 남는다(`purge_questions`, 다시 돌려도 결과가 같다). 실행 주기는 정제 배치(KOS-167)가 정한다.
 - **하네스·팀 트래픽:** `is_internal=true`, 원문은 저장하지 않는다(제약). 골든 문항·정답·문항 ID는 어느 열에도 넣지 않는다.
 - IP, 기기 식별자, 이름·연락처는 저장하지 않는다. `session_id`는 브라우저가 만든 임의 값이다.
 - Jaeger로 나가는 span 속성은 이 규칙 밖이다. 사용자 요청을 추적으로 내보낼 때도 같은 허용 목록을 쓰도록 KOS-170에서 맞춘다.
@@ -168,7 +168,7 @@ CREATE INDEX ix_request_logs_session_id ON request_logs (session_id);
 2. `feedback.request_id`는 unique다(같은 답에 다시 누르면 마지막 값으로 갱신). `request_logs`로 외래 키를 걸지 않는다. 로그 쓰기가 실패해도 피드백은 남아야 한다.
 3. `feedback.message_id`는 nullable이고, 대화가 지워지면 NULL이 된다(`ON DELETE SET NULL`). 비회원 답에는 메시지 행이 없다.
 4. 제약: 값은 `up`·`down`, 선택지는 값에 맞는 것만(없어도 됨: 창을 닫은 경우), "기타"면 이유 필수, 이유 200자.
-5. `feedback.reason`도 30일 뒤 NULL로 바꾼다. 값과 선택지는 남긴다.
+5. `feedback.reason`도 90일 뒤 NULL로 바꾼다. 값과 선택지는 남긴다.
 6. 요청이 끝날 때(정상·거절·오류·이탈 모두) `row_from_turn`으로 `request_logs`에 한 행을 쓴다. 쓰기가 실패해도 답은 나가야 한다. 이탈은 스트림이 닫힌 것(`GeneratorExit`)으로 안다.
 
 ## 6. 메트릭 화면 지표 18개와 스키마
@@ -221,7 +221,7 @@ SELECT reason, sum(n) FROM ingest_rejects WHERE <day> GROUP BY reason;
 ## 7. 정해야 할 것
 
 - **마이그레이션 번호:** `request_logs`를 `0002`(KOS-158) 다음 번호로 넣을지, 같은 마이그레이션에 넣을지 김병석 님과 정한다. 정해지면 모델을 `kosis_store.models.Base`로 옮기고 `test_migration_matches_models`가 함께 본다.
-- 질문 원문 보관 기간(30일 제안)과 개인정보 안내 문구.
+- 개인정보 안내 문구(원문 보관 90일).
 - 사유 코드 목록(`reason_code`): 실전 1의 거절 사유와 검색의 답 없음 사유를 하나의 목록으로 묶는다(KOS-170에서 writer와 함께).
 - LLM 단가표를 어디에 둘지(설정 파일 제안).
 - Prometheus를 어디에 띄울지와 보관 기간(10.4, 인프라 담당).
@@ -333,8 +333,8 @@ sum by (gen_ai_request_model) (increase(kosis_llm_finishes_total{$env, gen_ai_re
   - ② 사이에 OpenTelemetry Collector를 둔다(OTLP gRPC 수신 → Prometheus 내보내기).
 - 수신 설정에서 `deployment.environment.name`을 라벨로 올린다(`otlp.promote_resource_attributes`). 그래야 서비스와 평가를 나눌 수 있다.
 - exemplar(질문 한 건과 잇기, 10.2)를 저장하려면 Prometheus를 `--enable-feature=exemplar-storage`로 띄운다. 끄면 exemplar는 버려진다.
-- 보관 기간: 메트릭에는 원문이 없어 30일 규칙 대상이 아니다. 일별 값은 `daily_metrics`가 따로 남긴다.
-- Jaeger: 질문 한 건의 단계를 볼 곳이다. 루트 span에 원문(`kosis.turn.question` 등, T3-43)이 있으므로 **Jaeger 보관 기간을 30일 이하**로 두거나, 서비스 trace에서 원문 속성을 끈다.
+- 보관 기간: 메트릭에는 원문이 없어 원문 보관 규칙(90일) 대상이 아니다. 일별 값은 `daily_metrics`가 따로 남긴다.
+- Jaeger: 질문 한 건의 단계를 볼 곳이다. 루트 span에 원문(`kosis.turn.question` 등, T3-43)이 있으므로 **Jaeger 보관 기간을 90일 이하**로 두거나, 서비스 trace에서 원문 속성을 끈다.
 
 ### 10.5 담당자에게 넘기는 요구 사항
 
@@ -392,12 +392,12 @@ sum by (gen_ai_request_model) (increase(kosis_llm_finishes_total{$env, gen_ai_re
 | 👍 / 👎 | `feedback.value` = `up` / `down` |
 | 응답 지연 p50·p95 | `latency_ms` = 서버가 질문을 받은 때부터 답이 끝날 때까지(턴 루트 span), 끝까지 간 턴만(11장 3번). 화면에서 잰 왕복 시간이 아니다 |
 | 첫 글자까지 시간 | `first_token_ms` (화면이 재서 수집에 넘김) |
-| 👎 답 목록 | `feedback ⋈ request_logs` (집계표가 아니라 질문 행에서 읽는다. 원문 30일 삭제가 그대로 적용됨) |
+| 👎 답 목록 | `feedback ⋈ request_logs` (집계표가 아니라 질문 행에서 읽는다. 원문 90일 삭제가 그대로 적용됨) |
 | 노드별 지연 p50·p95 (`daily_metrics`) | Prometheus 조회식(10.3)의 하루 값을 정제 배치가 적는다 |
 
 ### 12.3 명세서를 이 문서에 맞춰야 하는 것 (명세서 쪽 수정 요청)
 1. **저장 구조:** 단일 이벤트 테이블(`events_raw`·`events_clean`, `POST /events`)이 아니라 `request_logs` + `ui_events` + `feedback`. 서버의 노드·툴·LLM 단계는 레코드가 아니라 Prometheus 메트릭(10장).
-2. **원문 보관 30일:** FEAT-039·045의 "90일"은 POL-006(30일)과 어긋난다. 30일로 통일. 삭제는 행을 지우지 않고 원문 열만 NULL로 바꾼다.
+2. **원문 보관 90일:** FEAT-039·045의 90일을 따른다(11/20 결정). POL-006의 "30일"과 개인정보 안내 문구를 90일로 고친다. 삭제는 행을 지우지 않고 원문 열만 NULL로 바꾼다.
 3. **중복 `event_id`:** "나중 것으로 덮어씀"이 아니라 **첫 레코드 유지, 나중 것 무시**(재전송 대비, 1장 Snowplow).
 4. **알 수 없는 `log_version`:** 거부가 아니라 사유와 함께 따로 둔다(`ingest_rejects`, POL-009와 같음). 원문은 넣지 않는다.
 5. **내부 트래픽 판별:** IP 대역이 아니라 요청이 달고 오는 `is_internal` 표시(IP 미수집 원칙, POL-006).
@@ -407,4 +407,5 @@ sum by (gen_ai_request_model) (increase(kosis_llm_finishes_total{$env, gen_ai_re
 9. **성능·비용 탭(4번째 탭)이 명세서에 빠져 있다:** 단계별 지연·오류율·모델별 토큰·비용(10.3 조회식)으로 다시 넣는다.
 10. **소급 변환 배치 없음:** 쌓인 행이 없어 필요 없다(FEAT-035 선행조건).
 
+- 원문 보관 기간은 명세서(FEAT-039·045)의 **90일**로 바꿨다(11/20 결정). 이 문서·코드에 30일이 상수로 박힌 곳은 없고(`purge_questions`가 기준 시각을 인자로 받음), 문서 문구와 테스트 기준 시각만 바꿨다.
 - 명세서에만 있고 이 문서와 부딪히지 않는 것은 그대로 둔다: `daily_metrics` 1년 보관, 메트릭 화면 BI 도구(Grafana면 Prometheus와 같은 곳에서 본다), 조회 기간 최대 90일, 화면 이벤트 실패 시 버리고 건수만 셈.
