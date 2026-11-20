@@ -176,7 +176,7 @@ uv run python -m evals.run_eval --layer e2e --agent <module:function> --stage <�
 | `calculation_golden_diverse.jsonl` | `python -m evals.builders.diverse --rewrites evals/datasets/calculation_diverse_rewrites.jsonl` | 14개 조사, 72표, 264문항 (`D-` qid). value·compare·trend·거절 |
 | `calculation_golden_wide.jsonl` (T3-46) | `python -m evals.builders.diverse --total 500 --seed 46 --out evals/datasets/calculation_golden_wide.jsonl --rewrites evals/datasets/calculation_wide_rewrites.jsonl` | 숫자 답이 있는 500문항(value 241 · compare 176 · trend 83), 382표, 14개 조사. 조사별 균등 할당(표가 모자란 조사만 표당 2문항), 조사 안에서는 메뉴 경로별로 돌아가며 표당 1문항. 한 표 최대 0.4%, 한 조사 최대 9.8%. 거절 문항 없음 |
 
-기본값: e2e·ragas는 `calculation_golden_wide.jsonl`, l3는 실전 1 파일(오라클 검색이 그 질문으로 표를 찾음).
+기본값: l3·ragas는 실전 1 파일(`calculation_golden.jsonl`, l3의 오라클 검색이 그 질문으로 표를 찾음), e2e는 `--calc-golden`이 없으면 e2e 골든 시나리오(아래 "e2e 전용 골든셋"). wide는 e2e 골든의 재료다.
 다른 파일을 쓰려면 `--calc-golden`에 넘긴다. 90문항 기준선과 비교할 때는 `--calc-golden evals/datasets/calculation_golden.jsonl`.
 새 문항을 붙인 뒤에는 대체 정답 표 라벨을 다시 만든다: `python -m evals.builders.alternates --calc-golden evals/datasets/calculation_golden.jsonl evals/datasets/calculation_golden_wide.jsonl`.
 
