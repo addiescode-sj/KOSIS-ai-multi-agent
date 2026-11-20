@@ -8,7 +8,7 @@ Search is a golden lookup instead of phase 2, so context handling is measured ap
 - any other question ("부산은?", a rewrite that lost the wording) gets one fixed unrelated table (`found`), which is
   what a live search often does with a context-free fragment. A turn that misses its context then shows as
   lost_state / wrong args, not as a refusal (plans/T3-27.md, review 4).
-Run the same scenarios through live search (backend.app.main:build_agent) once Chroma is up.
+Run the same scenarios through live search (backend.app.main:build_agent) once PostgreSQL (pgvector) is up.
 """
 
 from __future__ import annotations

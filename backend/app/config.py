@@ -7,7 +7,7 @@ first, which puts <repo>/.env into os.environ without overriding the shell (so `
 then reads os.environ. In the container compose passes the same file as `env_file`.
 
     KOSIS_WORKSPACE                                 repo root; data files default to <root>/data (phase 1 reads it too)
-    CHROMA_HOST CHROMA_PORT CHROMA_COLLECTION      Chroma server and the dense collection (default localhost:8001)
+    DATABASE_URL VECTOR_COLLECTION                 PostgreSQL (+ pgvector: the vector store, T3-47) and the dense collection
     TEXT_FORMAT EMBED_CKPT RERANK_CKPT RERANK_MODE  table text check, query embedder, stage 1 cross-encoder
     STAGE2 COND_FILTER ANSWER_K                     stage 2 LLM (clova | hcx | gpt | none), conditions, k default
     STAGE2_MODEL STAGE2_BASE_URL STAGE2_API_KEY     stage 2 model (default phase 2's per STAGE2), an OpenAI-compatible server
@@ -37,7 +37,7 @@ from pydantic import SecretStr
 from kosis_chat.schemas.resources import LLMConfig as StatLLMConfig
 from kosis_rag.llm.config import LLMConfig as SearchLLMConfig
 from kosis_rag.rerank import selectors
-from kosis_rag.schemas.resources import OFF, ChromaConfig, IndexSpec, SearchOptions
+from kosis_rag.schemas.resources import OFF, IndexSpec, SearchOptions, VectorStoreConfig
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 STAT_MODEL = "HCX-DASH-002"  # the phase 1 baseline model (T1-28 S5 HCX run: PASS 86 / 90)
@@ -142,6 +142,14 @@ def splitter_llm(cfg):
     return make_llm_splitter(model) if model is not None else None
 
 
+def vector_store() -> VectorStoreConfig:
+    """The vector store (T3-47): DATABASE_URL - the same PostgreSQL as the conversation store; its SQLAlchemy form
+    postgresql+psycopg:// is accepted - and VECTOR_COLLECTION, the dense collection (was CHROMA_COLLECTION).
+    Default: the compose postgres on localhost."""
+    url = _env("DATABASE_URL")
+    return VectorStoreConfig(**({"url": url} if url else {}), collection=_env("VECTOR_COLLECTION"))
+
+
 def agent_config() -> AgentConfig:
     """The agent's settings from os.environ (.env already loaded into it by the entry point, shell values first).
 
@@ -164,8 +172,7 @@ def agent_config() -> AgentConfig:
         tables=data / "tables.jsonl",
         sigungu=data / "sigungu.json",
         hq_root=data / "hq",
-        chroma=ChromaConfig(host=_env("CHROMA_HOST") or "localhost", port=int(_env("CHROMA_PORT") or 8001),
-                            collection=_env("CHROMA_COLLECTION")),
+        vector_store=vector_store(),
         text_format=_env("TEXT_FORMAT"),
         embed_ckpt=_env("EMBED_CKPT"),
         rerank_ckpt=_env("RERANK_CKPT"),

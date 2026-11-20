@@ -61,11 +61,11 @@ app = FastAPI(
         "국가데이터처(KOSIS) 통계 AI 에이전트 API.\n\n"
         "- 숫자는 실전 1이 원자료에서 코드로 계산하고 검증한 값만 나간다. 자료가 없으면 거절(`outcome: refused`)한다.\n"
         "- 요청마다 OpenTelemetry trace 하나가 남는다(service `kosis-agent`). 챗 응답의 `trace_id`로 Jaeger에서 찾는다.\n"
-        "- 툴·그래프가 준비되지 않으면(데이터·Chroma·키 없음) 503."))
+        "- 툴·그래프가 준비되지 않으면(데이터·벡터 DB·키 없음) 503."))
 
 _agent: tuple[Any, dict[str, BaseTool]] | None = None
 _lock = threading.Lock()
-UNAVAILABLE = {503: {"description": "에이전트를 열 수 없음 (데이터·Chroma·키 확인)"}}
+UNAVAILABLE = {503: {"description": "에이전트를 열 수 없음 (데이터·벡터 DB·키 확인)"}}
 
 
 def _build() -> tuple[Any, dict[str, BaseTool]]:
@@ -89,12 +89,12 @@ def build_agent():
     """The agent graph over the phase 2 search module and phase 1, with a checkpointer that carries each thread_id's
     conversation. The service's graph, and the agent eval layer's entry point (T3-23):
     run_eval --layer agent --agent backend.app.main:build_agent. No callbacks attached: whoever runs it brings its own
-    (the request handlers below, or the eval runner). Opens the phase 2 resources (records, Chroma, models)."""
+    (the request handlers below, or the eval runner). Opens the phase 2 resources (records, vector store, models)."""
     return _build()[0]
 
 
 def _loaded() -> tuple[Any, dict[str, BaseTool]]:
-    """_build() on first use (not at startup, so /health works without Chroma, data/ or keys). A failure is a 503;
+    """_build() on first use (not at startup, so /health works without the vector store, data/ or keys). A failure is a 503;
     the next request tries again."""
     global _agent
     with _lock:

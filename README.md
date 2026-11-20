@@ -12,7 +12,7 @@ git clone --recurse-submodules https://github.com/addiescode-sj/KOSIS-ai-multi-a
 uv sync && npm install && (cd frontend && npm install)
 cp .env.example .env   # HCX_API_KEY 등 입력
 bash scripts/verify.sh # 오프라인 검증
-docker compose up --build   # backend :8000, frontend :3000, chroma :8001, postgres :5432, redis :6379
+docker compose up --build   # backend :8000, frontend :3000, postgres(+pgvector) :5432, redis :6379
 ```
 
 전체 README는 T3-12에서 작성한다.
