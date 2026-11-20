@@ -90,6 +90,7 @@ def _sqlite(tmp_path):
     dict(outcome="refused"),  # a refusal says why
     dict(outcome="done"),  # not an outcome
     dict(outcome="answered", input_method="voice"),
+    dict(outcome="answered", input_method="suggestion"),  # suggested questions are out of phase 1
     dict(outcome="answered", turn_index=-1),  # the trace counts turns from 0
     dict(outcome="answered", request_id=NO_TRACE),  # tracing was off: no usable key
     dict(outcome="answered", request_id="abc"),  # not a trace id
@@ -111,7 +112,7 @@ def test_guest_row_needs_no_conversation_and_keeps_defaults(tmp_path):
         row = s.scalars(select(RequestLog)).one()
         assert len(row.request_id) == 32 and row.created_at is not None
         assert (row.is_member, row.is_internal, row.input_method, row.llm_calls, row.log_version) == (
-            False, False, "typed", 0, 3)
+            False, False, "direct", 0, 3)
         assert not hasattr(row, "spans")  # log version 3: steps are Prometheus metrics, not a column
 
 

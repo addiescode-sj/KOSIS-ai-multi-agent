@@ -96,7 +96,7 @@ def _conversation_id(value) -> str:
 
 def row_from_turn(spans: Iterable, result: dict | None, *, aborted: bool = False, first_token_ms: int | None = None,
                   question: str | None = None, session_id=None, is_member: bool = False, is_internal: bool = False,
-                  input_method: str = "typed", prev_request_id: str | None = None) -> dict:
+                  input_method: str = "direct", prev_request_id: str | None = None) -> dict:
     """The request_logs values of one turn.
 
     spans: the finished spans of the turn (ReadableSpan, e.g. from a SpanProcessor), root `invoke_agent` included.

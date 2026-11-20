@@ -39,7 +39,7 @@
 | `prev_request_id` | 같은 대화의 직전 질문 | 재질문 탐지(KOS-176) |
 | `session_id` | 브라우저 세션(임의 UUID) | 사람을 식별하지 않는다. 하네스 요청은 비어 있다 |
 | `is_member`, `is_internal` | 회원 여부, 팀·하네스 트래픽 여부 | 지표는 `is_internal`을 뺀다 |
-| `input_method` | `typed` · `suggestion`(추천 질문 버튼) | |
+| `input_method` | `direct`(직접 입력) · `clarify_option`(되묻기 선택지 버튼) | 추천 질문은 1차 범위 밖(11/18)이라 값이 없다 |
 | `question`, `question_len` | 가린 질문 원문, 글자 수 | 원문은 30일 뒤 NULL, 글자 수는 남는다 |
 | `outcome` | `answered` · `refused` · `clarify` · `failed` · `error` · `aborted` | 앞의 넷은 `ChatResult.outcome`, `error`는 예외, `aborted`는 답이 끝나기 전에 떠남 |
 | `reason_code` | 거절·되묻기 사유 코드, 오류면 예외 이름 | 거절이면 꼭 있어야 한다. 에이전트가 사유를 주지 않은 거절(멀티쿼리 등)은 `unknown` |
@@ -120,7 +120,7 @@ CREATE TABLE request_logs (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL,
     PRIMARY KEY (request_id),
     CONSTRAINT ck_request_logs_outcome CHECK (outcome IN ('answered', 'refused', 'clarify', 'failed', 'error', 'aborted')),
-    CONSTRAINT ck_request_logs_input_method CHECK (input_method IN ('typed', 'suggestion')),
+    CONSTRAINT ck_request_logs_input_method CHECK (input_method IN ('direct', 'clarify_option')),
     CONSTRAINT ck_request_logs_internal_no_text CHECK (NOT is_internal OR question IS NULL),
     CONSTRAINT ck_request_logs_refusal_reason CHECK (outcome <> 'refused' OR reason_code IS NOT NULL),
     CONSTRAINT ck_request_logs_turn_index CHECK (turn_index >= 0),
@@ -149,7 +149,7 @@ CREATE INDEX ix_request_logs_session_id ON request_logs (session_id);
 | 열 | 뜻 |
 |---|---|
 | `event_id` | 화면이 만든 UUID, 기본 키. 같은 값이 다시 오면 무시한다(재전송) |
-| `event_type` | `page_view` · `suggestion_impression` · `suggestion_click` · `citation_click` · `chart_view` · `chart_interact` · `copy_answer` · `stream_abort` |
+| `event_type` | `page_view` · `citation_click` · `chart_view` · `chart_interact` · `copy_answer` · `stream_abort` (추천 질문 노출·클릭은 1차 범위 밖이라 뺌) |
 | `client_ts`, `received_at` | 브라우저 시각, 서버 수신 시각. 5분 넘게 어긋나면 서버 시각을 쓴다 |
 | `session_id`, `request_id` | 세션, 관련 질문(있을 때) |
 | `screen_id`, `feature_id` | 화면 명세 S-xx, 기능 명세 F-xx |
@@ -187,7 +187,6 @@ CREATE INDEX ix_request_logs_session_id ON request_logs (session_id);
 | | 실패 단계 | `failed_stage` | 확인 (`failed_stages`) |
 | | 👎 답 목록 | `feedback` ⋈ `request_logs` | SQL만 |
 | 사용 패턴 | 많이 쓰인 표·조사 상위 20 | `picked_key`, `survey_name` | 확인 (`top_tables`) |
-| | 추천 질문 클릭률 | `ui_events` | SQL만 (KOS-170 뒤) |
 | | 대화당 턴 수 | `conversation_id`, `turn_index` | 확인 (`turns_per_conversation`) |
 | | 출처 클릭률 | `ui_events` ÷ `has_numbers` | SQL만 |
 | | 답 전 이탈률 | `outcome = 'aborted'` | 확인 (`outcome_share`의 한 줄) |
@@ -197,7 +196,7 @@ CREATE INDEX ix_request_logs_session_id ON request_logs (session_id);
 | | 모델별 토큰·비용 | Prometheus `gen_ai.client.token.usage` (이미 계측됨) | 조회식만 (10장), 비용은 모델별 토큰에 단가표를 곱함 |
 | | 로그 품질 | `ingest_rejects`, 짝 없는 질문 | SQL만 (KOS-170 뒤) |
 
-- DB 확인 9개(SQL 9개), DB SQL만 7개, Prometheus 조회식 2개(로그 버전 3에서 옮김). 지표는 19줄이 됐다("질문당 LLM 호출·토큰·비용"을 DB·Prometheus 두 줄로 나눔). 초안의 "답 전 이탈률"은 화면 이벤트 `stream_abort`로 세려 했으나, 서버가 아는 `outcome = 'aborted'`로 바꿔 지금 확인할 수 있게 했다.
+- DB 확인 9개(SQL 9개), DB SQL만 6개, Prometheus 조회식 2개(로그 버전 3에서 옮김). 지표는 18줄이다("질문당 LLM 호출·토큰·비용"을 DB·Prometheus 두 줄로 나누고, 추천 질문 클릭률은 1차 범위 밖이라 뺌). 초안의 "답 전 이탈률"은 화면 이벤트 `stream_abort`로 세려 했으나, 서버가 아는 `outcome = 'aborted'`로 바꿔 지금 확인할 수 있게 했다.
 - 모든 지표는 `is_internal`을 빼고 KST 하루 단위로 센다. KST 날짜를 UTC 범위 `[00:00 KST, 다음 날 00:00 KST)`로 바꿔 `created_at`과 비교한다(`day_range`, `created_at` 인덱스를 탄다).
 - 응답 지연·첫 글자 시간은 이탈·오류 턴을 뺀다. 이탈은 사용자가 떠난 시점, 오류는 예외 시점에서 끝나 값이 짧게 잡히고 분위수를 끌어내린다. 이탈률은 `outcome_share`가 따로 보여 준다.
 
@@ -211,9 +210,6 @@ SELECT value, choice, count(*) FROM feedback WHERE <day> AND choice IS NOT NULL 
 -- 👎 답 목록 (원문은 보관 기간 안에서만 보인다)
 SELECT r.created_at, r.question, r.picked_key, r.outcome, f.choice, f.reason, r.request_id
 FROM feedback f JOIN request_logs r USING (request_id) WHERE f.value = 'down' AND NOT r.is_internal;
--- 추천 질문 클릭률
-SELECT count(*) FILTER (WHERE event_type = 'suggestion_click')::numeric
-     / nullif(count(*) FILTER (WHERE event_type = 'suggestion_impression'), 0) FROM ui_events WHERE <day>;
 -- 출처 클릭률: 출처를 누른 답 수 ÷ 숫자가 있는 답 수
 SELECT (SELECT count(DISTINCT request_id) FROM ui_events WHERE event_type = 'citation_click' AND <day>)::numeric
      / nullif((SELECT count(*) FROM request_logs WHERE has_numbers AND <day>), 0);
@@ -376,3 +372,39 @@ sum by (gen_ai_request_model) (increase(kosis_llm_finishes_total{$env, gen_ai_re
 | 8 | 규칙 위반 테스트가 아무 예외나 통과시킨다 | `IntegrityError`로 좁힘 |
 
 - 문서에 더한 것: `row_from_turn`은 `root.end()` 뒤에 부른다(2.1), `daily_metrics` 조회 시각은 KST 자정(10.3), exemplar 저장 옵션(10.4).
+
+## 12. 기능명세서(11/20)와 맞춘 것
+
+기능명세서 REQ-011~013(FEAT-035~046)과 정책 POL-006·009를 이 문서와 대조했다. **이 문서(저장소)를 기준**으로 하고, 서비스 범위가 바뀐 곳만 이 문서를 고쳤다.
+
+### 12.1 이 문서를 고친 것
+- `input_method`: `typed`·`suggestion` → **`direct`·`clarify_option`**. 추천 질문은 1차 범위 밖이고(POL-003, 11/18), 되묻기 선택지 버튼(FEAT-016·018)이 실제 입력 경로다. 옛 값은 CHECK가 거부한다.
+- 화면 이벤트에서 `suggestion_impression`·`suggestion_click`과 지표 "추천 질문 클릭률"을 뺐다.
+
+### 12.2 화면 표시와 저장 값 대응 (메트릭 화면이 이 표대로 읽는다)
+
+| 화면(명세서) | 저장 값 |
+|---|---|
+| 요약 탭 답함 / 거절 / 되묻기 / 오류 | `outcome` = `answered` / `refused` / `clarify` / `failed`+`error` |
+| 사용 패턴 탭 답 전 이탈률 | `outcome = 'aborted'` ÷ 질문 수 (화면 `stream_abort`는 이탈 시점 참고용, 세지 않음) |
+| 요약 탭 질문 수 | `request_logs` 행 수 (`is_internal` 제외). 화면 `question_submit` 이벤트는 만들지 않는다 |
+| 답 품질 탭 실패 단계 검색 / 계산 / 차트 | `failed_stage` = `search` / `stat` / `chart`, `agent`는 "기타" |
+| 👍 / 👎 | `feedback.value` = `up` / `down` |
+| 응답 지연 p50·p95 | `latency_ms` = 서버가 질문을 받은 때부터 답이 끝날 때까지(턴 루트 span), 끝까지 간 턴만(11장 3번). 화면에서 잰 왕복 시간이 아니다 |
+| 첫 글자까지 시간 | `first_token_ms` (화면이 재서 수집에 넘김) |
+| 👎 답 목록 | `feedback ⋈ request_logs` (집계표가 아니라 질문 행에서 읽는다. 원문 30일 삭제가 그대로 적용됨) |
+| 노드별 지연 p50·p95 (`daily_metrics`) | Prometheus 조회식(10.3)의 하루 값을 정제 배치가 적는다 |
+
+### 12.3 명세서를 이 문서에 맞춰야 하는 것 (명세서 쪽 수정 요청)
+1. **저장 구조:** 단일 이벤트 테이블(`events_raw`·`events_clean`, `POST /events`)이 아니라 `request_logs` + `ui_events` + `feedback`. 서버의 노드·툴·LLM 단계는 레코드가 아니라 Prometheus 메트릭(10장).
+2. **원문 보관 30일:** FEAT-039·045의 "90일"은 POL-006(30일)과 어긋난다. 30일로 통일. 삭제는 행을 지우지 않고 원문 열만 NULL로 바꾼다.
+3. **중복 `event_id`:** "나중 것으로 덮어씀"이 아니라 **첫 레코드 유지, 나중 것 무시**(재전송 대비, 1장 Snowplow).
+4. **알 수 없는 `log_version`:** 거부가 아니라 사유와 함께 따로 둔다(`ingest_rejects`, POL-009와 같음). 원문은 넣지 않는다.
+5. **내부 트래픽 판별:** IP 대역이 아니라 요청이 달고 오는 `is_internal` 표시(IP 미수집 원칙, POL-006).
+6. **골든셋 문항 "판정해서 버리기" 없음:** 서비스가 골든셋을 가지면 안 된다. 하네스 요청은 `is_internal`이고 원문이 저장되지 않는다(CHECK).
+7. **툴 인자 요약(`args_summary`) 저장 안 함:** 툴 인자에는 질문 원문이 들어 있다(3장).
+8. **고른 표 키는 `request_logs.picked_key` 열, 조건은 저장 안 함**(원문 조각이 섞일 수 있음).
+9. **성능·비용 탭(4번째 탭)이 명세서에 빠져 있다:** 단계별 지연·오류율·모델별 토큰·비용(10.3 조회식)으로 다시 넣는다.
+10. **소급 변환 배치 없음:** 쌓인 행이 없어 필요 없다(FEAT-035 선행조건).
+
+- 명세서에만 있고 이 문서와 부딪히지 않는 것은 그대로 둔다: `daily_metrics` 1년 보관, 메트릭 화면 BI 도구(Grafana면 Prometheus와 같은 곳에서 본다), 조회 기간 최대 90일, 화면 이벤트 실패 시 버리고 건수만 셈.

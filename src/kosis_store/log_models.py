@@ -25,7 +25,9 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 # the four ChatResult outcomes, error (an exception) and aborted (the user left before the answer ended)
 OUTCOMES = ("answered", "refused", "clarify", "failed", "error", "aborted")
-INPUT_METHODS = ("typed", "suggestion")
+# direct: typed by the user; clarify_option: a choice button of a clarifying question (FEAT-016/018).
+# Suggested questions are out of phase 1 (11/18), so there is no suggestion value.
+INPUT_METHODS = ("direct", "clarify_option")
 SPAN_STATUSES = ("ok", "refused", "error")
 # the keys of one step read at write time (not stored); stage: search | stat | chart | agent; kind: node | tool | llm
 SPAN_KEYS = ("name", "kind", "stage", "ms", "status", "error_type", "input_tokens", "output_tokens", "model")
@@ -64,7 +66,7 @@ class RequestLog(LogBase):
     session_id: Mapped[uuid.UUID | None] = mapped_column(index=True)  # random browser session id, not a person
     is_member: Mapped[bool] = mapped_column(Boolean, default=False)
     is_internal: Mapped[bool] = mapped_column(Boolean, default=False)  # team or eval harness traffic
-    input_method: Mapped[str] = mapped_column(String(16), default="typed")
+    input_method: Mapped[str] = mapped_column(String(16), default="direct")
 
     question: Mapped[str | None] = mapped_column(Text)  # masked text; NULL after retention or when is_internal
     question_len: Mapped[int | None] = mapped_column(Integer)  # kept after the text is gone
