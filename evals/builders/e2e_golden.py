@@ -185,6 +185,50 @@ def is_total_label(label: str) -> bool:
 
 
 TOTAL_LABELS = {"계", "합계", "총계", "전체", "소계", "전국", "총인구"}
+SUBTOTAL_LABELS = ("시부", "읍부", "면부", "동부", "군부")  # national subtotals: unqualified, they name one cell
+SIDO_ALIASES = sorted({a for n, al in SIDO.items() for a in (n, *al)}, key=len, reverse=True)
+
+
+def names_sido(text: str) -> bool:
+    return any(a in text for a in SIDO_ALIASES)
+
+
+def measure_prefix(prefix: str) -> bool:
+    """T3-47 review: a share / extreme question keeps its measure (>= 4 Hangul letters besides the year) and names no
+    시도 (a 시도 there scopes the question, but the denominator is the national total)."""
+    content = re.sub(r"\d{4}\s*년", "", prefix)
+    return len(re.findall(r"[가-힣]", content)) >= 4 and not names_sido(content)
+
+
+def averaged(item: CalcItem) -> bool:
+    """An average measure: a share of averages is not a share (T3-47 review)."""
+    return "평균" in item.question or any("평균" in str(v) for f in item.required_facts for v in (f.dims or {}).values())
+
+
+def without_aggregates(parts: list) -> list:
+    """Drop cells that are the sum of the others (세종시 = 동부 + 읍부 + 면부): a total under a non-total name."""
+    parts = list(parts)
+    while len(parts) >= 3:
+        top = max(parts, key=lambda c: c.value)
+        rest = sum(c.value for c in parts if c is not top)
+        if not top.value or abs(top.value - rest) > 0.005 * abs(top.value):
+            break
+        parts.remove(top)
+    return parts
+
+
+def cell_at(cells: Cells, ref: str, *, region: str, year: str):
+    """The cell of `ref` at another 시도 and year, whatever it holds (a symbol cell counts as present)."""
+    src = cells.by_ref.get(ref)
+    if src is None:
+        return None
+    for cell in cells.by_ref.values():
+        if cell.item_id != src.item_id or len(cell.dims) != len(src.dims) or cell.period != year + src.period[4:]:
+            continue
+        if all((OFFICIAL.get(b.label.strip()) == region) if any(w in a.name for w in REGION_DIM_WORDS) else a.code == b.code
+               for a, b in zip(src.dims, cell.dims)):
+            return cell
+    return None
 
 
 def cell_fact(fid: str, cell, base: Fact) -> Fact:
@@ -276,11 +320,19 @@ def build(seed: int = 46) -> tuple[list[AgentScenario], list[CalcItem], dict]:
         if full("share") and full("extreme"):
             break
         prefix, a, b, dim = compare_prefix(item)
+        if not measure_prefix(prefix):
+            continue
         fa = item.required_facts[0]
         sib = siblings(cells(item.table_key), fa.source_ref, dim)
+        base = next((c for c in sib if c.ref() == fa.source_ref), None)
+        if base is None:
+            continue
         total = [c for c in sib if is_total_label(label_of(c, dim))]
-        parts = [c for c in sib if not is_total_label(label_of(c, dim))]
-        if not full("share") and unit_of(item) not in ("%", None) and len(total) == 1 and total[0].value and fa.value is not None:
+        # a sample size (사례수) or another unit is not a candidate; a sum of the others is a total by another name
+        parts = without_aggregates([c for c in sib if not is_total_label(label_of(c, dim)) and "사례수" not in label_of(c, dim)
+                                    and "사례수" not in c.item_name and c.unit_or_suffix() == base.unit_or_suffix()])
+        if not full("share") and unit_of(item) not in ("%", None) and not averaged(item) and len(total) == 1 \
+                and total[0].value and fa.value is not None:
             q = f"{prefix}, 전체에서 {josa(a, '이가')} 차지하는 비중은 몇 %야?"
             f1 = cell_fact("f1", next(c for c in sib if c.ref() == fa.source_ref), fa)
             f2 = cell_fact("f2", total[0], fa)
@@ -295,7 +347,9 @@ def build(seed: int = 46) -> tuple[list[AgentScenario], list[CalcItem], dict]:
         values = [c.value for c in parts]
         if not full("extreme") and 3 <= len(parts) <= 40 and values.count(max(values)) == 1:
             top = max(parts, key=lambda c: c.value)
-            q = f"{prefix}, 어디가 가장 {'높아' if unit_of(item) == '%' else '많아'}?"
+            word = "높아" if unit_of(item) == "%" else "많아"
+            regional = any(w in dim for w in (*REGION_DIM_WORDS, "시군구", "지역"))
+            q = f"{prefix}, {'어디가' if regional else '어떤 항목이'} 가장 {word}?"
             new = item.model_copy(update={"qid": item.qid + "-MAX", "question": q, "type": "extreme", "split": None,
                                           "required_facts": [cell_fact("f1", top, fa)]})
             add("F", "extreme", [turn(q, answer_tools(item.table_key),
@@ -540,7 +594,7 @@ def build(seed: int = 46) -> tuple[list[AgentScenario], list[CalcItem], dict]:
         if full("same_name"):
             break
         src = cells(item.table_key).by_ref.get(item.required_facts[0].source_ref)
-        if src is None:
+        if src is None or names_sido(item.question):  # a 시도 in the question would clash with the swapped district
             continue
         for d in src.dims:
             here = d.label.strip()
@@ -551,7 +605,8 @@ def build(seed: int = 46) -> tuple[list[AgentScenario], list[CalcItem], dict]:
                 for x in c.dims:
                     if x.name == d.name:
                         codes[re.sub(r"\s+", "", x.label)].add(x.code)
-            shared = sorted(l for l, cs in codes.items() if len(cs) > 1 and not is_total_label(l) and len(l) >= 2 and l not in item.question)
+            shared = sorted(l for l, cs in codes.items() if len(cs) > 1 and not is_total_label(l) and len(l) >= 2
+                            and l not in item.question and not l.endswith(SUBTOTAL_LABELS))
             if not shared:
                 continue
             q = item.question.replace(here, rng.choice(shared), 1)
@@ -576,9 +631,8 @@ def build(seed: int = 46) -> tuple[list[AgentScenario], list[CalcItem], dict]:
                 continue  # the table must hold that year for the asked 시도's neighbours
             if cells(item.table_key).swap(fact.source_ref, region="세종특별자치시") is None:
                 break  # no 세종 in this table at all: it would be no_item, not a missing combination
-            c = cells(item.table_key).swap(fact.source_ref, year=old)
-            if cells(item.table_key).swap(c.ref(), region="세종특별자치시") is not None:
-                continue
+            if cell_at(cells(item.table_key), fact.source_ref, region="세종특별자치시", year=old) is not None:
+                continue  # the cell exists (a number or a symbol such as '-'): not a missing combination (T3-47 review)
             q = item.question.replace(f"{year}년", f"{old}년", 1).replace(surface, "세종특별자치시", 1)
             add("C", "no_cell", [turn(q, answer_tools(item.table_key),
                                       TurnLabels(failure_type="classify", route="refuse", reading="new", outcome="refused",
@@ -731,21 +785,79 @@ def mark_review(rows: list[AgentScenario]) -> list[AgentScenario]:
     return out
 
 
-def write_review(rows: list[AgentScenario], path: Path = REVIEW) -> int:
-    """needs_review turns plus every 5th other new-type turn, for a person: verdict ok / wrong, note."""
+VERDICT = "verdict(ok/wrong)"
+REVIEW_COLUMNS = ["sid", "kind", "split", "conversation", "question", "gold", "rule_pred", "review", VERDICT, "note"]
+
+
+def conversation(s: AgentScenario) -> str:
+    return " || ".join(t.question for t in s.turns)
+
+
+def review_key(kind: str, conv: str) -> tuple[str, str]:
+    from evals.golden_gate import norm
+
+    return kind, norm(conv)
+
+
+def load_reviews(path: Path = REVIEW) -> dict[tuple[str, str], dict]:
+    """A person's verdicts in the review CSV, keyed by (kind, the whole conversation): they survive a rebuild."""
     import csv
 
-    picked = [(s, t) for s in rows if s.notes in NEW_KINDS for t in s.turns[-1:]]
-    picked = [(s, t) for n, (s, t) in enumerate(picked) if t.expect.labels.review == "needs_review" or n % 5 == 0]
+    if not path.exists():
+        return {}
+    out = {}
+    with path.open(encoding="utf-8-sig", newline="") as f:
+        for r in csv.DictReader(f):
+            if (r.get(VERDICT) or "").strip() in ("ok", "wrong"):
+                out[review_key(r["kind"], r.get("conversation") or r["question"])] = r
+    return out
+
+
+def apply_reviews(rows: list[AgentScenario], reviews: dict) -> tuple[list[AgentScenario], list[dict]]:
+    """ok -> the gold stands (review = accepted); wrong -> the scenario leaves the golden set (listed in meta)."""
+    kept, rejected = [], []
+    for s in rows:
+        r = reviews.get(review_key(s.notes, conversation(s)))
+        if r is None:
+            kept.append(s)
+        elif r[VERDICT].strip() == "wrong":
+            rejected.append({"sid": s.sid, "kind": s.notes, "conversation": conversation(s), "note": r.get("note", "")})
+        else:  # ok: the flagged turns (any turn of the conversation) and the graded last turn are accepted
+            turns = [t.model_copy(update={"expect": t.expect.model_copy(update={"labels": t.expect.labels.model_copy(
+                         update={"review": "accepted"})})}) if t.expect.labels and (i == len(s.turns) - 1 or t.expect.labels.review)
+                     else t for i, t in enumerate(s.turns)]
+            kept.append(s.model_copy(update={"turns": turns}))
+    return kept, rejected
+
+
+def write_review(rows: list[AgentScenario], reviews: dict | None = None, path: Path = REVIEW) -> int:
+    """needs_review turns, every 5th other new-type turn and every turn a person already judged (verdict and note
+    kept); judged scenarios that no longer exist stay at the end, so a person's work is never lost."""
+    import csv
+
+    reviews = reviews or {}
+    picked = [s for s in rows if s.notes in NEW_KINDS]
+    flagged = lambda s: any(t.expect.labels and t.expect.labels.review == "needs_review" for t in s.turns)  # noqa: E731
+    picked = [s for n, s in enumerate(picked) if flagged(s) or n % 5 == 0 or review_key(s.notes, conversation(s)) in reviews]
+    present = set()
     with path.open("w", encoding="utf-8-sig", newline="") as f:
-        w = csv.writer(f)
-        w.writerow(["sid", "kind", "split", "question", "gold", "rule_pred", "review", "verdict(ok/wrong)", "note"])
-        for s, t in picked:
+        w = csv.DictWriter(f, fieldnames=REVIEW_COLUMNS)
+        w.writeheader()
+        for s in picked:
+            # the turn a person should look at: the flagged one (a middle turn of a 3-turn conversation too), else the last
+            t = next((t for t in s.turns if t.expect.labels and t.expect.labels.review == "needs_review"), s.turns[-1])
+            key = review_key(s.notes, conversation(s))
+            present.add(key)
+            old = reviews.get(key, {})
             gold = {k: v for k, v in t.expect.labels.model_dump(exclude_none=True).items() if k in (*KEY_LABELS, "refusal_reasons")}
             pred = {k: v for k, v in (t.expect.rule_pred.model_dump(exclude_none=True) if t.expect.rule_pred else {}).items()
                     if k in (*KEY_LABELS, "refusal_reasons")}
-            w.writerow([s.sid, s.notes, s.split, t.question, json.dumps(gold, ensure_ascii=False),
-                        json.dumps(pred, ensure_ascii=False), t.expect.labels.review or "", "", ""])
+            w.writerow({"sid": s.sid, "kind": s.notes, "split": s.split, "conversation": conversation(s), "question": t.question,
+                        "gold": json.dumps(gold, ensure_ascii=False), "rule_pred": json.dumps(pred, ensure_ascii=False),
+                        "review": t.expect.labels.review or "", VERDICT: old.get(VERDICT, ""), "note": old.get("note", "")})
+        for key, old in reviews.items():
+            if key not in present:  # rejected (left the set) or no longer generated after a rule fix
+                w.writerow({**{c: old.get(c, "") for c in REVIEW_COLUMNS}, "review": "removed"})
     return len(picked)
 
 
@@ -767,7 +879,11 @@ def main(argv: list[str] | None = None) -> int:
                           if t.expect.rule_pred and (t.expect.rule_pred.judge_rule or "").startswith(("skipped", "error")))
         info["rule_pred_not_run"] = dict(skipped)  # skipped (large table) / error (timeout, crash) turns
         rows = mark_review(rows)
-        info["review_rows"] = write_review(rows)
+        reviews = load_reviews()
+        rows, rejected = apply_reviews(rows, reviews)
+        info["review"] = {"judged": len(reviews), "accepted": sum(s.turns[-1].expect.labels.review == "accepted" for s in rows),
+                          "rejected": len(rejected), "rejected_sids": [r["sid"] for r in rejected]}
+        info["review_rows"] = write_review(rows, reviews)
     OUT.write_text("".join(s.model_dump_json(exclude_defaults=True) + "\n" for s in rows), encoding="utf-8")
     OUT_CALC.write_text("".join(i.model_dump_json(exclude_defaults=True) + "\n" for i in calc), encoding="utf-8")
     info |= {"rule_pred": not args.no_rules, "sha256": sha256(OUT), "calc_sha256": sha256(OUT_CALC)}
