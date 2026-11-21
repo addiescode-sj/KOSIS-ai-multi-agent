@@ -218,6 +218,14 @@ e2e는 `--calc-golden`이 없으면 이 시나리오를 돈다. 오프라인 스
 기준선 연속성을 위해 계속 `calculation_golden.jsonl` 경로로 돌고(Ragas는 한 턴 계산 행을 읽음), 이 골든셋은 스위트의 `rules`(오프라인)와
 `e2e-scenarios`(live) 단계가 돈다. 하나만: `bash scripts/dev.sh suite --stage <ID> --only rules e2e-scenarios`. 규칙을 고친 뒤에는 빌더를 다시 돌려 `rule_pred`를 새로 만든다.
 
+#### 골든 품질 게이트 (T3-47)
+
+빌더가 끝날 때 `evals/golden_gate.py`가 자동으로 돈다(기준·지표 정의: `plans/golden-quality-gate.md`). 따로: `python -m evals.golden_gate`.
+무결성 항목(의도치 않은 중복 · test 누출 · 정답 ID·셀 유효성 · Stale)이 깨지면 빌드가 exit 1, 분포 항목(Coverage · 유형별 최소 20 · TVD ·
+미검수 라벨 · 퇴화 문항)은 경고. 결과 `e2e_golden.gate.json`, 유사 중복 후보 `e2e_golden.near_duplicates.csv`, 새 유형 검수 표본
+`e2e_golden.review.csv`(`verdict`·`note`를 사람이 채움). 후속 질문 표현은 규칙 튜닝 템플릿(`builders/multiturn.py`, `context.LLM_EXAMPLES`)과
+다르게 쓰고, 그래도 같은 모양이면 그 시나리오는 dev로 간다. test가 최종 홀드아웃이다.
+
 ### 검색기를 바꿀 때 판정 풀 넓히기 (T3-22)
 
 검색 골든의 판정 풀은 BM25 두 종류의 상위 10개로 만들었다. 그래서 임베딩·리랭커가 새로 올린 표는 판정 없이 오답으로 채점된다(`unjudged@10`). L1 리포트의 "판정 구간"은 판정 없는 표를 오답으로 본 하한과 정답으로 본 상한이고, 실제 값은 그 사이에 있다. 구간을 좁히려면 사람이 판정한다. T2-02 동결 규칙에 따라 사람이 확인한 표만 대체 key로 **추가**하고, split·질문·답 없음 여부는 바꾸지 않는다.

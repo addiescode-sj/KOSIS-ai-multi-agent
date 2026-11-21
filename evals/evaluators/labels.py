@@ -218,7 +218,7 @@ def grade(gold: TurnLabels | None, pred: TurnLabels | None, parse: Callable | No
     out: dict[str, bool] = {}
     for field in TurnLabels.model_fields:
         want = getattr(gold, field)
-        if want is None or field in ("failure_type", "formula_forbidden", "formula_optional", "plan_unresolved"):
+        if want is None or field in ("failure_type", "formula_forbidden", "formula_optional", "plan_unresolved", "review"):
             continue
         got = getattr(pred, field)
         if field == "resolved_question":
