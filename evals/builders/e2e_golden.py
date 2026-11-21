@@ -34,8 +34,8 @@ from pathlib import Path
 from kosis_ai.schemas import Fact
 from kosis_rag.shared.vocab import SIDO
 
-from evals.builders.diverse import REGION_SUFFIX, SHORT as SHORT_NAMES, josa
-from evals.builders.multiturn import Cells, eun, region_of, stat_call
+from evals.builders.diverse import REGION_SUFFIX, SHORT as SHORT_NAMES, has_batchim, josa
+from evals.builders.multiturn import OFFICIAL, REGION_DIM_WORDS, Cells, eun, region_of, stat_call
 from evals.builders.phase1 import sha256
 from evals.schemas import DATASETS, ROOT, TABLES, AgentScenario, CalcItem, TurnLabels, load_jsonl
 
@@ -43,14 +43,20 @@ WIDE = DATASETS / "calculation_golden_wide.jsonl"
 DIVERSE = DATASETS / "calculation_golden_diverse.jsonl"
 OUT = DATASETS / "e2e_golden.jsonl"
 OUT_CALC = DATASETS / "e2e_golden_calc.jsonl"
-QUOTA = {"numbers": 250, "rewrite_mq": 20}  # the rest take every item their rule finds (capped below)
-CAPS = {"ratio": 25, "cagr": 20, "E": 25, "X": 25, "Y": 15, "R": 15, "C": 15, "S": 10,
-        "refuse": 50, "causal": 15, "evaluative": 15, "default": 20, "sum_rate": 10}
-ELLIPSIS = ["{r}{eun}?", "그럼 {r}{eun}?", "{r} 쪽은?"]
-CORRECTION = ["아니 {y}년으로", "{y}년 기준으로 다시", "{y}년{eun}?"]
+QUOTA = {"numbers": 250, "rewrite_mq": 20, "mq_op": 20}  # the rest take every item their rule finds (capped below)
+# T3-47: every required type aims at >= 20 items (plans/golden-quality-gate.md, minimum sample per type)
+CAPS = {"ratio": 25, "cagr": 20, "E": 22, "X": 22, "Y": 22, "R": 22, "C": 22, "S": 22, "XE": 22, "XY": 22,
+        "refuse": 60, "missing_value": 22, "causal": 22, "evaluative": 22, "default": 22, "sum_rate": 22,
+        "share": 22, "extreme": 22, "same_name": 22, "partial_range": 22, "no_cell": 22}
+# T3-47: follow-up wordings that are NOT the ones the context rules were tuned on (evals/builders/multiturn.py,
+# context.LLM_EXAMPLES): the T3-46 copies of those templates leaked tuning into the test split. A wording that still
+# matches a tuning template (evals.golden_gate.tuned) sends its scenario to dev.
+ELLIPSIS = ["{r} 기준으로는?", "{r}도 알려줄래?", "{r} 숫자는 어때?"]
+CORRECTION = ["{y}년이면?", "{y}년 자료로 볼래?", "{y}년 수치도 줘"]
 RELATIVE = [("작년은?", -1), ("그 전 해는?", -1), ("재작년은?", -2)]
-CHART = [("꺾은선 그래프로 보여줘", "line"), ("막대그래프로 그려줘", "bar"), ("그 표로 막대 차트 그려줘", "bar")]
-REFERENCE = ["그 표에서 ", "같은 표에서 "]
+CHART = [("선 차트로 바꿔서 보여줄래?", "line"), ("막대 모양으로 다시 그려줄 수 있어?", "bar"), ("이거 막대 차트로 볼 수 있을까?", "bar")]
+REFERENCE = ["아까 그 통계에서 ", "방금 그 자료로 "]
+DEV_SHARE = 5  # one scenario in five (by sid hash) is dev; the rest is the held-out test split
 TAIL = re.compile(r"\s*(?:은|는)?\s*(?:얼마나|몇\s*%|몇\s*배)[^,]*$")  # "… 얼마나 변했어?" tails of trend questions
 VALUE_TAIL = re.compile(r"(?:은|는)\s*(?:전국\s*)?(?:몇\s*\S+|얼마)[^,]*$")  # "…는 몇 명이야?" / "…는 얼마야?"
 YEAR = re.compile(r"(\d{4})년")
@@ -143,32 +149,95 @@ def region_surface(question: str, official: str) -> str | None:
     return None
 
 
+def compare_prefix(item: CalcItem) -> tuple[str, str, str, str] | None:
+    """(text before the two labels, label a, label b, dim name) of a "…, A랑 B 차이는?" question, None otherwise."""
+    fa, fb = (f.dims or {} for f in item.required_facts[:2])
+    diff = [k for k in fa if fa.get(k) != fb.get(k)]
+    if len(diff) != 1:
+        return None
+    a, b = fa[diff[0]], fb[diff[0]]
+    m = re.search(re.escape(a) + r"\s*(?:이랑|랑|와|과|하고)\s*" + re.escape(b), item.question)
+    if not m:
+        return None
+    return item.question[:m.start()].rstrip(" ,") , a, b, diff[0]
+
+
+def siblings(cells: Cells, ref: str, dim: str) -> list:
+    """Cells that differ from `ref` only in the dimension named `dim` (same item, period and other codes), numbers only."""
+    src = cells.by_ref.get(ref)
+    if src is None:
+        return []
+    out = []
+    for c in cells.by_ref.values():
+        if c.item_id != src.item_id or c.period != src.period or len(c.dims) != len(src.dims) or c.value_kind != "ok":
+            continue
+        if all(x.code == y.code for x, y in zip(src.dims, c.dims) if x.name != dim):  # src itself included
+            out.append(c)
+    return out
+
+
+def label_of(cell, dim: str) -> str:
+    return next((d.label.strip() for d in cell.dims if d.name == dim), "")
+
+
+def is_total_label(label: str) -> bool:
+    return label in TOTAL_LABELS or label.endswith("계")
+
+
+TOTAL_LABELS = {"계", "합계", "총계", "전체", "소계", "전국", "총인구"}
+
+
+def cell_fact(fid: str, cell, base: Fact) -> Fact:
+    return base.model_copy(update={"id": fid, "value": cell.value, "period": cell.period, "source_ref": cell.ref(),
+                                   "dims": {**(base.dims or {}), **{d.name: d.label for d in cell.dims}}})
+
+
 def build(seed: int = 46) -> tuple[list[AgentScenario], list[CalcItem], dict]:
+    from evals.golden_gate import ambiguous_refs, degenerate, tuned, tuned_shapes
+
     rng = random.Random(seed)
     survey = surveys()
     wide = load_jsonl(WIDE, CalcItem)
     small = small_tables()
-    answerable = [i for i in wide if i.kind == "answerable"]
-    # the wide set holds number answers only, one per table: refusals and same-table pairs (reference turns) come from
-    # the diverse set too (tables with a Parquet file only)
     have = {i.qid for i in wide}
     extra = [i for i in load_jsonl(DIVERSE, CalcItem) if i.qid not in have
              and (ROOT / "data" / "values" / f"{i.table_key}.parquet").is_file()]
+    # T3-47: items whose gold cell id names several cells (no single right value) or that cannot discriminate are out
+    bad_refs, _ = ambiguous_refs([*wide, *extra])
+    dropped = {"ambiguous_cell": sorted({i.qid for i in [*wide, *extra] if any(f.source_ref in bad_refs for f in i.required_facts + i.aux_facts)}),
+               "degenerate": sorted({i.qid for i in [*wide, *extra] if degenerate(i)})}
+    out_ids = set(dropped["ambiguous_cell"]) | set(dropped["degenerate"])
+    wide = [i for i in wide if i.qid not in out_ids]
+    extra = [i for i in extra if i.qid not in out_ids]
+    answerable = [i for i in wide if i.kind == "answerable"]
     refusals = [i for i in [*wide, *extra] if i.kind == "not_answerable"]
     paired = answerable + [i for i in extra if i.kind == "answerable"]
     scenarios: list[dict] = []
     calc: dict[str, CalcItem] = {}
     count: Counter = Counter()
+    graded_q: set[str] = set()  # questions already graded as a stand-alone last turn (S must not reuse them)
 
     def add(prefix: str, kind: str, turns: list[dict], *items: CalcItem) -> None:
         count[kind] += 1
         scenarios.append({"sid": f"E2E-{prefix}-{kind}-{count[kind]:03d}", "split": "test", "source": kind,
                           "notes": kind, "turns": turns})
+        last = turns[-1]
+        if last["expect"]["labels"].get("reading") in (None, "new"):
+            graded_q.add(last["question"])
         for i in items:
             calc[i.qid] = i
 
     def full(kind: str) -> bool:
         return count[kind] >= CAPS.get(kind, 10**9)
+
+    cells_cache: dict[str, Cells] = {}
+
+    def cells(key: str) -> Cells:
+        if key not in cells_cache:
+            if len(cells_cache) > 40:  # whole small tables in memory: keep the cache bounded
+                cells_cache.pop(next(iter(cells_cache)))
+            cells_cache[key] = Cells(key)
+        return cells_cache[key]
 
     # ① numbers: value and compare as written, round-robin over surveys
     plain = [i for i in answerable if i.type in ("value", "compare")]
@@ -176,7 +245,7 @@ def build(seed: int = 46) -> tuple[list[AgentScenario], list[CalcItem], dict]:
         add("N", item.type, [turn(item.question, answer_tools(item.table_key), answered(item, "numbers"),
                                   table_key=item.table_key, calc_qid=item.qid)], item)
 
-    # ② formula: every trend (the % / count trap), "몇 배" from compares, "연평균 증가율" from count trends
+    # ② formula: every trend (the % / count trap), "몇 배", "연평균 증가율", "비중" (share), "가장 많은" (extreme)
     for item in [i for i in answerable if i.type == "trend"]:
         add("F", "trend", [turn(item.question, answer_tools(item.table_key), answered(item, "formula"),
                                 table_key=item.table_key, calc_qid=item.qid)], item)
@@ -201,63 +270,126 @@ def build(seed: int = 46) -> tuple[list[AgentScenario], list[CalcItem], dict]:
         add("F", "cagr", [turn(q, answer_tools(item.table_key),
                                answered(new, "formula").model_copy(update={"formula": ["cagr"]}),
                                table_key=item.table_key, calc_qid=new.qid)], new)
+    compares = [i for i in paired if i.type == "compare" and i.table_key in small and compare_prefix(i)]
+    rng.shuffle(compares)
+    for item in compares:
+        if full("share") and full("extreme"):
+            break
+        prefix, a, b, dim = compare_prefix(item)
+        fa = item.required_facts[0]
+        sib = siblings(cells(item.table_key), fa.source_ref, dim)
+        total = [c for c in sib if is_total_label(label_of(c, dim))]
+        parts = [c for c in sib if not is_total_label(label_of(c, dim))]
+        if not full("share") and unit_of(item) not in ("%", None) and len(total) == 1 and total[0].value and fa.value is not None:
+            q = f"{prefix}, 전체에서 {josa(a, '이가')} 차지하는 비중은 몇 %야?"
+            f1 = cell_fact("f1", next(c for c in sib if c.ref() == fa.source_ref), fa)
+            f2 = cell_fact("f2", total[0], fa)
+            new = item.model_copy(update={"qid": item.qid + "-SHARE", "question": q, "type": "share", "split": None,
+                                          "required_facts": [f1, f2, Fact(id="f3", value=round(f1.value / f2.value * 100, 1),
+                                                                          unit="%", derivation="f1 / f2 * 100", round=1)]})
+            add("F", "share", [turn(q, answer_tools(item.table_key),
+                                    TurnLabels(failure_type="formula", route="rag", reading="new", outcome="answered",
+                                               qtype="share", formula=["share"]),
+                                    table_key=item.table_key, calc_qid=new.qid)], new)
+            continue
+        values = [c.value for c in parts]
+        if not full("extreme") and 3 <= len(parts) <= 40 and values.count(max(values)) == 1:
+            top = max(parts, key=lambda c: c.value)
+            q = f"{prefix}, 어디가 가장 {'높아' if unit_of(item) == '%' else '많아'}?"
+            new = item.model_copy(update={"qid": item.qid + "-MAX", "question": q, "type": "extreme", "split": None,
+                                          "required_facts": [cell_fact("f1", top, fa)]})
+            add("F", "extreme", [turn(q, answer_tools(item.table_key),
+                                      TurnLabels(failure_type="formula", route="rag", reading="new", outcome="answered",
+                                                 qtype="extreme"), table_key=item.table_key, calc_qid=new.qid)], new)
 
     # ③ rewrite: follow-up turns on one-fact value questions (answers are swapped cells read by code)
-    values = [i for i in answerable if i.type == "value" and len(i.required_facts) == 1 and i.table_key in small]
+    values = [i for i in paired if i.type == "value" and len(i.required_facts) == 1 and i.table_key in small]
     rng.shuffle(values)
-    cells_cache: dict[str, Cells] = {}
 
-    def cells(key: str) -> Cells:
-        if key not in cells_cache:
-            cells_cache[key] = Cells(key)
-        return cells_cache[key]
+    def synthetic_item(item: CalcItem, tag: str, resolved: str, cell) -> CalcItem:
+        return CalcItem(qid=f"{item.qid}-{tag}-{cell.ref().split('|', 2)[2].replace('|', '-')}", kind="answerable",
+                        type="value", question=resolved, table_key=item.table_key, table_sha256=item.table_sha256,
+                        required_facts=[cell_fact("f1", cell, item.required_facts[0])], eda_traps=["synthetic_multiturn"])
 
-    def follow(item: CalcItem, kind: str, q2: str, resolved: str, cell, extra_labels: dict | None = None) -> None:
-        new = CalcItem(qid=f"{item.qid}-{kind}-{cell.ref().split('|', 2)[2].replace('|', '-')}", kind="answerable",
-                       type="value", question=resolved, table_key=item.table_key, table_sha256=item.table_sha256,
-                       required_facts=[item.required_facts[0].model_copy(update={
-                           "value": cell.value, "period": cell.period, "source_ref": cell.ref(),
-                           "dims": {**(item.required_facts[0].dims or {}), **{d.name: d.label for d in cell.dims}}})],
-                       eda_traps=["synthetic_multiturn"])
-        first = turn(item.question, answer_tools(item.table_key), answered(item, "rewrite"),
-                     table_key=item.table_key, calc_qid=item.qid)
+    def carried(q: str, resolved: str, item: CalcItem, new: CalcItem) -> dict:
         labels = TurnLabels(failure_type="rewrite", route="rewrite", reading="carry_over", resolved_question=resolved,
-                            outcome="answered", qtype="value", **(extra_labels or {}))
-        second = turn(q2, [stat_call(item.table_key)], labels, table_key=item.table_key, calc_qid=new.qid)
-        add("R", kind, [first, second], item, new)
+                            outcome="answered", qtype="value")
+        return turn(q, [stat_call(item.table_key)], labels, table_key=item.table_key, calc_qid=new.qid)
+
+    def first_turn(item: CalcItem) -> dict:
+        return turn(item.question, answer_tools(item.table_key), answered(item, "rewrite"),
+                    table_key=item.table_key, calc_qid=item.qid)
 
     for item in values:
-        if full("E") and full("X") and full("Y"):
+        if all(full(k) for k in ("E", "X", "Y", "XE", "XY")):
             break
         fact = item.required_facts[0]
         year = (fact.period or "")[:4]
         region = region_of(fact)
         surface = region and (("전국" if "전국" in item.question else None) if region[1] == "전국"
                               else region_surface(item.question, region[1]))
-        if region and not full("E") and surface:
+        has_year = year.isdigit() and f"{year}년" in item.question
+        if region and surface and (not full("E") or (has_year and not full("XE"))):
             targets = [r for r in SIDO if r != region[1]]
             rng.shuffle(targets)
             for target in targets:
-                if (cell := cells(item.table_key).swap(fact.source_ref, region=target)) is not None:
-                    short = SHORT_NAMES.get(target) or REGION_SUFFIX.sub("", target)
-                    follow(item, "E", rng.choice(ELLIPSIS).format(r=short, eun=eun(short)),
-                           item.question.replace(surface, target, 1), cell)
+                if (cell := cells(item.table_key).swap(fact.source_ref, region=target)) is None:
+                    continue
+                short = SHORT_NAMES.get(target) or REGION_SUFFIX.sub("", target)
+                q2 = rng.choice(ELLIPSIS).format(r=short)
+                resolved = item.question.replace(surface, target, 1)
+                # E and the 3-turn XE take turns on the items that support both (XE needs the year in the question)
+                if not full("E") and (full("XE") or not has_year or count["E"] <= count["XE"]):
+                    new = synthetic_item(item, "E", resolved, cell)
+                    add("R", "E", [first_turn(item), carried(q2, resolved, item, new)], item, new)
                     break
-        if year.isdigit() and f"{year}년" in item.question:
+                # 3 turns: correct the year, then move to another 시도 (both carried over)
+                for back in (1, 2, 3):
+                    y2 = str(int(year) - back)
+                    c2 = cells(item.table_key).swap(fact.source_ref, year=y2)
+                    c3 = c2 and cells(item.table_key).swap(c2.ref(), region=target)
+                    if c2 is None or c3 is None:
+                        continue
+                    r2 = item.question.replace(f"{year}년", f"{y2}년", 1)
+                    r3 = r2.replace(surface, target, 1)
+                    n2, n3 = synthetic_item(item, "XE2", r2, c2), synthetic_item(item, "XE3", r3, c3)
+                    add("R", "XE", [first_turn(item), carried(rng.choice(CORRECTION).format(y=y2), r2, item, n2),
+                                    carried(q2, r3, item, n3)], item, n2, n3)
+                    break
+                break
+        if has_year and not full("XY") and not (region and surface):
+            # 3 turns without a 시도: correct the year, then step back one more year ("그 전 해는?")
+            for back in (1, 2, 3):
+                y2, y3 = str(int(year) - back), str(int(year) - back - 1)
+                c2 = cells(item.table_key).swap(fact.source_ref, year=y2)
+                c3 = cells(item.table_key).swap(fact.source_ref, year=y3)
+                if c2 is None or c3 is None:
+                    continue
+                r2 = item.question.replace(f"{year}년", f"{y2}년", 1)
+                r3 = item.question.replace(f"{year}년", f"{y3}년", 1)
+                n2, n3 = synthetic_item(item, "XY2", r2, c2), synthetic_item(item, "XY3", r3, c3)
+                add("R", "XY", [first_turn(item), carried(rng.choice(CORRECTION).format(y=y2), r2, item, n2),
+                                carried("그 전 해는?", r3, item, n3)], item, n2, n3)
+                break
+            continue
+        if has_year:
             if not full("X"):
                 for back in (1, 2, 3, 5):
                     target = str(int(year) - back)
                     if (cell := cells(item.table_key).swap(fact.source_ref, year=target)) is not None:
-                        follow(item, "X", rng.choice(CORRECTION).format(y=target, eun=eun(target + "년")),
-                               item.question.replace(f"{year}년", f"{target}년", 1), cell)
+                        resolved = item.question.replace(f"{year}년", f"{target}년", 1)
+                        new = synthetic_item(item, "X", resolved, cell)
+                        add("R", "X", [first_turn(item), carried(rng.choice(CORRECTION).format(y=target), resolved, item, new)], item, new)
                         break
             elif not full("Y"):
                 phrase, step = rng.choice(RELATIVE)
                 target = str(int(year) + step)
                 if (cell := cells(item.table_key).swap(fact.source_ref, year=target)) is not None:
-                    follow(item, "Y", phrase, item.question.replace(f"{year}년", f"{target}년", 1), cell)
+                    resolved = item.question.replace(f"{year}년", f"{target}년", 1)
+                    new = synthetic_item(item, "Y", resolved, cell)
+                    add("R", "Y", [first_turn(item), carried(phrase, resolved, item, new)], item, new)
 
-    # R reference: a compare question of the same table asked "그 표에서 …" after its value question
+    # R reference: a compare question of the same table asked after its value question, behind a reference phrase
     by_table: dict[str, dict[str, CalcItem]] = defaultdict(dict)
     for i in paired:
         by_table[i.table_key].setdefault(i.type, i)
@@ -279,27 +411,33 @@ def build(seed: int = 46) -> tuple[list[AgentScenario], list[CalcItem], dict]:
                        turn(q2, [{"name": "make_chart", "args": {"table_key": item.table_key, "chart_type": kind}}],
                             TurnLabels(failure_type="rewrite", route="rewrite", reading="chart_only", chart_request=kind),
                             table_key=item.table_key)], item)
-    # S topic switch: a question about another survey's table must not carry the first one's conditions
-    plain_r = [i for i in plain if i.table_key in small]
-    rng.shuffle(plain_r)
-    for a, b in zip(plain_r[::2], plain_r[1::2]):
+    # S topic switch: the second question is one no other scenario grades (T3-47: no double grading)
+    unused = [i for i in plain if i.table_key in small and i.question not in graded_q]
+    firsts = [i for i in plain if i.table_key in small]
+    rng.shuffle(unused)
+    rng.shuffle(firsts)
+    for b in unused:
         if full("S"):
             break
-        if survey.get(a.table_key) == survey.get(b.table_key):
+        a = rng.choice([x for x in firsts if survey.get(x.table_key) != survey.get(b.table_key) and x.qid != b.qid] or [None])
+        if a is None or b.question in graded_q:
             continue
         add("R", "S", [turn(a.question, answer_tools(a.table_key), answered(a, "rewrite"), table_key=a.table_key, calc_qid=a.qid),
                        turn(b.question, answer_tools(b.table_key), answered(b, "rewrite"), table_key=b.table_key, calc_qid=b.qid)], a, b)
     # MQ: two value questions of different surveys in one turn; "둘의 차이는?" when both are in one unit
     singles = [i for i in values if i.required_facts[0].value is not None]
     rng.shuffle(singles)
-    made = 0
-    for a, b in zip(singles[::2], singles[1::2]):
-        if made >= QUOTA["rewrite_mq"]:
+    made = Counter()
+    for a, b in ((x, y) for x in singles for y in singles if x.qid < y.qid):
+        if made["plain"] >= QUOTA["rewrite_mq"] and made["op"] >= QUOTA["mq_op"]:
             break
-        if survey.get(a.table_key) == survey.get(b.table_key):
+        if survey.get(a.table_key) == survey.get(b.table_key) or a.table_key == b.table_key:
             continue
+        op = "diff" if unit_of(a) == unit_of(b) and made["op"] < QUOTA["mq_op"] else None
+        if op is None and made["plain"] >= QUOTA["rewrite_mq"]:
+            continue
+        made["op" if op else "plain"] += 1
         qa, qb = a.question.rstrip("?？ "), b.question.rstrip("?？ ")
-        op = "diff" if unit_of(a) == unit_of(b) and made % 2 else None
         question = f"{qa}, 그리고 {qb}?" + (" 둘의 차이는?" if op else "")
         labels = TurnLabels(failure_type="rewrite", route="rewrite", reading="new", sub_questions=[qa, qb], op=op,
                             outcome="answered")
@@ -309,11 +447,13 @@ def build(seed: int = 46) -> tuple[list[AgentScenario], list[CalcItem], dict]:
         add("R", "MQ", [turn(question, [{"name": "search_tables"}, {"name": "search_tables"}, stat_call(a.table_key),
                                         stat_call(b.table_key), *([{"name": "combine_values", "args": {"op": op}}] if op else [])],
                              labels, **expect)], a, b)
-        made += 1
 
     # ④ classify
     rng.shuffle(refusals)
-    for item in stratified(refusals, CAPS["refuse"], survey, rng):
+    symbol = [i for i in refusals if "missing_value" in i.allowed_reasons]
+    picked = stratified(symbol, CAPS["missing_value"], survey, rng)
+    rest = [i for i in refusals if i not in picked]
+    for item in [*picked, *stratified(rest, CAPS["refuse"] - len(picked), survey, rng)]:
         reason = item.allowed_reasons
         scope = "out_of_scope" in reason or "no_item" in reason
         rule = {"no_period": "no_period", "missing_value": "symbol"}.get(reason[0])
@@ -334,27 +474,132 @@ def build(seed: int = 46) -> tuple[list[AgentScenario], list[CalcItem], dict]:
                                      TurnLabels(failure_type="classify", route="clarify", reading="new",
                                                 outcome="clarify", judge_rule="evaluative"), table_key=item.table_key)])
     dated = [i for i in answerable if i.type == "value" and len(YEAR.findall(i.question)) == 1
-             and i.required_facts[0].period and YEAR.search(i.question).group(1) == i.required_facts[0].period[:4]]
+             and i.required_facts[0].period and YEAR.search(i.question).group(1) == i.required_facts[0].period[:4]
+             and "추계" not in survey.get(i.table_key, "")]  # T3-47: a projection's default year is debatable
     for item in stratified(dated, CAPS["default"], survey, rng):
         q = re.sub(r"\s*\d{4}년\s*(?:기준\s*)?", " ", item.question, count=1).strip()
         new = item.model_copy(update={"qid": item.qid + "-DEFAULT", "question": q, "default_applied": {"period": "latest"}})
         add("C", "default", [turn(q, answer_tools(item.table_key),
                                   answered(new, "classify").model_copy(update={"default_applied": True}),
                                   table_key=item.table_key, calc_qid=new.qid)], new)
-    rates = [i for i in trends if unit_of(i) == "%" and TAIL.search(i.question)]
+    # missing_value from cells: the simplest symbol cell (X, -, *, …) of a table already in the set, asked as the
+    # diverse builder words a refusal -> refused, not answered with a number
+    from evals.builders.diverse import subject, year_text
+
+    SYMBOLS = {"x_secret", "dash", "asterisk", "ellipsis"}
+    have_symbol = sum("missing_value" in (sc["turns"][-1]["expect"]["labels"].get("refusal_reasons") or []) for sc in scenarios)
+    seen_tables: set[str] = set()
+    for item in values:
+        if have_symbol >= CAPS["missing_value"]:
+            break
+        if item.table_key in seen_tables:
+            continue
+        seen_tables.add(item.table_key)
+        symbol_cells = [c for c in cells(item.table_key).by_ref.values() if c.value_kind in SYMBOLS and len(c.period) == 4]
+        if not symbol_cells:
+            continue
+        c = max(symbol_cells, key=lambda c: (sum(is_total_label(d.label.strip()) for d in c.dims), c.period))
+        q = f"{year_text(c.period)} {josa(subject(c), '은는')}?"
+        add("C", "symbol", [turn(q, answer_tools(item.table_key),
+                                 TurnLabels(failure_type="classify", route="refuse", reading="new", outcome="refused",
+                                            refusal_reasons=["missing_value"], judge_rule="symbol"),
+                                 refuse=True, table_key=item.table_key)])
+        have_symbol += 1
+    rates = [i for i in paired if i.type == "trend" and unit_of(i) == "%" and TAIL.search(i.question)]
     for item in stratified(rates, CAPS["sum_rate"], survey, rng):
         q = TAIL.sub("를 다 합치면 얼마야?", item.question)
         add("C", "sum_rate", [turn(q, answer_tools(item.table_key),
                                    TurnLabels(failure_type="classify", route="refuse", reading="new", outcome="refused",
                                               refusal_reasons=["not_aggregatable"], judge_rule="not_aggregatable"),
                                    refuse=True, table_key=item.table_key)])
+    # not_aggregatable also from % compares: adding two rates of one table means nothing
+    for item in [i for i in compares if unit_of(i) == "%"]:
+        if full("sum_rate"):
+            break
+        prefix, a, b, _ = compare_prefix(item)
+        q = f"{prefix}, {a}{'이랑' if has_batchim(a) else '랑'} {b} 비율을 합치면 얼마야?"
+        add("C", "sum_rate", [turn(q, answer_tools(item.table_key),
+                                   TurnLabels(failure_type="classify", route="refuse", reading="new", outcome="refused",
+                                              refusal_reasons=["not_aggregatable"], judge_rule="not_aggregatable"),
+                                   refuse=True, table_key=item.table_key)])
+    # partial_range: an average over a range that starts before the table does (refused, not answered with a gap)
+    counts_ = [i for i in trends if unit_of(i) != "%" and TAIL.search(i.question)]
+    for item in stratified(counts_, CAPS["partial_range"], survey, rng):
+        first = item.required_facts[0].period[:4]
+        if f"{first}년" not in item.question:
+            continue
+        q = TAIL.sub("의 연평균은 얼마야?", item.question.replace(f"{first}년", f"{int(first) - 5}년", 1))
+        add("C", "partial_range", [turn(q, answer_tools(item.table_key),
+                                        TurnLabels(failure_type="classify", route="refuse", reading="new", outcome="refused",
+                                                   refusal_reasons=["no_period"], judge_rule="partial_range"),
+                                        refuse=True, table_key=item.table_key)])
+    # same_name: a district name several 시도 share (중구, 동구 ...) asked without its 시도 -> ask back which one
+    named = [i for i in paired if i.type in ("value", "compare") and i.table_key in small]
+    rng.shuffle(named)
+    for item in named:
+        if full("same_name"):
+            break
+        src = cells(item.table_key).by_ref.get(item.required_facts[0].source_ref)
+        if src is None:
+            continue
+        for d in src.dims:
+            here = d.label.strip()
+            if not any(w in d.name for w in (*REGION_DIM_WORDS, "시군구", "지역")) or len(here) < 2 or here not in item.question:
+                continue
+            codes = defaultdict(set)
+            for c in cells(item.table_key).by_ref.values():
+                for x in c.dims:
+                    if x.name == d.name:
+                        codes[re.sub(r"\s+", "", x.label)].add(x.code)
+            shared = sorted(l for l, cs in codes.items() if len(cs) > 1 and not is_total_label(l) and len(l) >= 2 and l not in item.question)
+            if not shared:
+                continue
+            q = item.question.replace(here, rng.choice(shared), 1)
+            add("C", "same_name", [turn(q, answer_tools(item.table_key),
+                                        TurnLabels(failure_type="classify", route="clarify", reading="new", outcome="clarify",
+                                                   judge_rule="same_name"), table_key=item.table_key)])
+            break
+    # no_cell: a 시도 asked for a year the table holds, but not for that 시도 (세종 before 2012) -> class_mismatch
+    for item in values:
+        if full("no_cell"):
+            break
+        fact = item.required_facts[0]
+        region = region_of(fact)
+        year = (fact.period or "")[:4]
+        if not region or not year.isdigit() or f"{year}년" not in item.question:
+            continue
+        surface = ("전국" if "전국" in item.question else None) if region[1] == "전국" else region_surface(item.question, region[1])
+        if not surface or region[1] == "세종특별자치시":
+            continue
+        for old in ("2005", "2008", "2010"):
+            if old >= year or cells(item.table_key).swap(fact.source_ref, year=old) is None:
+                continue  # the table must hold that year for the asked 시도's neighbours
+            if cells(item.table_key).swap(fact.source_ref, region="세종특별자치시") is None:
+                break  # no 세종 in this table at all: it would be no_item, not a missing combination
+            c = cells(item.table_key).swap(fact.source_ref, year=old)
+            if cells(item.table_key).swap(c.ref(), region="세종특별자치시") is not None:
+                continue
+            q = item.question.replace(f"{year}년", f"{old}년", 1).replace(surface, "세종특별자치시", 1)
+            add("C", "no_cell", [turn(q, answer_tools(item.table_key),
+                                      TurnLabels(failure_type="classify", route="refuse", reading="new", outcome="refused",
+                                                 refusal_reasons=["class_mismatch"], judge_rule="no_cell"),
+                                      refuse=True, table_key=item.table_key)])
+            break
 
+    # split (T3-47): a follow-up worded like a rule-tuning template goes to dev; one in DEV_SHARE by sid hash too
+    shapes = tuned_shapes()
+    for s in scenarios:
+        leaked = any(i and tuned(t["question"], shapes) for i, t in enumerate(s["turns"]))
+        if leaked or int(sha256_text(s["sid"])[:8], 16) % DEV_SHARE == 0:
+            s["split"] = "dev"
     rows = [AgentScenario.model_validate(s) for s in scenarios]
     ftype = Counter(t.expect.labels.failure_type for s in rows for t in s.turns[-1:])
     info = {"scenarios": len(rows), "turns": sum(len(s.turns) for s in rows), "by_failure_type": dict(ftype),
-            "by_kind": dict(count), "tables": len({t.expect.table_key for s in rows for t in s.turns if t.expect.table_key}),
+            "by_kind": dict(count), "splits": dict(Counter(s.split for s in rows)),
+            "tables": len({t.expect.table_key for s in rows for t in s.turns if t.expect.table_key}),
             "surveys": len({survey.get(t.expect.table_key) for s in rows for t in s.turns if t.expect.table_key}),
-            "calc_items": len(calc), "seed": seed, "wide_sha256": sha256(WIDE), "diverse_sha256": sha256(DIVERSE)}
+            "calc_items": len(calc), "dropped": {k: len(v) for k, v in dropped.items()}, "dropped_ids": dropped,
+            "seed": seed, "wide_sha256": sha256(WIDE), "diverse_sha256": sha256(DIVERSE)}
     return rows, list(calc.values()), info
 
 
@@ -459,6 +704,51 @@ def with_rule_pred(rows: list[AgentScenario], *, max_rows: int | None = None, ti
     return out
 
 
+NEW_KINDS = {"share", "extreme", "same_name", "XE", "XY", "partial_range", "no_cell", "symbol"}  # T3-47: gold by construction, checked
+REVIEW = DATASETS / "e2e_golden.review.csv"
+KEY_LABELS = ("outcome", "judge_rule", "qtype", "reading", "formula")
+
+
+def mark_review(rows: list[AgentScenario]) -> list[AgentScenario]:
+    """A new-type turn whose rule prediction disagrees with its constructed gold on a key label waits for a person
+    (review = needs_review). Keeping only agreeing items would bend the golden set toward what the rules already do."""
+    from evals.evaluators.labels import grade
+
+    out = []
+    for s in rows:
+        if s.notes not in NEW_KINDS:
+            out.append(s)
+            continue
+        turns = []
+        for t in s.turns:
+            e = t.expect
+            if e.labels and e.rule_pred and not (e.rule_pred.judge_rule or "").startswith(("skipped", "error: timeout")):
+                hits = grade(e.labels, e.rule_pred)
+                if any(not hits.get(f, True) for f in KEY_LABELS):
+                    e = e.model_copy(update={"labels": e.labels.model_copy(update={"review": "needs_review"})})
+            turns.append(t.model_copy(update={"expect": e}))
+        out.append(s.model_copy(update={"turns": turns}))
+    return out
+
+
+def write_review(rows: list[AgentScenario], path: Path = REVIEW) -> int:
+    """needs_review turns plus every 5th other new-type turn, for a person: verdict ok / wrong, note."""
+    import csv
+
+    picked = [(s, t) for s in rows if s.notes in NEW_KINDS for t in s.turns[-1:]]
+    picked = [(s, t) for n, (s, t) in enumerate(picked) if t.expect.labels.review == "needs_review" or n % 5 == 0]
+    with path.open("w", encoding="utf-8-sig", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["sid", "kind", "split", "question", "gold", "rule_pred", "review", "verdict(ok/wrong)", "note"])
+        for s, t in picked:
+            gold = {k: v for k, v in t.expect.labels.model_dump(exclude_none=True).items() if k in (*KEY_LABELS, "refusal_reasons")}
+            pred = {k: v for k, v in (t.expect.rule_pred.model_dump(exclude_none=True) if t.expect.rule_pred else {}).items()
+                    if k in (*KEY_LABELS, "refusal_reasons")}
+            w.writerow([s.sid, s.notes, s.split, t.question, json.dumps(gold, ensure_ascii=False),
+                        json.dumps(pred, ensure_ascii=False), t.expect.labels.review or "", "", ""])
+    return len(picked)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--seed", type=int, default=46)
@@ -466,6 +756,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-rows", type=int, help="rule_pred: tables over this many rows are skipped (default 2,000,000)")
     parser.add_argument("--timeout", type=int, default=SCENARIO_TIMEOUT, help="rule_pred: seconds per scenario (0 = none)")
     parser.add_argument("--fresh", action="store_true", help="rule_pred: ignore the resume cache (after a rule change)")
+    parser.add_argument("--allow-gate-fail", action="store_true", help="write the files even when a blocking gate check fails (exit 0)")
     args = parser.parse_args(argv)
     rows, calc, info = build(args.seed)
     if not args.no_rules:
@@ -475,11 +766,24 @@ def main(argv: list[str] | None = None) -> int:
         skipped = Counter(t.expect.rule_pred.judge_rule.split(":")[0] for s in rows for t in s.turns
                           if t.expect.rule_pred and (t.expect.rule_pred.judge_rule or "").startswith(("skipped", "error")))
         info["rule_pred_not_run"] = dict(skipped)  # skipped (large table) / error (timeout, crash) turns
+        rows = mark_review(rows)
+        info["review_rows"] = write_review(rows)
     OUT.write_text("".join(s.model_dump_json(exclude_defaults=True) + "\n" for s in rows), encoding="utf-8")
     OUT_CALC.write_text("".join(i.model_dump_json(exclude_defaults=True) + "\n" for i in calc), encoding="utf-8")
     info |= {"rule_pred": not args.no_rules, "sha256": sha256(OUT), "calc_sha256": sha256(OUT_CALC)}
+    # T3-47 quality gate on what was just written (plans/golden-quality-gate.md): blocking checks fail the build
+    from evals import golden_gate
+
+    gate = golden_gate.run(OUT, OUT_CALC)
+    print(golden_gate.table(gate))
+    golden_gate.write(gate)
+    info["gate"] = {"passed": gate["passed"], "blocked": gate["blocked"],
+                    "checks": {c["name"]: {"ok": c["ok"], "value": c["value"]} for c in gate["checks"]}}
     OUT.with_suffix(".meta.json").write_text(json.dumps(info, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(json.dumps(info, ensure_ascii=False))
+    print(json.dumps({k: v for k, v in info.items() if k not in ("dropped_ids", "gate")}, ensure_ascii=False))
+    if not gate["passed"]:
+        print(f"quality gate blocked: {', '.join(gate['blocked'])} (-> {golden_gate.OUT})")
+        return 0 if args.allow_gate_fail else 1
     return 0
 
 

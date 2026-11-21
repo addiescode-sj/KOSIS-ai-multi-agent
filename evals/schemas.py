@@ -183,6 +183,9 @@ class TurnLabels(BaseModel):
     # the rules left the plan to the model (route "unresolved": no formula decided by rules)
     formula_optional: list[str] | None = None
     plan_unresolved: bool | None = None
+    # gold only (T3-47): a new-type item whose rule prediction disagrees waits for a person (needs_review); a person
+    # sets accepted / rejected in the review CSV. Not graded; the quality gate warns on needs_review
+    review: Literal["needs_review", "accepted", "rejected"] | None = None
     chart_request: Literal["bar", "line", "pie"] | None = None
 
 
