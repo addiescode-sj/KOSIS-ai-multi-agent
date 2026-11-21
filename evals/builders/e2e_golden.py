@@ -345,11 +345,12 @@ def build(seed: int = 46) -> tuple[list[AgentScenario], list[CalcItem], dict]:
                                     table_key=item.table_key, calc_qid=new.qid)], new)
             continue
         values = [c.value for c in parts]
-        if not full("extreme") and 3 <= len(parts) <= 40 and values.count(max(values)) == 1:
+        # extreme only over a regional axis: "어디가 가장 많아?" names it; "어떤 항목이 가장 많아?" over another axis does not,
+        # and the right answer is to ask back (T3-47 review, E2E-F-extreme-011)
+        regional = any(w in dim for w in (*REGION_DIM_WORDS, "시군구", "지역"))
+        if not full("extreme") and regional and 3 <= len(parts) <= 40 and values.count(max(values)) == 1:
             top = max(parts, key=lambda c: c.value)
-            word = "높아" if unit_of(item) == "%" else "많아"
-            regional = any(w in dim for w in (*REGION_DIM_WORDS, "시군구", "지역"))
-            q = f"{prefix}, {'어디가' if regional else '어떤 항목이'} 가장 {word}?"
+            q = f"{prefix}, 어디가 가장 {'높아' if unit_of(item) == '%' else '많아'}?"
             new = item.model_copy(update={"qid": item.qid + "-MAX", "question": q, "type": "extreme", "split": None,
                                           "required_facts": [cell_fact("f1", top, fa)]})
             add("F", "extreme", [turn(q, answer_tools(item.table_key),
@@ -640,6 +641,37 @@ def build(seed: int = 46) -> tuple[list[AgentScenario], list[CalcItem], dict]:
                                       refuse=True, table_key=item.table_key)])
             break
 
+    # T3-47: sections added after the human review draw from their own random stream and run last, so the items a
+    # person already judged (reviews are keyed by the conversation) are generated again exactly as before.
+    # extreme over the 17 시도 of a national value question: "…, 시도별로 어디가 가장 많아?" (the axis is in the question)
+    nationals = [i for i in paired if i.type == "value" and len(i.required_facts) == 1 and i.table_key in small
+                 and "전국" in i.question and VALUE_TAIL.search(i.question)]
+    own = random.Random(f"{seed}-sido-max")  # its own stream: adding it changed nothing the earlier sections draw
+    own.shuffle(nationals)
+    for item in nationals:
+        if full("extreme"):
+            break
+        fa = item.required_facts[0]
+        src = cells(item.table_key).by_ref.get(fa.source_ref)
+        dim = next((d.name for d in (src.dims if src else []) if d.label.strip() == "전국"), None)
+        if dim is None:
+            continue
+        sido = [c for c in siblings(cells(item.table_key), fa.source_ref, dim)
+                if OFFICIAL.get(label_of(c, dim)) in SIDO and c.unit_or_suffix() == src.unit_or_suffix()]
+        values_ = [c.value for c in sido]
+        if len(sido) < 10 or values_.count(max(values_)) != 1:
+            continue
+        base = re.sub(r"\s*전국\s*", " ", VALUE_TAIL.sub("", item.question)).strip()
+        if not measure_prefix(base):
+            continue
+        top = max(sido, key=lambda c: c.value)
+        q = f"{base}, 시도별로 어디가 가장 {'높아' if unit_of(item) == '%' else '많아'}?"
+        new = item.model_copy(update={"qid": item.qid + "-SIDO-MAX", "question": q, "type": "extreme", "split": None,
+                                      "required_facts": [cell_fact("f1", top, fa)]})
+        add("F", "extreme", [turn(q, answer_tools(item.table_key),
+                                  TurnLabels(failure_type="formula", route="rag", reading="new", outcome="answered",
+                                             qtype="extreme"), table_key=item.table_key, calc_qid=new.qid)], new)
+
     # split (T3-47): a follow-up worded like a rule-tuning template goes to dev; one in DEV_SHARE by sid hash too
     shapes = tuned_shapes()
     for s in scenarios:
@@ -776,7 +808,8 @@ def mark_review(rows: list[AgentScenario]) -> list[AgentScenario]:
         turns = []
         for t in s.turns:
             e = t.expect
-            if e.labels and e.rule_pred and not (e.rule_pred.judge_rule or "").startswith(("skipped", "error: timeout")):
+            # a rule run that crashed or was skipped says nothing about the gold: only a real disagreement goes to a person
+            if e.labels and e.rule_pred and not (e.rule_pred.judge_rule or "").startswith(("skipped", "error")):
                 hits = grade(e.labels, e.rule_pred)
                 if any(not hits.get(f, True) for f in KEY_LABELS):
                     e = e.model_copy(update={"labels": e.labels.model_copy(update={"review": "needs_review"})})
