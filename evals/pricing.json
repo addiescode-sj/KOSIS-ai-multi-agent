@@ -1,12 +1,75 @@
 {
-  "_note": "Price per 1,000 tokens by model name (the name the run records: gen_ai.request.model, i.e. STAT_MODEL / INTERPRETER_MODEL / STAGE2_MODEL, or the stage 2 kind clova|hcx|gpt for an L1 run). Fill from the provider's current price list; null means unknown and the report shows cost as not set. A run that calls models in two currencies shows no total (ops.summarize). Self-hosted models (gemma) have no per-token price: null until the team agrees on one.",
+  "_note": "Price per 1,000 tokens by model name (the name the run records: gen_ai.request.model, i.e. STAT_MODEL / INTERPRETER_MODEL / STAGE2_MODEL, or the stage 2 kind clova|hcx|gpt for an L1 run). Fill from the provider's current price list; null means unknown and the report shows cost as not set. A run that calls models in two currencies shows no total (ops.summarize). Self-hosted models (gemma) have no per-token price: null until the team agrees on one. Keys may be glob patterns (case-insensitive, e.g. *qwen*); an exact name wins. Every currency is converted to fx.base with fx rates (T3-50); a currency without a rate gives no total.",
   "models": {
-    "HCX-DASH-002": {"input_per_1k": null, "output_per_1k": null, "currency": "KRW", "_note": "Not verified (T3-38, KOS-200, read 2026-11-16): the official model guide https://guide.ncloud-docs.com/docs/clovastudio-model links the price row to https://www.ncloud.com/product/aiService/clovaStudio#pricing, whose price table is rendered by script and not readable without a browser; https://guide.ncloud-docs.com/docs/clovastudio-spec only says the charge is per model and token count. Fill from that pricing section (input / output per 1,000 tokens) with _source."},
-    "HCX-005": {"input_per_1k": null, "output_per_1k": null, "currency": "KRW", "_note": "Not verified (T3-38, KOS-200, read 2026-11-16): the official model guide https://guide.ncloud-docs.com/docs/clovastudio-model links the price row to https://www.ncloud.com/product/aiService/clovaStudio#pricing, whose price table is rendered by script and not readable without a browser; https://guide.ncloud-docs.com/docs/clovastudio-spec only says the charge is per model and token count. Fill from that pricing section (input / output per 1,000 tokens) with _source."},
-    "HCX-007": {"input_per_1k": null, "output_per_1k": null, "currency": "KRW", "_note": "Not verified (T3-38, KOS-200, read 2026-11-16): the official model guide https://guide.ncloud-docs.com/docs/clovastudio-model links the price row to https://www.ncloud.com/product/aiService/clovaStudio#pricing, whose price table is rendered by script and not readable without a browser; https://guide.ncloud-docs.com/docs/clovastudio-spec only says the charge is per model and token count. Fill from that pricing section (input / output per 1,000 tokens) with _source. HCX-007 output tokens include reasoning tokens (maxCompletionTokens, api.ncloud-docs.com/docs/clovastudio-chatcompletionsv3)."},
-    "gpt-4o-mini": {"input_per_1k": 0.00015, "output_per_1k": 0.0006, "currency": "USD", "_source": "OpenAI list price, USD 0.15 / 0.60 per 1M tokens"},
-    "gpt-4o-mini-2024-07-18": {"input_per_1k": 0.00015, "output_per_1k": 0.0006, "currency": "USD"},
-    "google/gemma-4-31B-it-qat-w4a16-ct": {"input_per_1k": null, "output_per_1k": null, "currency": "KRW", "_note": "Self-hosted, no per-token list price. The team must decide: 0 per token (cost counted elsewhere) or a GPU-hour cost spread over tokens. Null until then (T3-38, KOS-200)."},
-    "mock": {"input_per_1k": 0, "output_per_1k": 0, "currency": "KRW"}
+    "HCX-DASH-002": {
+      "input_per_1k": 0.25,
+      "output_per_1k": 1.0,
+      "currency": "KRW",
+      "_source": "CLOVA Studio standard price, checked by the user 2026-11-23 (T3-50). Called only when a rule-based calculation fails (rule/formula extraction), so turns without the call cost 0."
+    },
+    "HCX-005": {
+      "input_per_1k": null,
+      "output_per_1k": null,
+      "currency": "KRW",
+      "_note": "Not used by the current pipeline: only an interpreter candidate in the T3-27 comparison runs (gpt-4o-mini won and became the default). Price not entered (T3-50), so those past runs stay unpriced."
+    },
+    "HCX-007": {
+      "input_per_1k": null,
+      "output_per_1k": null,
+      "currency": "KRW",
+      "_note": "Not used by the current pipeline: phase 2's default for STAGE2=hcx (kosis_rag.rerank.constants.MODEL) and a T3-27 interpreter candidate; stage 2 now runs on the local Qwen. Price not entered (T3-50). Output tokens include reasoning tokens."
+    },
+    "gpt-4o-mini": {
+      "input_per_1k": 0.00015,
+      "output_per_1k": 0.0006,
+      "currency": "USD",
+      "_source": "OpenAI list price, USD 0.15 / 0.60 per 1M tokens"
+    },
+    "gpt-4o-mini-2024-07-18": {
+      "input_per_1k": 0.00015,
+      "output_per_1k": 0.0006,
+      "currency": "USD"
+    },
+    "google/gemma-4-31B-it-qat-w4a16-ct": {
+      "input_per_1k": 0,
+      "output_per_1k": 0,
+      "currency": "KRW",
+      "_note": "Self-hosted stage 2 re-ranker (and T3-27/28 candidate), replaced by the local Qwen: 0 per token by the same team decision as *qwen* (T3-50)."
+    },
+    "mock": {
+      "input_per_1k": 0,
+      "output_per_1k": 0,
+      "currency": "KRW"
+    },
+    "gpt-4.1-mini": {
+      "input_per_1k": 0.0004,
+      "output_per_1k": 0.0016,
+      "currency": "USD",
+      "_source": "OpenAI list price, USD 0.40 / 1.60 per 1M tokens (Ragas judge default, evals/tasks/ragas.py)"
+    },
+    "gpt-4.1-mini-2025-04-14": {
+      "input_per_1k": 0.0004,
+      "output_per_1k": 0.0016,
+      "currency": "USD",
+      "_source": "OpenAI list price, USD 0.40 / 1.60 per 1M tokens (Ragas judge default, evals/tasks/ragas.py)"
+    },
+    "text-embedding-3-small": {
+      "input_per_1k": 2e-05,
+      "output_per_1k": 0,
+      "currency": "USD",
+      "_source": "OpenAI list price, USD 0.02 per 1M tokens (Ragas embeddings)"
+    },
+    "*qwen*": {
+      "input_per_1k": 0,
+      "output_per_1k": 0,
+      "currency": "KRW",
+      "_note": "Self-hosted Qwen 27B quantized on a local server, the stage 2 re-ranker (STAGE2=gpt + STAGE2_MODEL/STAGE2_BASE_URL): 0 per token by team decision (T3-50), GPU cost is tracked apart. Pattern key because the run records the server's model id."
+    }
+  },
+  "fx": {
+    "base": "KRW",
+    "USD": 1400,
+    "as_of": "2026-11-23",
+    "_source": "Team-fixed rate (T3-50 user decision), not a live quote: edit here when it moves"
   }
 }

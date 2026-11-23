@@ -5,15 +5,18 @@ committed) so runs can be compared over time. Token counts come from where each 
 - L1: a LangChain callback reads usage from every LLM call a retriever makes, plus the rerank2 record (stage2_*)
 - l3 / e2e / agent: the chat spans of the agent turn (runners.agent.turn_record, T3-31/32), per model
 - re-grade: the saved rows' token fields
-Cost uses evals/pricing.json (price per 1K tokens per model) over each row's tokens_by_model, so a turn that calls
-two models (follow-up reader + phase 1) is priced per model. A model without a price, or two currencies in one
-run, gives cost None: the report says the price is missing instead of inventing one.
+Cost uses evals/pricing.json (price per 1K tokens per model, glob keys like *qwen* allowed) over each row's
+tokens_by_model, so a turn that calls two models (follow-up reader + phase 1) is priced per model. Every currency is
+converted to fx.base (KRW) with the fixed rates in pricing.json (T3-50); the original per-currency sums stay in
+total_by_currency. A model without a price, or a currency without a rate, gives cost None: the report says the
+price is missing instead of inventing one.
 """
 
 from __future__ import annotations
 
 import json
 import statistics
+from fnmatch import fnmatch
 from pathlib import Path
 
 from langchain_core.callbacks import BaseCallbackHandler
@@ -73,14 +76,37 @@ class UsageCallback(BaseCallbackHandler):
 
 
 def load_pricing(path: Path = PRICING) -> dict[str, dict]:
-    return json.loads(path.read_text(encoding="utf-8")).get("models", {}) if path.exists() else {}
+    """{model or glob: price}; the fx table rides along under "_fx" so callers pass one dict."""
+    if not path.exists():
+        return {}
+    data = json.loads(path.read_text(encoding="utf-8"))
+    return {**data.get("models", {}), "_fx": data.get("fx") or {}}
+
+
+def price_of(model: str | None, pricing: dict[str, dict]) -> dict | None:
+    """Exact name first, then the first glob key that matches (case-insensitive): self-hosted ids vary by server."""
+    model = model or ""
+    if model in pricing:
+        return pricing[model]
+    return next((p for k, p in pricing.items() if "*" in k and fnmatch(model.lower(), k.lower())), None)
 
 
 def cost(model: str | None, input_tokens: int, output_tokens: int, pricing: dict[str, dict]) -> float | None:
-    price = pricing.get(model or "")
+    """Cost in the model's own currency."""
+    price = price_of(model, pricing)
     if not price or price.get("input_per_1k") is None or price.get("output_per_1k") is None:
         return None
     return input_tokens / 1000 * price["input_per_1k"] + output_tokens / 1000 * price["output_per_1k"]
+
+
+def to_base(amount: float, currency: str | None, pricing: dict[str, dict]) -> tuple[float | None, str | None]:
+    """(amount in fx.base, base). Without an fx table the amount stays in its currency; a currency without a rate is None."""
+    fx = pricing.get("_fx") or {}
+    base = fx.get("base")
+    if not base or currency == base:
+        return amount, currency
+    rate = fx.get(currency or "")
+    return (amount * rate, base) if rate is not None else (None, None)
 
 
 def tokens_by_model(row: dict) -> dict[str, dict[str, int]]:
@@ -96,7 +122,8 @@ def tokens_by_model(row: dict) -> dict[str, dict[str, int]]:
 
 
 def row_cost(row: dict, pricing: dict[str, dict]) -> tuple[float | None, str | None]:
-    """(cost, currency) of one row over its models; None when any model is unpriced or the currencies differ."""
+    """(cost, currency) of one row over its models, converted to fx.base; None when any model is unpriced or a
+    currency has no rate (KRW and USD in one turn add up only through fx)."""
     by_model = tokens_by_model(row)
     if not by_model and (row.get("input_tokens") or row.get("output_tokens")):
         return None, None
@@ -105,11 +132,21 @@ def row_cost(row: dict, pricing: dict[str, dict]) -> tuple[float | None, str | N
         c = cost(model, t["input"], t["output"], pricing)
         if c is None:
             return None, None
-        cur = pricing[model].get("currency")
-        if currency is not None and cur != currency:
-            return None, None  # KRW and USD in one turn: not added up
+        c, cur = to_base(c, price_of(model, pricing).get("currency"), pricing)
+        if c is None or (currency is not None and cur != currency):
+            return None, None
         total, currency = total + c, cur
     return total, currency
+
+
+def cost_basis(c: dict) -> str:
+    """' (원 통화: 0.0123 USD + 4.5 KRW, 1 USD = 1400 KRW)' when the total converts a currency (T3-50), else ''."""
+    by_cur = c.get("total_by_currency") or {}
+    if set(by_cur) <= {c.get("currency")}:
+        return ""
+    fx = c.get("fx") or {}
+    rates = ", ".join(f"1 {cur} = {fx[cur]:,} {fx.get('base')}" for cur in by_cur if cur in fx)
+    return f" (원 통화: {' + '.join(f'{v:.4f} {cur}' for cur, v in by_cur.items())}" + (f", {rates})" if rates else ")")
 
 
 def percentile(values: list[float], q: int) -> float:
@@ -129,6 +166,17 @@ def summarize(rows: list[dict], pricing: dict[str, dict] | None = None) -> dict:
     costs = [row_cost(r, pricing) for r in rows if r.get("input_tokens") or r.get("output_tokens")]
     priced = [c for c, _ in costs if c is not None]
     currencies = {cur for _, cur in costs if cur}
+    total = sum(priced) if priced and len(priced) == len(costs) and len(currencies) == 1 else None
+    by_model = {}
+    for m in models:
+        tin_m = sum(tokens_by_model(r).get(m, {}).get("input", 0) for r in rows)
+        tout_m = sum(tokens_by_model(r).get(m, {}).get("output", 0) for r in rows)
+        by_model[m] = {"input": tin_m, "output": tout_m, "cost": cost(m, tin_m, tout_m, pricing),
+                       "currency": (price_of(m, pricing) or {}).get("currency")}
+    by_currency: dict[str, float] = {}  # original currencies, no conversion: what each provider bills
+    for t in by_model.values():
+        if t["cost"] is not None:
+            by_currency[t["currency"]] = by_currency.get(t["currency"], 0.0) + t["cost"]
     calls = len(rows)
     return {
         "tool_calls": calls,
@@ -136,14 +184,14 @@ def summarize(rows: list[dict], pricing: dict[str, dict] | None = None) -> dict:
         "llm_calls": sum(r.get("llm_calls", 0) for r in rows),
         "tokens": {"input": tin, "output": tout, "per_call_mean": (tin + tout) / calls if calls else 0.0},
         "models": models,
-        "cost": {"total": sum(priced) if priced and len(priced) == len(costs) and len(currencies) == 1 else None,
+        "cost": {"total": total,
                  "currency": next(iter(currencies)) if len(currencies) == 1 else None,
+                 # over every request: a rule-only turn (HCX only runs when the rules fail) costs 0 and counts
+                 "per_request_mean": total / calls if total is not None and calls else None,
+                 "total_by_currency": by_currency,
+                 "fx": {k: v for k, v in (pricing.get("_fx") or {}).items() if not k.startswith("_")},
                  "unpriced_models": [m for m in models if cost(m, 1, 1, pricing) is None],
-                 "by_model": {m: {"input": sum(tokens_by_model(r).get(m, {}).get("input", 0) for r in rows),
-                                  "output": sum(tokens_by_model(r).get(m, {}).get("output", 0) for r in rows),
-                                  "cost": cost(m, sum(tokens_by_model(r).get(m, {}).get("input", 0) for r in rows),
-                                               sum(tokens_by_model(r).get(m, {}).get("output", 0) for r in rows), pricing)}
-                              for m in models}},
+                 "by_model": by_model},
         "tool_failure_rate": sum(1 for r in rows if r.get("failed")) / calls if calls else 0.0,
         "retry_rate": sum(1 for r in rows if r.get("retried")) / calls if calls else 0.0,
     }
@@ -154,6 +202,7 @@ def append_history(run_id: str, layer: str, stage: str, target: str, ops: dict, 
             "latency_p50_ms": ops["latency_ms"]["p50"], "latency_p95_ms": ops["latency_ms"]["p95"],
             "input_tokens": ops["tokens"]["input"], "output_tokens": ops["tokens"]["output"],
             "cost": ops["cost"]["total"], "currency": ops["cost"]["currency"],
+            "cost_per_request": ops["cost"].get("per_request_mean"),
             "tool_failure_rate": ops["tool_failure_rate"], "retry_rate": ops["retry_rate"]}
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as f:

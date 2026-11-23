@@ -96,9 +96,14 @@ def run(args) -> tuple[list[dict], dict, str]:
     judged: dict[int, dict] = defaultdict(dict)
     errors: dict[int, dict] = defaultdict(dict)
     ms: Counter = Counter()
-    for (i, metric, _), (value, error, took) in zip(jobs, results):
+    judge_tokens: dict[int, dict[str, dict[str, int]]] = defaultdict(dict)  # T3-50: judge + embedding cost per row
+    for (i, metric, _), (value, error, took, *usage) in zip(jobs, results):
         judged[i][metric] = value
         ms[i] += took
+        for model, t in (usage[0] if usage else {}).items():
+            acc = judge_tokens[i].setdefault(model, {"input": 0, "output": 0})
+            acc["input"] += t["input"]
+            acc["output"] += t["output"]
         if error:
             errors[i][metric] = error
     judge, embed = judge_models()
@@ -116,8 +121,10 @@ def run(args) -> tuple[list[dict], dict, str]:
                         "reason": f"{worst} {low[worst]:.2f} → {nodes[worst]}"} if worst else None,
             "trace_id": r["trace_id"], "span_id": r["span_id"], "trace_spans": r["trace_spans"],
             "node_ms": {mt: rm.node_ms(r, n) for mt, n in nodes.items()},
-            "latency_ms": ms[i], "llm_calls": sum(1 for j in jobs if j[0] == i), "input_tokens": 0, "output_tokens": 0,
-            "model": judge, "failed": bool(errors[i]), "retried": False})
+            "latency_ms": ms[i], "llm_calls": sum(1 for j in jobs if j[0] == i),
+            "input_tokens": sum(t["input"] for t in judge_tokens[i].values()),
+            "output_tokens": sum(t["output"] for t in judge_tokens[i].values()),
+            "tokens_by_model": judge_tokens[i], "model": judge, "failed": bool(errors[i]), "retried": False})
 
     metrics = {mt: {"mean": mean(v := [x[mt] for x in out if x[mt] is not None]), "n": len(v),
                     "errors": sum(1 for x in out if mt in x["judge_errors"])} for mt in rm.METRICS}
