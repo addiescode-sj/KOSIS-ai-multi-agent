@@ -178,6 +178,21 @@ export const VEGA = {
         x: { field: "시점", type: "ordinal", title: null, sort: null }, y: { ...y, scale: { zero: false } }, color: colorBy, tooltip: tip } },
     };
   })(),
+  // Built the way services/chart.py `_draw_stacked` (T3-02) builds it: per period the share fact and its rest to 100
+  stacked_bar: (() => {
+    const part = "서울 1인 가구";
+    const rows = [["2015년", 29.5, 70.5], ["2023년", 39.3, 60.7]].flatMap(([시점, v, rest]) => [
+      { 시점, 구분: part, 값: v, 표시: `${v}%`, 순서: 0 },
+      { 시점, 구분: "그 외", 값: rest, 표시: `${rest}%`, 순서: 1 },
+    ]);
+    return { ...vlBase("서울 1인 가구 비중 비교", rows), mark: { type: "bar" }, encoding: {
+      x: { field: "시점", type: "ordinal", title: null, sort: null, axis: { labelAngle: 0 } },
+      y: { field: "값", type: "quantitative", title: "값 (%)", stack: "zero", scale: { domain: [0, 100] } },
+      color: { field: "구분", type: "nominal", title: null, sort: [part, "그 외"], scale: { domain: [part, "그 외"], range: [HIGHLIGHT, OTHER] } },
+      order: { field: "순서", type: "quantitative" },
+      tooltip: [{ field: "시점", type: "ordinal" }, { field: "구분", type: "nominal" }, { field: "표시", type: "nominal", title: "값" }],
+    } };
+  })(),
 };
 
 ANSWERED.chart = VEGA.line;
