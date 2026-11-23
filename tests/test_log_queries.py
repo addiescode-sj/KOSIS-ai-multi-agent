@@ -173,4 +173,4 @@ def test_the_filter_allows_only_past_days_inside_90_days():
 
 def test_every_tab_metric_is_defined():
     assert all(m in METRICS for metrics in TABS.values() for m in metrics)
-    assert sum(len(v) for v in TABS.values()) + 1 == 14  # + the thumbs-down list (down_answers)
+    assert sum(len(v) for v in TABS.values()) + 1 == 15  # + the thumbs-down list (down_answers); T3-50 rewrite_kinds

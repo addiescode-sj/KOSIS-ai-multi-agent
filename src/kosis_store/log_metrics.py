@@ -114,6 +114,16 @@ METRICS: dict[str, tuple[str, bool]] = {
     "failed_stages": ("""
         SELECT CASE WHEN failed_stage IN ('search', 'stat', 'chart') THEN failed_stage ELSE 'other' END AS failed_stage,
                count(*) AS n FROM turns WHERE failed_stage IS NOT NULL GROUP BY 1 ORDER BY n DESC, 1""", False),
+    # T3-50: how the question was read (new / carry_over / reference / chart_only / multi) against the outcome and the
+    # last feedback: do rewritten turns fail or get a thumbs-down more often? NULL kind = the turn raised (no result).
+    "rewrite_kinds": ("""
+        SELECT coalesce(t.rewrite_kind, 'unknown') AS rewrite_kind, count(*) AS n,
+               count(*) FILTER (WHERE t.outcome = 'answered') AS answered,
+               round(count(*) FILTER (WHERE t.outcome = 'answered')::numeric / count(*), 4) AS answered_share,
+               count(*) FILTER (WHERE f.value = 'up') AS up, count(*) FILTER (WHERE f.value = 'down') AS down,
+               round(count(*) FILTER (WHERE f.value = 'up')::numeric / nullif(count(f.value), 0), 4) AS up_ratio
+        FROM turns t LEFT JOIN last_feedback f USING (request_id)
+        GROUP BY 1 ORDER BY n DESC, 1""", False),
     # -- usage tab (FEAT-046)
     "top_tables": (f"""
         SELECT picked_key, max(survey_name) AS survey_name, count(*) AS n FROM turns
@@ -147,13 +157,16 @@ METRICS: dict[str, tuple[str, bool]] = {
 }
 TABS = {
     "summary": ("question_count", "outcome_ratio", "thumbs_up_ratio", "latency"),
-    "quality": ("refusal_reasons", "down_reasons", "up_reasons", "failed_stages"),  # + down_answers()
+    "quality": ("refusal_reasons", "down_reasons", "up_reasons", "failed_stages", "rewrite_kinds"),  # + down_answers()
     "usage": ("top_tables", "turns_per_conversation", "citation_click_rate", "abort_rate"),
     "cost": ("llm_usage",),
 }
 
 _DOWN_ANSWERS = """
-    SELECT created_at, question, picked_key, survey_name, outcome, choice, feedback_reason AS reason, request_id,
+    SELECT created_at, question, rewrite_kind,
+           (SELECT string_agg(w.text, ' / ' ORDER BY w.seq) FROM request_rewrites w
+            WHERE w.request_id = last_feedback.request_id) AS rewritten,
+           picked_key, survey_name, outcome, choice, feedback_reason AS reason, request_id,
            count(*) OVER () AS total
     FROM last_feedback WHERE value = 'down'
     ORDER BY created_at DESC, request_id LIMIT :limit OFFSET :offset"""
@@ -175,8 +188,9 @@ def query(session: Session, name: str, flt: MetricFilter, *, by_day: bool = Fals
 
 
 def down_answers(session: Session, flt: MetricFilter, *, page: int = 1, size: int = 20) -> dict:
-    """The thumbs-down answers, newest first: date, masked question (empty after the retention period), table, survey,
-    outcome, choice code, masked reason, request_id (Jaeger). Returns {"total", "rows"}. Side effects: reads."""
+    """The thumbs-down answers, newest first: date, masked question (empty after the retention period), how it was read
+    and the masked rewritten question(s) joined by " / " (T3-50; empty when not rewritten or after retention), table,
+    survey, outcome, choice code, masked reason, request_id (Jaeger). Returns {"total", "rows"}. Side effects: reads."""
     if page < 1 or not 1 <= size <= 100:
         raise ValueError("page starts at 1 and size is 1..100")
     rows = [dict(r) for r in session.execute(text(_sql(_DOWN_ANSWERS)),
@@ -207,6 +221,8 @@ def metric(session: Session, name: str, day: date) -> list[dict]:
 PURGE_QUESTIONS = "UPDATE request_logs SET question = NULL WHERE question IS NOT NULL AND created_at < :before"
 # T3-48: the feedback reason of a screen event is the other free text column
 PURGE_FEEDBACK_REASONS = "UPDATE ui_events SET reason = NULL WHERE reason IS NOT NULL AND received_at < :before"
+# T3-50: the rewritten question carries the question's words, so it goes with the same retention
+PURGE_REWRITES = "UPDATE request_rewrites SET text = NULL WHERE text IS NOT NULL AND created_at < :before"
 
 
 def purge_questions(session: Session, before: datetime) -> int:
@@ -218,3 +234,29 @@ def purge_feedback_reasons(session: Session, before: datetime) -> int:
     """Set the feedback reason of screen events received before `before` to NULL; returns how many (T3-48).
     Side effects: updates rows."""
     return session.execute(text(PURGE_FEEDBACK_REASONS), {"before": before}).rowcount
+
+
+def purge_rewrites(session: Session, before: datetime) -> int:
+    """Set the text of rewritten questions stored before `before` to NULL; returns how many (T3-50). Run it with
+    purge_questions and the same cutoff. Side effects: updates rows."""
+    return session.execute(text(PURGE_REWRITES), {"before": before}).rowcount
+
+
+def purge_texts(session: Session, before: datetime) -> dict[str, int]:
+    """All free text past retention: questions, rewritten questions, feedback reasons. Returns the rows changed per
+    column. Side effects: updates rows."""
+    return {"question": purge_questions(session, before), "rewrite": purge_rewrites(session, before),
+            "feedback_reason": purge_feedback_reasons(session, before)}
+
+
+def purge_rewrites(session: Session, before: datetime) -> int:
+    """Set the text of rewritten questions stored before `before` to NULL; returns how many (T3-50). Run it with
+    purge_questions and the same cutoff. Side effects: updates rows."""
+    return session.execute(text(PURGE_REWRITES), {"before": before}).rowcount
+
+
+def purge_texts(session: Session, before: datetime) -> dict[str, int]:
+    """All free text past retention: questions, rewritten questions, feedback reasons. Returns the rows changed per
+    column. Side effects: updates rows."""
+    return {"question": purge_questions(session, before), "rewrite": purge_rewrites(session, before),
+            "feedback_reason": purge_feedback_reasons(session, before)}
