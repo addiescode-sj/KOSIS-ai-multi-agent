@@ -57,6 +57,8 @@ METRICS: dict[str, str] = {
 
 # Retention: the text goes, the row stays. Returns the rows it changed.
 PURGE_QUESTIONS = "UPDATE request_logs SET question = NULL WHERE question IS NOT NULL AND created_at < :before"
+# T3-48: the feedback reason of a screen event is the other free text column
+PURGE_FEEDBACK_REASONS = "UPDATE ui_events SET reason = NULL WHERE reason IS NOT NULL AND received_at < :before"
 
 
 def day_range(day: date) -> dict[str, datetime]:
@@ -73,3 +75,9 @@ def metric(session: Session, name: str, day: date) -> list[dict]:
 def purge_questions(session: Session, before: datetime) -> int:
     """Set the question text of rows older than `before` to NULL; returns how many. Side effects: updates rows."""
     return session.execute(text(PURGE_QUESTIONS), {"before": before}).rowcount
+
+
+def purge_feedback_reasons(session: Session, before: datetime) -> int:
+    """Set the feedback reason of screen events received before `before` to NULL; returns how many (T3-48).
+    Side effects: updates rows."""
+    return session.execute(text(PURGE_FEEDBACK_REASONS), {"before": before}).rowcount

@@ -4,6 +4,7 @@ from alembic import context
 
 from kosis_store.db import database_url, make_engine
 from kosis_store.models import Base
+import kosis_store.log_models  # noqa: E402,F401  (T3-48: the log tables are on the same Base)
 
 config = context.config
 target_metadata = Base.metadata

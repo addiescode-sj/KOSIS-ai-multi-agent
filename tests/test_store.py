@@ -16,6 +16,7 @@ from sqlalchemy import create_engine, delete, event, func, inspect, select
 
 from kosis_store.db import load_eval_runs, session_scope
 from kosis_store.models import Base, Conversation, EvalRun, Message
+import kosis_store.log_models  # noqa: F401  (T3-48: the migration check covers the log tables too)
 
 ROOT = Path(__file__).resolve().parents[1]
 RESULT = {"answer": "2023년 출생아 수는 …", "citations": [{"key": "101_DT_1B8000F", "rank": 1}]}

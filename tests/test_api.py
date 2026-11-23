@@ -147,5 +147,5 @@ def test_service_tracing_never_touches_the_global_provider():
 def test_the_openapi_docs_list_every_endpoint():
     paths = TestClient(app).get("/openapi.json").json()["paths"]
     assert set(paths) == {"/health", "/chat/stream", "/chat", "/tools/search_tables", "/tools/summarize_stat",
-                          "/tools/make_chart", "/threads/{thread_id}"}
+                          "/tools/make_chart", "/threads/{thread_id}", "/events", "/ops/log-counts"}  # T3-48 log intake
     assert "text/event-stream" in json.dumps(paths["/chat/stream"])
