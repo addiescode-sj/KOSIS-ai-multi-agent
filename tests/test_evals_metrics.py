@@ -144,11 +144,69 @@ def test_ops_cost_is_priced_per_model():
            "tokens_by_model": {"a": {"input": 1000, "output": 500}, "b": {"input": 2000, "output": 500}}}
     op = ops.summarize([row], pricing=pricing)
     assert op["cost"]["total"] == 1.0 + 1.0 + 20.0 + 10.0 and op["cost"]["currency"] == "KRW" and op["models"] == ["a", "b"]
-    assert op["cost"]["by_model"]["b"] == {"input": 2000, "output": 500, "cost": 30.0}
+    assert op["cost"]["by_model"]["b"] == {"input": 2000, "output": 500, "cost": 30.0, "currency": "KRW"}
     old = {**row, "tokens_by_model": {}}  # written before T3-39: totals only, two models joined
     assert ops.summarize([old], pricing=pricing)["cost"]["total"] is None
     mixed = {**row, "tokens_by_model": {"a": {"input": 1000, "output": 0}, "usd": {"input": 1000, "output": 0}}}
-    assert ops.summarize([mixed], pricing=pricing)["cost"]["total"] is None
+    assert ops.summarize([mixed], pricing=pricing)["cost"]["total"] is None  # no fx table: not added up
     unpriced = {**row, "tokens_by_model": {"a": {"input": 1000, "output": 0}, "zzz": {"input": 1, "output": 0}}}
     assert ops.summarize([unpriced], pricing=pricing)["cost"]["total"] is None
     assert ops.summarize([unpriced], pricing=pricing)["cost"]["unpriced_models"] == ["zzz"]
+
+
+def test_ops_cost_converts_currencies_and_averages_per_request():
+    """T3-50: HCX (KRW) + gpt (USD) in one turn add up through the fixed fx rate, per-currency sums stay; the
+    per-request mean counts rule-only turns (0 tokens) too; a glob key prices a self-hosted id; a currency without
+    a rate gives no total."""
+    from evals import ops
+
+    pricing = {"HCX-DASH-002": {"input_per_1k": 0.25, "output_per_1k": 1.0, "currency": "KRW"},
+               "gpt-4o-mini": {"input_per_1k": 0.00015, "output_per_1k": 0.0006, "currency": "USD"},
+               "*qwen*": {"input_per_1k": 0, "output_per_1k": 0, "currency": "KRW"},
+               "_fx": {"base": "KRW", "USD": 1400, "_source": "test"}}
+    turn = {"latency_ms": 1, "input_tokens": 3000, "output_tokens": 1000, "failed": False, "retried": False,
+            "tokens_by_model": {"HCX-DASH-002": {"input": 2000, "output": 500}, "gpt-4o-mini": {"input": 1000, "output": 500},
+                                "Qwen/Qwen3-27B-AWQ": {"input": 5000, "output": 100}}}
+    rule_only = {"latency_ms": 1, "input_tokens": 0, "output_tokens": 0, "failed": False, "retried": False}
+    c = ops.summarize([turn, rule_only], pricing=pricing)["cost"]
+    usd = 1000 / 1000 * 0.00015 + 500 / 1000 * 0.0006  # 0.00045 USD
+    krw = 2000 / 1000 * 0.25 + 500 / 1000 * 1.0  # 1.0 KRW
+    assert c["currency"] == "KRW" and abs(c["total"] - (krw + usd * 1400)) < 1e-9
+    assert abs(c["per_request_mean"] - c["total"] / 2) < 1e-9  # the rule-only turn counts as a request
+    assert c["total_by_currency"] == {"KRW": krw, "USD": usd} and c["fx"] == {"base": "KRW", "USD": 1400}
+    assert c["by_model"]["Qwen/Qwen3-27B-AWQ"]["cost"] == 0 and c["unpriced_models"] == []
+    assert "1 USD = 1,400 KRW" in ops.cost_basis(c)
+    no_rate = {**pricing, "_fx": {"base": "KRW"}}
+    assert ops.summarize([turn], pricing=no_rate)["cost"]["total"] is None  # never a guessed rate
+
+
+def test_pricing_file_prices_the_service_models():
+    """T3-50: the committed price list covers the models the service and the judge call."""
+    from evals import ops
+
+    pricing = ops.load_pricing()
+    for model in ("HCX-DASH-002", "gpt-4o-mini", "gpt-4.1-mini", "text-embedding-3-small", "Qwen3-27B-AWQ"):
+        assert ops.cost(model, 1000, 1000, pricing) is not None, model
+    assert pricing["_fx"]["base"] == "KRW" and pricing["_fx"]["USD"] > 0
+
+
+def test_judge_usage_hook_adds_tokens_per_model():
+    """T3-50: the judge client's response hook sums chat and embedding usage into the running job's context."""
+    import asyncio
+
+    import httpx
+
+    from evals.evaluators import ragas_metrics as rm
+
+    async def job() -> dict:
+        usage: dict = {}
+        rm._JOB_USAGE.set(usage)
+        for body in ({"model": "gpt-4.1-mini-2025-04-14", "usage": {"prompt_tokens": 100, "completion_tokens": 20}},
+                     {"model": "gpt-4.1-mini-2025-04-14", "usage": {"prompt_tokens": 50, "completion_tokens": 5}},
+                     {"model": "text-embedding-3-small", "usage": {"prompt_tokens": 30, "total_tokens": 30}}):
+            await rm.record_usage(httpx.Response(200, json=body))
+        await rm.record_usage(httpx.Response(500, json={"usage": {"prompt_tokens": 999}}))  # failed call: not billed
+        return usage
+
+    assert asyncio.run(job()) == {"gpt-4.1-mini-2025-04-14": {"input": 150, "output": 25},
+                                  "text-embedding-3-small": {"input": 30, "output": 0}}

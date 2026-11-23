@@ -190,6 +190,19 @@ def test_l1_counts_rerank2_like_the_agent_layer_and_traces_live():
     assert l1["trace_id"] and l1["span_id"]
 
 
+def test_l1_records_the_stage2_model_not_its_kind(monkeypatch):
+    """T3-50: a local Qwen served as STAGE2=gpt is recorded under its model id, so ops prices it as Qwen, not gpt."""
+    from evals.runners import retrieval
+
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("STAGE2_MODEL", "Qwen/Qwen3-27B-AWQ")
+    meta = {"stage2": "gpt", "stage2_calls": 1, "stage2_input_tokens": 900, "stage2_output_tokens": 40}
+    [l1] = retrieval.run(Reranked(meta=meta), [RetrievalItem(qid="r1", split="test", qtype="exact_name", source="v2",
+                                                             question="q", required=[["101_DT_GOLD"]])], 10)
+    assert l1["model"] == "Qwen/Qwen3-27B-AWQ"
+    assert l1["tokens_by_model"] == {"Qwen/Qwen3-27B-AWQ": {"input": 900, "output": 40}}
+
+
 def test_mock_turns_every_model_off_before_the_graph_is_built(monkeypatch):
     """--llm mock must not call a model anywhere: the service .env may say STAGE2=hcx (T3-32)."""
     import os

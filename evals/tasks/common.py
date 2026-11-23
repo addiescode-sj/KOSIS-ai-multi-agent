@@ -7,6 +7,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 from evals import trace
+from evals.ops import cost_basis
 from evals.evaluators import alternates, calculation
 from evals.schemas import ROOT, CalcItem, load_jsonl
 
@@ -88,8 +89,10 @@ def summarize_stat_target(op: dict) -> str:
 
 def ops_section(op: dict, title: str = "운영 지표") -> str:
     c = op["cost"]
-    cost = f"{c['total']:.4f} {c['currency']}" if c["total"] is not None else f"단가 미설정 ({', '.join(c['unpriced_models']) or '토큰 없음'}; evals/pricing.json)"
-    by_model = ", ".join(f"{m} 입력 {t['input']:,} · 출력 {t['output']:,}" + (f" · {t['cost']:.4f}" if t.get("cost") is not None else "")
+    cost = (f"{c['total']:.4f} {c['currency']} · 요청당 {c['per_request_mean']:.4f} {c['currency']}" + cost_basis(c)
+            if c["total"] is not None else f"단가 미설정 ({', '.join(c['unpriced_models']) or '토큰 없음'}; evals/pricing.json)")
+    by_model = ", ".join(f"{m} 입력 {t['input']:,} · 출력 {t['output']:,}"
+                         + (f" · {t['cost']:.4f} {t.get('currency') or ''}".rstrip() if t.get("cost") is not None else "")
                          for m, t in (c.get("by_model") or {}).items())
     return "\n".join(["", f"## {title}", "",
         f"- Latency: p50 {op['latency_ms']['p50']:.1f} ms · p95 {op['latency_ms']['p95']:.1f} ms · 평균 {op['latency_ms']['mean']:.1f} ms",
