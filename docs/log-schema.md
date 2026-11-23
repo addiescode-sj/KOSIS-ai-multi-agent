@@ -135,22 +135,22 @@ CREATE INDEX ix_request_logs_session_id ON request_logs (session_id);
 
 ## 3. 개인정보·보관 규칙
 
-- **원문이 들어가는 곳은 두 열뿐이다:** `request_logs.question`, `feedback.reason`. 둘 다 저장 전에 전화번호·이메일 패턴을 가린다(가림 함수는 KOS-170).
+- **원문이 들어가는 곳은 세 열뿐이다:** `request_logs.question`, 화면 피드백 이벤트의 `ui_events.reason`(T3-48), `feedback.reason`(KOS-158). 모두 저장 전에 가린다(`kosis_store.masking.mask`).
 - **단계는 허용 키만 읽는다:** `name`, `kind`, `stage`, `ms`, `status`, `error_type`, `input_tokens`, `output_tokens`, `model` (`clean_spans`). 로그 버전 3부터 행에 저장하지 않지만, 메트릭 속성도 같은 원칙을 따른다(10장). 툴 인자·결과(`gen_ai.tool.call.arguments`·`.result`)는 질문과 답 원문이 들어 있어 옮기지 않는다. 예외 메시지, 검색 상위 표 목록, 실전 1의 `unresolved` 같은 값은 넣지 않는다. 질문 조각이 섞일 수 있고, 섞이면 90일 삭제가 닿지 않는다.
 - **보관:** 90일이 지나면 `question`만 NULL로 바꾼다. 행과 나머지 열은 남는다(`purge_questions`, 다시 돌려도 결과가 같다). 실행 주기는 정제 배치(KOS-167)가 정한다.
 - **하네스·팀 트래픽:** `is_internal=true`, 원문은 저장하지 않는다(제약). 골든 문항·정답·문항 ID는 어느 열에도 넣지 않는다.
 - IP, 기기 식별자, 이름·연락처는 저장하지 않는다. `session_id`는 브라우저가 만든 임의 값이다.
 - Jaeger로 나가는 span 속성은 이 규칙 밖이다. 사용자 요청을 추적으로 내보낼 때도 같은 허용 목록을 쓰도록 KOS-170에서 맞춘다.
 
-## 4. 화면 이벤트 `ui_events` — 정의만 (테이블은 KOS-170)
+## 4. 화면 이벤트 `ui_events` (테이블·수신은 T3-48, 13장)
 
 원문이 없는 화면 행동이다. 그래서 보관 기간 없이 둔다.
 
 | 열 | 뜻 |
 |---|---|
 | `event_id` | 화면이 만든 UUID, 기본 키. 같은 값이 다시 오면 무시한다(재전송) |
-| `event_type` | `page_view` · `citation_click` · `chart_view` · `chart_interact` · `copy_answer` · `stream_abort` (추천 질문 노출·클릭은 1차 범위 밖이라 뺌) |
-| `client_ts`, `received_at` | 브라우저 시각, 서버 수신 시각. 5분 넘게 어긋나면 서버 시각을 쓴다 |
+| `event_type` | `citation_click` · `copy_answer` · `stream_abort` · `feedback` (11/23: 페이지 보기·차트 보기/조작은 뺌, 피드백 추가) |
+| `client_ts`, `received_at`, `ts_adjusted` | 브라우저 시각, 서버 수신 시각. 5분 넘게 어긋나면 서버 시각을 쓰고 `ts_adjusted`로 표시 |
 | `session_id`, `request_id` | 세션, 관련 질문(있을 때) |
 | `screen_id`, `feature_id` | 화면 명세 S-xx, 기능 명세 F-xx |
 | `props` | 이벤트별 값 (JSON): 버튼 위치, 표 키와 순위, 차트 종류. **자유 입력 글자는 넣지 않는다** |
@@ -219,6 +219,8 @@ SELECT reason, sum(n) FROM ingest_rejects WHERE <day> GROUP BY reason;
 </details>
 
 ## 7. 정해야 할 것
+
+- (T3-48) 마이그레이션 `0002_log_tables`가 들어갔다. PR #34(`0002_pgvector`)·KOS-158과 머지 순서를 맞춰 나중에 머지하는 쪽이 `down_revision`을 앞 리비전으로 바꾼다(13.6).
 
 - **마이그레이션 번호:** `request_logs`를 `0002`(KOS-158) 다음 번호로 넣을지, 같은 마이그레이션에 넣을지 김병석 님과 정한다. 정해지면 모델을 `kosis_store.models.Base`로 옮기고 `test_migration_matches_models`가 함께 본다.
 - 개인정보 안내 문구(원문 보관 90일).
@@ -389,9 +391,9 @@ sum by (gen_ai_request_model) (increase(kosis_llm_finishes_total{$env, gen_ai_re
 | 사용 패턴 탭 답 전 이탈률 | `outcome = 'aborted'` ÷ 질문 수 (화면 `stream_abort`는 이탈 시점 참고용, 세지 않음) |
 | 요약 탭 질문 수 | `request_logs` 행 수 (`is_internal` 제외). 화면 `question_submit` 이벤트는 만들지 않는다 |
 | 답 품질 탭 실패 단계 검색 / 계산 / 차트 | `failed_stage` = `search` / `stat` / `chart`, `agent`는 "기타" |
-| 👍 / 👎 | `feedback.value` = `up` / `down` |
+| 👍 / 👎 | 화면 피드백 이벤트 `ui_events`(`event_type='feedback'`, `props.value` = `up` / `down`), 같은 답은 마지막 값. KOS-158의 `feedback` 테이블이 생기면 둘 중 하나로 정한다 |
 | 응답 지연 p50·p95 | `latency_ms` = 서버가 질문을 받은 때부터 답이 끝날 때까지(턴 루트 span), 끝까지 간 턴만(11장 3번). 화면에서 잰 왕복 시간이 아니다 |
-| 첫 글자까지 시간 | `first_token_ms` (화면이 재서 수집에 넘김) |
+| 첫 글자까지 시간 | `first_token_ms` (서버가 첫 `token` 이벤트를 보낸 시각. 지금은 답이 다 만들어진 뒤 토큰이 나가 `latency_ms`와 거의 같다, 13장) |
 | 👎 답 목록 | `feedback ⋈ request_logs` (집계표가 아니라 질문 행에서 읽는다. 원문 90일 삭제가 그대로 적용됨) |
 | 노드별 지연 p50·p95 (`daily_metrics`) | Prometheus 조회식(10.3)의 하루 값을 정제 배치가 적는다 |
 
@@ -409,3 +411,66 @@ sum by (gen_ai_request_model) (increase(kosis_llm_finishes_total{$env, gen_ai_re
 
 - 원문 보관 기간은 명세서(FEAT-039·045)의 **90일**로 바꿨다(11/20 결정). 이 문서·코드에 30일이 상수로 박힌 곳은 없고(`purge_questions`가 기준 시각을 인자로 받음), 문서 문구와 테스트 기준 시각만 바꿨다.
 - 명세서에만 있고 이 문서와 부딪히지 않는 것은 그대로 둔다: `daily_metrics` 1년 보관, 메트릭 화면 BI 도구(Grafana면 Prometheus와 같은 곳에서 본다), 조회 기간 최대 90일, 화면 이벤트 실패 시 버리고 건수만 셈.
+
+## 13. 수집 (T3-48, KOS-170)
+
+`src/kosis_store/log_collector.py`, `src/kosis_store/masking.py`, `backend/app/main.py`·`telemetry.py`, 마이그레이션 `0002_log_tables`.
+
+### 13.1 질문 행 쓰기
+- 서비스 TracerProvider에 `TurnLogCollector`(span processor)를 붙인다. `DATABASE_URL`이 있을 때만 켜지고 `KOSIS_USER_LOG=0`이면 끈다.
+- processor는 끝난 span을 trace id별로 **담기만** 한다. 루트가 `invoke_agent`가 아닌 trace(`POST /tools/…`)는 루트가 끝날 때 버린다.
+- `/chat`·`/chat/stream` 핸들러가 `finally`에서 `root.end()` 뒤에 `finish`를 한 번 부른다. 담아 둔 span → `row_from_turn` → 단일 쓰기 스레드가 INSERT(같은 `request_id`면 무시).
+- 쓰기 실패는 버리고 센다. 답에는 영향이 없다. 서비스 종료 때(provider shutdown) 대기 중인 쓰기를 끝낸다.
+- 추적이 꺼져(no-op tracer, trace id 0) 키가 없으면 쓰지 않고 `skipped_no_trace`로 센다. **로그 적재는 추적에 묶여 있다.**
+- 건수 확인: `GET /ops/log-counts` → `written_request_logs`, `failed_request_logs`, `skipped_no_trace`, `skipped_bad_turn`, `dropped_pending_trace` 등.
+
+### 13.2 요청에서 받는 것
+| 값 | 어디서 | 비고 |
+|---|---|---|
+| `session_id` | `ChatRequest.session_id` (선택, UUID) | 화면이 보내야 채워짐(FE 작업) |
+| `input_method` | `ChatRequest.input_method` (`direct` 기본, `clarify_option`) | |
+| `is_internal` | 헤더 `X-Kosis-Internal: 1` | 루트 span에도 `kosis.internal=true`(10.3). 화면 프록시(`route.ts`)는 브라우저 헤더를 넘기지 않아 사용자가 달 수 없다 |
+| `question` | 요청 질문을 `mask()`한 값 | span 속성(T3-43 원문)은 읽지 않는다. 하네스면 저장 안 함 |
+| `aborted` | `/chat/stream`의 `GeneratorExit` | |
+| `first_token_ms` | 첫 `token` 이벤트를 보낸 시각(서버) | `/chat`은 토큰이 없어 NULL |
+
+### 13.3 가림 (`mask`)
+- 이메일, 주민등록번호, 카드번호(4-4-4-4), 전화번호(휴대폰·지역번호, `-`·`.`·공백 구분)를 `[이메일]` 같은 표시로 바꾼다.
+- 연도(2023), 범위(2015~2023), 큰 수(1,234,567), 표 키, 월(202407) 같은 통계 질문의 숫자는 그대로 둔다(테스트 7+7개).
+- 화면 피드백 이유(`ui_events.reason`)도 같은 함수로 가린다. KOS-158의 `feedback.reason`도 같은 함수를 쓴다.
+
+### 13.4 화면 이벤트 `POST /events`
+- 이벤트 목록(최대 100개)을 받아 검사한다: 종류(4장 4종), `log_version`, `event_id`(UUID), `ts`(시간대 있는 ISO 8601), 선택 ID(세션 UUID, `request_id` 32자리 hex, 화면·기능 ID), `props`(종류별 허용 키·타입만, 문자열 64자 이하).
+  - `citation_click`: `table_key`, `rank` / `copy_answer`: 없음 / `stream_abort`: `elapsed_ms`
+  - `feedback`: props `value`(`up`·`down`), `choice`(👍 `accurate`·`found_table`·`easy`·`chart_helpful`·`other`, 👎 `wrong_number`·`wrong_table`·`hard`·`other`), 필드 `reason`(200자 이하, `other`면 필수, 가려서 `ui_events.reason`에 저장, 90일 뒤 비움 `purge_feedback_reasons`), `request_id` 필수
+  - 자유 글자 `reason`은 `feedback`에만 받는다(다른 종류에 오면 탈락).
+- 통과는 `ui_events`(같은 `event_id`는 무시), 실패는 `ingest_rejects`에 사유·종류·건수만. 응답 202 `{accepted, rejected}`.
+- 저장이 실패해도 202다(화면 동작에 영향 없음). 로그가 꺼져 있으면 검사만 한다.
+
+### 13.5 일별 사용 집계: 전체 `daily_usage` + 사용자별 `daily_session_usage`
+
+`python -m kosis_store.daily_usage --date YYYY-MM-DD` (`src/kosis_store/daily_usage.py`)가 두 표를 한 트랜잭션에서 함께 다시 만든다. KST 하루 단위이고, 같은 날짜를 다시 돌려도 결과가 같다. 하네스 트래픽은 뺀다. 정제 배치(KOS-167)가 하루 1회 부르면 된다.
+
+**전체 (`daily_usage`, 하루 1행)**
+
+| 열 | 뜻 |
+|---|---|
+| `questions` | 질문 수 (`request_logs` 행) |
+| `sessions` | 사용자 수 (서로 다른 `session_id`, 화면이 보내지 않은 행은 세지 않음) |
+| `conversations` | 대화 수 |
+| `avg_turns` | 대화당 평균 턴 수 (질문 수 ÷ 대화 수) |
+| `multi_turn_conversations` | 그날 2턴 이상 이어진 대화 수 |
+| `aborted` | 답 전 이탈 턴 수 |
+| `citation_clicks`, `copy_answers` | 클릭 종류별 수 |
+| `feedback_up`, `feedback_down` | 마지막 피드백이 👍·👎인 답 수 |
+
+**사용자별 (`daily_session_usage`, 하루 × 사용자 1행, 키 `(day, session_id)`)**
+- 열: `is_member`(그날 로그인한 질문이 있었는지), 그리고 위 표의 `questions`부터 `feedback_down`까지 같은 뜻의 값을 그 사용자 것만 센다.
+- **사용자 = 익명 `session_id`** (브라우저가 만든 임의 UUID). 로그 정책상(3장, POL-006) 계정 ID를 남기지 않으므로 회원을 계정 단위로 묶지 않는다. 계정 단위가 필요하면 정책을 먼저 바꿔야 한다.
+- 질문 없이 클릭·피드백만 한 사용자도 행이 생긴다(질문 0). `session_id` 없는 질문은 전체 표에만 들어간다.
+
+### 13.6 한계
+- **첫 글자 시간:** 지금 `/chat/stream`은 답이 다 만들어진 뒤 토큰을 한꺼번에 보내서, 첫 글자 시간이 응답 지연과 거의 같다. 진짜 토큰 스트리밍이 들어오면 의미가 생긴다.
+- **이탈 시점:** Starlette는 끊긴 스트림의 sync generator를 바로 닫지 않을 수 있다(다음 `next()`나 GC 때 닫힘). 그래서 이탈 행은 늦게 쓰일 수 있고, 그 행의 `latency_ms`는 실제로 떠난 시각보다 길 수 있다. 테스트는 generator를 직접 닫아 경로만 확인했다.
+- **마이그레이션 순서:** `0002_log_tables`, PR #34 `0002_pgvector`, KOS-158이 모두 `0001`에서 시작한다. 나중에 머지하는 쪽이 `down_revision`을 고쳐 한 줄로 잇는다.
+- **범위 밖:** 90일 원문 삭제 실행(KOS-167), 화면 쪽 `session_id`·이벤트 전송(FE), Jaeger 원문 속성(10.5).

@@ -4,8 +4,8 @@ The row key is the OTel trace id of the turn (32 hex): the service already sends
 so screen events and feedback attach to it without a second id. kosis_store.log_rows.row_from_turn builds a row from
 the turn's spans and its ChatResult.
 
-Draft: `request_logs` has no Alembic migration yet (the number is agreed with the backend task KOS-158 first), so it
-sits on its own LogBase and the migration check of T3-18 (Base.metadata) does not see it.
+T3-48: the tables have the migration `0002_log_tables` and sit on the store's Base (LogBase is the same object), so the
+T3-18 migration check covers them. The service writes them through kosis_store.log_collector.
 
 Text as typed lives in `question` only. It is masked before it is stored, never stored for harness requests
 (is_internal), and set to NULL after the retention period; every other column is kept.
@@ -18,10 +18,12 @@ only (exception messages and other free text can carry pieces of the question), 
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 
-from sqlalchemy import Boolean, CheckConstraint, DateTime, Index, Integer, String, Text, func
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy import Boolean, CheckConstraint, Date, DateTime, Float, Index, Integer, String, Text, func
+from sqlalchemy.orm import Mapped, mapped_column
+
+from kosis_store.models import Base, JSONType
 
 # the four ChatResult outcomes, error (an exception) and aborted (the user left before the answer ended)
 OUTCOMES = ("answered", "refused", "clarify", "failed", "error", "aborted")
@@ -40,8 +42,9 @@ def _in(column: str, values: tuple[str, ...]) -> str:
     return f"{column} IN ({', '.join(repr(v) for v in values)})"
 
 
-class LogBase(DeclarativeBase):
-    pass
+# T3-48: the log tables now have a migration (0002_log_tables), so they sit on the store's Base and the T3-18 migration
+# check sees them. LogBase stays as a name for the T3-36 tests.
+LogBase = Base
 
 
 class RequestLog(LogBase):
@@ -116,3 +119,92 @@ def failed_stage(spans: list[dict]) -> str | None:
         if span.get("status", "ok") != "ok":
             return span.get("stage") or "unknown"
     return None
+
+
+# Screen events (docs/log-schema.md 4, T3-48): what only the browser knows: clicks, leaving the stream, feedback. props hold
+# the allowed keys of each event type (kosis_store.log_collector.EVENT_PROPS); the only free text is the feedback reason,
+# masked into its own column so the 90-day purge reaches it. The question, the first token and the answer end are not
+# screen events; the server writes them to request_logs. Page views and chart views were dropped (11/23).
+UI_EVENT_TYPES = ("citation_click", "copy_answer", "stream_abort", "feedback")
+# Feedback choices (POL-007): one per value; "other" needs a reason
+FEEDBACK_CHOICES = {
+    "up": ("accurate", "found_table", "easy", "chart_helpful", "other"),
+    "down": ("wrong_number", "wrong_table", "hard", "other"),
+}
+FEEDBACK_REASON_MAX = 200
+
+
+class UiEvent(Base):
+    __tablename__ = "ui_events"
+    __table_args__ = (
+        CheckConstraint(_in("event_type", UI_EVENT_TYPES), name="ck_ui_events_event_type"),
+        Index("ix_ui_events_received_at", "received_at"),
+        Index("ix_ui_events_request_id", "request_id"),
+    )
+
+    event_id: Mapped[uuid.UUID] = mapped_column(primary_key=True)  # made by the browser; a resent copy is ignored
+    event_type: Mapped[str] = mapped_column(String(32))
+    client_ts: Mapped[datetime] = mapped_column(DateTime(timezone=True))  # the browser's clock, or the server's (adjusted)
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    ts_adjusted: Mapped[bool] = mapped_column(Boolean, default=False)  # the browser clock was off by more than 5 minutes
+    session_id: Mapped[uuid.UUID | None] = mapped_column()
+    request_id: Mapped[str | None] = mapped_column(String(32))  # the turn it belongs to (trace id from the meta event)
+    screen_id: Mapped[str | None] = mapped_column(String(16))
+    feature_id: Mapped[str | None] = mapped_column(String(16))
+    props: Mapped[dict] = mapped_column(JSONType, default=dict)
+    reason: Mapped[str | None] = mapped_column(Text)  # feedback only: masked, NULL after the retention period
+    is_internal: Mapped[bool] = mapped_column(Boolean, default=False)
+    log_version: Mapped[int] = mapped_column(Integer, default=LOG_VERSION)
+
+
+class IngestReject(Base):
+    """Screen events that failed the intake checks: counted with the reason, never stored as text (docs/log-schema.md 4)."""
+
+    __tablename__ = "ingest_rejects"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    reason: Mapped[str] = mapped_column(String(64))  # e.g. unknown_event_type, bad_props, missing_field, unknown_version
+    event_type: Mapped[str | None] = mapped_column(String(32))  # as sent, cut to 32 chars
+    n: Mapped[int] = mapped_column(Integer)
+
+
+class DailyUsage(Base):
+    """One KST day of usage counts over all users (kosis_store.daily_usage). Harness traffic is left out. Rebuilt whole
+    for a day, so running the same day again gives the same row."""
+
+    __tablename__ = "daily_usage"
+
+    day: Mapped[date] = mapped_column(Date, primary_key=True)  # KST date
+    questions: Mapped[int] = mapped_column(Integer)  # request_logs rows
+    sessions: Mapped[int] = mapped_column(Integer)  # distinct browser session ids (rows without one are not counted)
+    conversations: Mapped[int] = mapped_column(Integer)  # distinct conversation ids
+    avg_turns: Mapped[float] = mapped_column(Float)  # questions per conversation on that day, 0 when no question
+    multi_turn_conversations: Mapped[int] = mapped_column(Integer)  # conversations with 2+ questions that day
+    aborted: Mapped[int] = mapped_column(Integer)  # turns the user left before the answer ended
+    citation_clicks: Mapped[int] = mapped_column(Integer)
+    copy_answers: Mapped[int] = mapped_column(Integer)
+    feedback_up: Mapped[int] = mapped_column(Integer)  # answers whose last feedback was up
+    feedback_down: Mapped[int] = mapped_column(Integer)
+    built_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class DailySessionUsage(Base):
+    """One KST day of one user's usage (kosis_store.daily_usage). The user is the anonymous browser session_id: the log
+    keeps no account id (POL-006). Questions without a session id are only in DailyUsage. Rebuilt with DailyUsage."""
+
+    __tablename__ = "daily_session_usage"
+
+    day: Mapped[date] = mapped_column(Date, primary_key=True)  # KST date
+    session_id: Mapped[uuid.UUID] = mapped_column(primary_key=True)
+    is_member: Mapped[bool] = mapped_column(Boolean)  # any question of the day was asked logged in
+    questions: Mapped[int] = mapped_column(Integer)
+    conversations: Mapped[int] = mapped_column(Integer)
+    avg_turns: Mapped[float] = mapped_column(Float)
+    multi_turn_conversations: Mapped[int] = mapped_column(Integer)
+    aborted: Mapped[int] = mapped_column(Integer)
+    citation_clicks: Mapped[int] = mapped_column(Integer)
+    copy_answers: Mapped[int] = mapped_column(Integer)
+    feedback_up: Mapped[int] = mapped_column(Integer)
+    feedback_down: Mapped[int] = mapped_column(Integer)
+    built_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
