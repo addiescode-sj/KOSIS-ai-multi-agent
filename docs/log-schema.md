@@ -474,3 +474,38 @@ sum by (gen_ai_request_model) (increase(kosis_llm_finishes_total{$env, gen_ai_re
 - **이탈 시점:** Starlette는 끊긴 스트림의 sync generator를 바로 닫지 않을 수 있다(다음 `next()`나 GC 때 닫힘). 그래서 이탈 행은 늦게 쓰일 수 있고, 그 행의 `latency_ms`는 실제로 떠난 시각보다 길 수 있다. 테스트는 generator를 직접 닫아 경로만 확인했다.
 - **마이그레이션 순서:** `0002_log_tables`, PR #34 `0002_pgvector`, KOS-158이 모두 `0001`에서 시작한다. 나중에 머지하는 쪽이 `down_revision`을 고쳐 한 줄로 잇는다.
 - **범위 밖:** 90일 원문 삭제 실행(KOS-167), 화면 쪽 `session_id`·이벤트 전송(FE), Jaeger 원문 속성(10.5).
+
+## 14. 메트릭 화면 조회 (T3-49, KOS-161)
+
+`src/kosis_store/log_metrics.py` 한 파일에 지표 정의가 모두 있다. 화면·BI 도구는 결과만 읽는다.
+
+### 14.1 공통 필터 `MetricFilter(start_day, end_day, user, include_internal)`
+- 기간: KST 날짜. **끝 날짜는 어제까지**(오늘은 아직 덜 쌓임), **시작 날짜는 오늘 − 90일 이후**, 시작 ≤ 끝. 어기면 `check()`가 `ValueError`.
+- `user`: `all`(기본) · `member` · `guest` — 질문 행의 `is_member`.
+- `include_internal`: 기본 끔. 켜면 팀 트래픽과 평가 하네스가 함께 들어온다(원문은 저장되지 않지만 상위 표·👎 목록 숫자가 섞인다).
+- 모든 지표는 공통 테이블 두 개 위에서 계산한다: `turns`(필터 건 `request_logs`), `last_feedback`(답마다 마지막 피드백 → `turns`와 join).
+
+### 14.2 피드백 규칙
+- 답(`request_id`)마다 **마지막 값 하나**: `client_ts, received_at, event_id` 순서, 기간과 상관없이 고른다.
+- 날짜·회원 여부·내부 여부는 **질문 쪽 값**. 그래서 전체 = 회원 + 비회원이고, 질문 행이 없는 피드백은 어디에도 세지 않는다.
+- 늦게 온 피드백은 그 질문 날짜의 숫자를 바꿀 수 있다(같은 데이터로 다시 조회하면 같은 숫자). `daily_usage`도 같은 규칙이다.
+
+### 14.3 탭별 지표 (`TABS`, `query(session, 이름, 필터, by_day=False)`)
+
+| 탭 | 지표 | 정의 |
+|---|---|---|
+| 요약 | `question_count` | 질문 수 (`by_day` 가능) |
+| | `outcome_ratio` | 답함·거절·되묻기·오류(`failed`+`error`) 비율, 분모는 이탈 뺀 질문 수(합 100%) |
+| | `thumbs_up_ratio` | 👍 ÷ (👍+👎), 마지막 값 기준 (`by_day` 가능) |
+| | `latency` | 응답 지연 p50·p95, 끝까지 간 턴만(이탈·오류 제외) |
+| 답 품질 | `refusal_reasons`, `down_reasons`, `up_reasons` | 거절 사유·👎 선택지·👍 선택지별 수 |
+| | `failed_stages` | 검색·계산·차트, 나머지는 `other` |
+| | `down_answers(page, size)` | 👎 답 목록: 날짜, 가린 질문(90일 뒤 비어 있음), 표·조사, 결과, 선택지, 가린 이유, `request_id`(Jaeger), 최신순 |
+| 사용 패턴 | `top_tables` | 답에 쓴 표 상위 20 |
+| | `turns_per_conversation` | 대화당 턴 1·2·3·4+ 분포 |
+| | `citation_click_rate` | 출처를 누른 답 ÷ 숫자가 있는 답 |
+| | `abort_rate` | 답 전 이탈 ÷ 질문 수 (`by_day` 가능) |
+| 성능·비용 | `llm_usage` | 질문당 LLM 호출·입력·출력 토큰 (단계 지연·모델별 토큰은 Prometheus, 10.3) |
+
+- `outcome_share`(저장된 결과 6종 그대로)와 `first_token`은 진단용으로 남겼다(탭에는 없음).
+- `tab(session, "summary", 필터)`로 한 탭의 지표를 한 번에 받는다.
