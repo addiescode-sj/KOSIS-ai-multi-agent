@@ -14,15 +14,15 @@
 | run (스위트 이름) | 계층 | 무엇을 재나 | 필요한 것 | 비용 |
 |---|---|---|---|---|
 | `l0` | L0 | 메타데이터 채움률·미매핑 | 데이터 | 0 |
-| `l0-load` | L0 | + Chroma 컬렉션 적재 일치 | 데이터·Chroma | 0 |
+| `l0-load` | L0 | + 벡터 컬렉션 적재 일치 | 데이터·벡터 DB | 0 |
 | `l1-bm25-record` · `l1-v2-bm25-record` | L1 | BM25 검색 (골든 v1 · v2) | 데이터 | 0 |
-| `l1-hybrid` | L1 | 임베딩 + BM25 + 조건 필터 | 데이터·Chroma | 0 |
-| `l1-staged` | L1 | + 1차 리랭커 | 데이터·Chroma·`RERANK_CKPT` | 0 (CPU 시간) |
-| `l1-graph` | L1 | 실제 LangGraph 검색 그래프 | 데이터·Chroma·`RERANK_CKPT` | 0 |
-| `ablation` | L1 | 슬롯 필터 on/off별 검색 (dev) | 데이터·Chroma | 0 |
+| `l1-hybrid` | L1 | 임베딩 + BM25 + 조건 필터 | 데이터·벡터 DB | 0 |
+| `l1-staged` | L1 | + 1차 리랭커 | 데이터·벡터 DB·`RERANK_CKPT` | 0 (CPU 시간) |
+| `l1-graph` | L1 | 실제 LangGraph 검색 그래프 | 데이터·벡터 DB·`RERANK_CKPT` | 0 |
+| `ablation` | L1 | 슬롯 필터 on/off별 검색 (dev) | 데이터·벡터 DB | 0 |
 | `l2-v1` · `l2-v2` | L2 | 질의 파서(규칙) | 데이터 | 0 |
 | `l3` | L3 | 에이전트 그래프 한 턴, 검색은 정답 표(oracle) → `summarize_stat` 실호출 → Parquet 대조 (T3-32). **해석기·멀티쿼리 분해 LLM도 같이 돈다**(hybrid, gpt-4o-mini): 실전 1만 보는 순수 oracle이 아니라 "정답 표를 준 에이전트 한 턴"이다. 실전 1만 떼어 보려면 `INTERPRETER=rules`로 돌린다 | 데이터·HCX 키 (+ `OPENAI_API_KEY`) | **HCX 90문항** (재시도 포함 약 135회로 추정) + 해석기 호출 |
-| `e2e` | L4 | 서비스 에이전트 그래프(`build_agent`) 한 턴: 검색 → `summarize_stat` (T3-32) | 데이터·Chroma·`RERANK_CKPT`·HCX 키 | **HCX 90문항 + 2차 리랭커** |
+| `e2e` | L4 | 서비스 에이전트 그래프(`build_agent`) 한 턴: 검색 → `summarize_stat` (T3-32) | 데이터·벡터 DB·`RERANK_CKPT`·HCX 키 | **HCX 90문항 + 2차 리랭커** |
 | `agent` | 종합 | 멀티턴 시나리오 → 에이전트 → 툴 (§6) | `--agent`·시나리오 파일 | 에이전트가 부르는 LLM |
 | `ragas` | 심판 | 저장된 e2e run의 Faithfulness·Response Relevancy·Context Precision·Recall + 코드 ID P/R, 저점 → 그래프 노드, CI 게이트 기록 (§9) | e2e run 폴더·`OPENAI_API_KEY`·`--group ragas` | 심판 약 350회 (gpt-4.1-mini, 디스크 캐시) |
 
@@ -43,13 +43,14 @@ export PYTHONPATH=.:src:vendor/phase2/src:vendor/phase1:vendor/phase1/src
   골든 파일은 `evals/datasets/`(gitignored).
 - `data/sigungu.json`이 없으면 시군구가 든 질문의 regions를 못 읽는다(점검에서 ⚠). 만들기: `python -m kosis_rag_build.cli sigungu --data-dir <제공 데이터>`.
   만들면 결과가 바뀌므로, 없이 만든 기준 run과는 비교하지 말고 새 기준을 다시 잡는다.
-- Chroma(검색 계층): Docker Desktop을 켜고 **실전 2 레포의** chroma를 띄운다(임베딩이 들어 있는 볼륨은 실전 2 쪽).
+- 벡터 DB(검색 계층, T3-47: PostgreSQL + pgvector, 옛 Chroma): Docker Desktop을 켜고 이 레포의 postgres를 띄운다.
   ```bash
-  (cd ~/work/KOSIS-ai-RAG && docker compose up -d chroma)    # localhost:8001
+  docker compose up -d postgres && docker compose run --rm migrate    # localhost:5432, 벡터 테이블은 alembic 0003_pgvector
   ```
-  이 레포 compose의 chroma는 포트가 같고 볼륨이 비어 있어 동시에 띄우지 않는다.
+  벡터는 다시 임베딩하지 않고 옮긴다: 옛 Chroma 볼륨이 있으면 `vendor/phase2/scripts/chroma_to_pgvector.py`, 없으면 덤프 파일을 받는다(`vendor/phase2/docs/migration.md` T2-44).
+  `.env`의 `DATABASE_URL`(대화 기록과 같은 DB)과 `VECTOR_COLLECTION`(옛 `CHROMA_COLLECTION`, 값 그대로)을 쓴다. Windows에서 연결이 멈추면 `localhost` 대신 `127.0.0.1`.
 - 설정 값: `python -m evals.run_eval`·`evals.suite`는 시작할 때 레포 루트 `.env`를 읽는다(T3-23, `src/kosis_agent/envfile.py`). 셸에 이미 있는 값이 이긴다.
-  `run_eval`은 검색 설정을 인자로도 받는다(우선순위 **인자 > 셸 > `.env` > 기본값**): `--collection` `--embed-ckpt` `--rerank-ckpt` `--chroma-host` `--chroma-port` `--text-format` `--rerank-mode` `--answer-k` `--hq-build` `--hcx-thinking`, `--env-file <파일>` · `--no-env-file`. 체크포인트에 `base`를 주면 학습 전 기반 모델이다.
+  `run_eval`은 검색 설정을 인자로도 받는다(우선순위 **인자 > 셸 > `.env` > 기본값**): `--collection` `--embed-ckpt` `--rerank-ckpt` `--database-url` `--text-format` `--rerank-mode` `--answer-k` `--hq-build` `--hcx-thinking`, `--env-file <파일>` · `--no-env-file`. 체크포인트에 `base`를 주면 학습 전 기반 모델이다.
   실전 1·2 모듈은 여전히 `.env`도 환경도 읽지 않고, 이 레포가 만든 설정 객체를 받는다. `KOSIS_DOTENV=off`면 `.env`를 건너뛴다(pytest는 항상 끔).
   이름과 기본값은 아래 "검색 설정" 절. 값이 없으면 기본값으로 **조용히** 돈다 → 스위트 사전 점검으로 먼저 확인한다.
 - Windows: `set PYTHONUTF8=1`, `export` 대신 `set`.
@@ -94,10 +95,10 @@ uv run python -m evals.suite --stage T3-07-react --baseline evals/reports/202611
 
 ```bash
 S=T3-07-react
-uv run python -m evals.run_eval --layer l0 --retriever chroma --stage $S-l0-load
-uv run python -m evals.run_eval --layer l1 --retriever bm25-record --stage $S-l1-bm25-record          # oracle | bm25-catalog | bm25-record | chroma | 프리셋 | graph:<프리셋>
+uv run python -m evals.run_eval --layer l0 --retriever dense --stage $S-l0-load
+uv run python -m evals.run_eval --layer l1 --retriever bm25-record --stage $S-l1-bm25-record          # oracle | bm25-catalog | bm25-record | dense | 프리셋 | graph:<프리셋>
 uv run python -m evals.run_eval --layer l1 --retriever graph:staged --stage $S-l1-graph
-uv run python -m evals.run_eval --layer ablation --retriever chroma --split dev --stage $S-ablation
+uv run python -m evals.run_eval --layer ablation --retriever dense --split dev --stage $S-ablation
 uv run python -m evals.run_eval --layer l2 --split all --stage $S-l2-v1
 uv run python -m evals.run_eval --layer l3 --llm mock --stage $S-l3-mock                              # 경로 확인
 uv run python -m evals.run_eval --layer l3 --interval 5 --stage $S-l3                                 # HCX
@@ -131,13 +132,13 @@ L1 프리셋(`retrieval.STAGED`): `hybrid` · `hybrid+cond` · `staged` · `clov
 |---|---|
 | `ModuleNotFoundError: No module named 'kosis_agent'` (`evals/__init__.py`) | `PYTHONPATH` 미설정이거나 레포 루트가 아닌 곳에서 실행 → 0.2의 export, 루트에서 실행 |
 | `No module named 'kosis_rag.query'` 같은 옛 이름 | 서브모듈이 옛 커밋 → `git submodule update` |
-| 점검 `Chroma localhost:8001 응답 없음` | Docker 꺼짐 / 실전 2 chroma 안 띄움 → 0.2 |
-| `ValueError: no collection` · 점검 `CHROMA_COLLECTION 미설정` | `.env`·셸 모두 값 없음 → `.env`에 넣거나 `set CHROMA_COLLECTION=...` |
+| 점검 `PostgreSQL … 응답 없음` | Docker 꺼짐 / postgres 안 띄움 → 0.2. Windows에서 멈추면 주소를 `127.0.0.1`로 |
+| `ValueError: no collection` · 점검 `VECTOR_COLLECTION 미설정` | `.env`·셸 모두 값 없음 → `.env`에 넣거나 `set VECTOR_COLLECTION=...` (옛 `CHROMA_COLLECTION`과 같은 값) |
 | `LLMKeyMissing` · 점검 `HCX_API_KEY 미설정` | 셸에 키 없음, 또는 `--llm mock`으로 경로만 확인 |
 | 프로세스가 `exit 137`로 죽음 | 큰 Parquet 표(10MB 넘는 7개) 셀을 읽다 메모리 부족 → 다른 프로그램을 닫거나 그 문항 제외(별도 이슈) |
 | `uv sync` 뒤 torch가 없어짐 | 그룹 하나만 sync함 → `uv sync --group embed --group ragas` |
 | L3 mock 점수가 높음 | 정상: 코드 템플릿 답. 점수로 쓰지 않는다 |
-| 포트 8001 충돌 | 이 레포 compose의 chroma와 실전 2 chroma를 같이 띄움 → 하나만 |
+| 포트 5432 충돌 | 이 레포 compose의 postgres와 실전 2 postgres를 같이 띄움 → 하나만 (또는 실전 2를 `POSTGRES_PORT=5433`) |
 
 ## 1. 실행
 
@@ -146,13 +147,13 @@ export PYTHONPATH=.:src:vendor/phase2/src:vendor/phase1:vendor/phase1/src   # �
 
 uv run python -m evals.run_eval --layer l3 --stage <이름> --from-run evals/reports/T1-27-run   # 과거 run 재채점, 모델 호출 0
 uv run python -m evals.run_eval --layer l3 --stage <이름> --interval 5                         # 에이전트 그래프 + 정답 표 검색
-uv run python -m evals.run_eval --layer e2e --stage <이름> --interval 5                         # 서비스 에이전트 그래프 (Chroma 필요)
+uv run python -m evals.run_eval --layer e2e --stage <이름> --interval 5                         # 서비스 에이전트 그래프 (벡터 DB 필요)
 uv run python -m evals.run_eval --layer e2e --agent <module:function> --stage <이름>           # 다른 그래프로 (예: 검색기 실험)
 ```
 
 **T3-32부터 l3·e2e는 에이전트 그래프 한 턴이다.** 질문마다 새 대화(`thread_id = <qid>#0`)로 그래프를 돌리고, 끝난 그래프 상태에서
 실전 1 답(`state["stat"]`)·검색 후보(`state["search"]`)·실전 1에 넘긴 표(`table_key`)를 읽어 L3 채점기에 넣는다.
-- l3 그래프 = `evals.runners.multiturn_dev:build`에 골든 문항의 "질문 → 정답 표"를 검색으로 준 것. e2e 그래프 = `backend.app.main:build_agent`(서비스와 같은 검색 설정, Chroma 필요). `--agent`로 바꾼다.
+- l3 그래프 = `evals.runners.multiturn_dev:build`에 골든 문항의 "질문 → 정답 표"를 검색으로 준 것. e2e 그래프 = `backend.app.main:build_agent`(서비스와 같은 검색 설정, 벡터 DB 필요). `--agent`로 바꾼다.
 - `--retriever` 프리셋은 e2e에 더 이상 쓰이지 않는다(검색 설정은 `.env`의 `STAGE2` 등). 검색기만 비교하려면 L1을 쓴다.
 - 검색 gate가 거절한 질문은 실전 1까지 가지 않는다. 그 거절(`out_of_scope`·`no_item`)을 실전 1 거절처럼 채점한다.
 - `--llm mock`은 실전 1 mock·stage 2 끔·해석기 규칙으로 바꿔 어떤 모델도 부르지 않는다(`.env`가 `STAGE2=hcx`여도).
@@ -270,13 +271,13 @@ uv run python -m evals.run_eval --layer l3 --stage <이름> --interval 5 --calc-
 실전 2 모듈은 `.env`도 환경도 읽지 않는다. 진입점이 레포 루트 `.env`를 환경변수로 올리고(셸 값 우선), `evals/config.py`가 환경변수로 `IndexSpec`·`SearchOptions`를 만들어 넘긴다(이름·기본값은 실전 2 `search_config_from_shell`과 같음, 데이터 경로는 이 레포 `data/`).
 값이 없으면 기본값(`localhost:8001`, 컬렉션 없음, stage 2 끔)으로 조용히 돈다. 옛 결과와 비교하려면 같은 값을 둔다.
 
-`CHROMA_HOST` `CHROMA_PORT` `CHROMA_COLLECTION` `EMBED_CKPT` `RERANK_CKPT`(staged*) `TEXT_FORMAT` `HQ_BUILD`(비우면 끔) · HCX 프리셋·L3 HCX는 `HCX_API_KEY`, gpt 프리셋은 `OPENAI_API_KEY`.
+`DATABASE_URL` `VECTOR_COLLECTION` `EMBED_CKPT` `RERANK_CKPT`(staged*) `TEXT_FORMAT` `HQ_BUILD`(비우면 끔) · HCX 프리셋·L3 HCX는 `HCX_API_KEY`, gpt 프리셋은 `OPENAI_API_KEY`.
 L2·ablation(`--slot-source pred`)은 `data/sigungu.json`을 `parse_query(sigungu=…)`에 넘긴다(넘기지 않으면 시군구 질문의 `regions`만 조용히 떨어진다).
 
 ### Jaeger로 보기 (선택)
 
 실시간 계층(l1·l3·e2e·agent)은 `scripts/dev.sh`로 돌린다(T3-33). API 서버와 같은 준비를 한다: Docker Desktop이 꺼져 있으면 켜고,
-Chroma·Jaeger를 띄우고(`--wait`), `OTEL_EXPORTER_OTLP_ENDPOINT`를 맞추고, 출력을 버퍼 없이 화면과 `evals/reports/logs/<시각>-eval.log`에 같이 쓴다.
+PostgreSQL(pgvector)·Jaeger를 띄우고(`--wait`), `OTEL_EXPORTER_OTLP_ENDPOINT`를 맞추고, 출력을 버퍼 없이 화면과 `evals/reports/logs/<시각>-eval.log`에 같이 쓴다.
 문항(턴)마다 `[번호/전체] qid 초` 진행 줄이 나온다.
 
 ```bash
@@ -285,7 +286,7 @@ bash scripts/dev.sh eval --layer e2e --interval 5 --stage <이름>
 bash scripts/dev.sh suite --stage <이름> --only l1-graph e2e                       # evals.suite 인자 그대로
 ```
 
-`uv run python -m evals.run_eval`로 직접 돌리면 Docker·Jaeger가 꺼져 있어도 그대로 시작한다: 검색 계층은 Chroma 연결에서 실패하고,
+`uv run python -m evals.run_eval`로 직접 돌리면 Docker·Jaeger가 꺼져 있어도 그대로 시작한다: 검색 계층은 벡터 DB 연결에서 실패하고,
 `.env`에 OTLP 주소가 있으면 trace 전송 실패 로그만 쌓인다(리포트의 trace 카드는 메모리 span이라 그대로 나온다).
 
 http://localhost:16686 에서 서비스 `kosis-agent`를 고르고 Tags에 `deployment.environment.name=eval kosis.eval.layer=l3`처럼 넣는다(§8.1).
@@ -574,7 +575,7 @@ LLM 호출 = `gen_ai.operation.name == "chat"`인 span 하나. agent 리포트�
 | `refused` | 자료 없음으로 거절 (검색 gate 또는 실전 1) | `kosis.no_answer_reason` (예: `out_of_scope`, 기간·주기 불일치 사유) |
 | `clarify` | 되물음 | `kosis.no_answer_reason` |
 | `failed` | 검색은 찾았는데 넘길 표가 없음 등 코드 경로의 실패 | `kosis.no_answer_reason` |
-| `error` | 그래프가 예외로 멈춤 (Chroma 연결, 키 없음 등) | `error.type` (예외 클래스 이름), 루트 span 상태 ERROR·exception 이벤트 |
+| `error` | 그래프가 예외로 멈춤 (벡터 DB 연결, 키 없음 등) | `error.type` (예외 클래스 이름), 루트 span 상태 ERROR·exception 이벤트 |
 
 - `kosis.no_answer_reason`은 API 응답 `ChatResult.no_answer_reason`과 같은 값이다. 사용자 제보의 `trace_id`로 찾은 trace와 화면 답의 사유가 일치한다.
 - Jaeger 검색: Tags에 `kosis.outcome=error` 또는 `kosis.no_answer_reason=out_of_scope`를 넣으면 그런 턴만 모인다.
@@ -696,7 +697,7 @@ bash scripts/dev.sh online --stage <ID>-online [--lookback 24h --limit 500 --sam
 bash scripts/dev.sh pipeline --stage <ID> [suite 인자]    # 둘 다, 오프라인 먼저 (exit = 처음 0이 아닌 값)
 ```
 
-dev.sh는 Docker·Chroma·Jaeger를 띄우고 `uv run --group embed --group ragas`로 실행한다(그룹을 하나만 주면 다른 그룹이 sync로 지워진다).
+dev.sh는 Docker·PostgreSQL·Jaeger를 띄우고 `uv run --group embed --group ragas`로 실행한다(그룹을 하나만 주면 다른 그룹이 sync로 지워진다).
 
 | 단계 | 오프라인 (`evals.suite`) | 온라인 (`--layer online`) |
 |---|---|---|

@@ -5,7 +5,7 @@ by this repo's `backend.app`, and CLAUDE.md §3 allows importing only `kosis_rag
 `<KOSIS_WORKSPACE>/data`, not `vendor/phase2/data`. `python -m evals.run_eval` / `evals.suite` load <repo>/.env into
 os.environ first (kosis_agent.envfile, shell values win); this module reads os.environ.
 
-    CHROMA_HOST CHROMA_PORT CHROMA_COLLECTION · TEXT_FORMAT EMBED_CKPT RERANK_CKPT RERANK_MODE
+    DATABASE_URL VECTOR_COLLECTION · TEXT_FORMAT EMBED_CKPT RERANK_CKPT RERANK_MODE
     STAGE2 COND_FILTER ANSWER_K · HQ_BUILD HQ_WEIGHT HQ_BM25 · HCX_API_KEY HCX_THINKING OPENAI_API_KEY
 
 ponytail: replace with this repo's backend config (agent_config()) once T3-01 adds it.
@@ -18,7 +18,8 @@ from pathlib import Path
 from typing import Any
 
 from kosis_rag.llm.config import LLMConfig
-from kosis_rag.schemas.resources import OFF, ChromaConfig, IndexSpec, SearchOptions
+from backend.app.config import vector_store
+from kosis_rag.schemas.resources import OFF, IndexSpec, SearchOptions
 
 
 def _env(name: str) -> str | None:
@@ -46,8 +47,7 @@ def search_config(**overrides: Any) -> tuple[IndexSpec, SearchOptions]:
         "tables": data / "tables.jsonl", "sigungu": data / "sigungu.json", "hq_root": data / "hq",
         "text_format": _env("TEXT_FORMAT"), "embed_ckpt": _env("EMBED_CKPT"), "rerank_ckpt": _env("RERANK_CKPT"),
         "hq_build": (_env("HQ_BUILD") or "").strip() or None,
-        "chroma": ChromaConfig(host=_env("CHROMA_HOST") or "localhost", port=int(_env("CHROMA_PORT") or 8001),
-                               collection=_env("CHROMA_COLLECTION")),
+        "vector_store": vector_store(),  # DATABASE_URL, VECTOR_COLLECTION (T3-47; the service's reader)
     }
     option_values: dict[str, Any] = {
         "cond_filter": (_env("COND_FILTER") or "on").strip().lower() not in OFF,

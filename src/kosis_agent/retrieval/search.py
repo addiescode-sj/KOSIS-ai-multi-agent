@@ -28,7 +28,7 @@ def make_search_tables_tool(search: Any) -> BaseTool:
     In: search = kosis_rag.api.SearchModule (테스트에서는 .stream(SearchInput)만 있는 가짜).
     Out: search_tables 툴. 실행하면 실전 2 노드가 끝날 때마다 (노드 이름, trace 항목)을 stream writer로 내보낸다.
         이 이벤트는 /chat/stream의 SSE 노드 이벤트가 된다(이벤트 이름·내용은 리팩토링 전과 같음).
-    Errors: 실전 2의 예외(Chroma 연결 실패, LLMKeyMissing 등)는 그대로 올라간다.
+    Errors: 실전 2의 예외(벡터 DB 연결 실패, LLMKeyMissing 등)는 그대로 올라간다.
     """
 
     @tool("search_tables", response_format="content_and_artifact")

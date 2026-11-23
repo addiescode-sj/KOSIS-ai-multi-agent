@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Local backend with live traces (T3-30): Chroma + Jaeger in Docker, the API on this machine.
-# The same setup runs an evaluation (T3-33), so a run never starts with Docker, Chroma or Jaeger down.
+# Local backend with live traces (T3-30): PostgreSQL (+ pgvector) + Jaeger in Docker, the API on this machine.
+# The same setup runs an evaluation (T3-33), so a run never starts with Docker, PostgreSQL or Jaeger down.
 #
 #   bash scripts/dev.sh            # API :8000, Swagger /docs, Jaeger UI :16686
 #   RELOAD=1 bash scripts/dev.sh   # restart on code changes (backend/, src/ only)
@@ -18,8 +18,8 @@
 #   bash scripts/dev.sh pipeline --stage <ID> [suite args]  # both, offline first; exit = the first non-zero
 #
 # eval / suite / online: progress and the report path go to the terminal and to evals/reports/logs/<time>-<mode>.log.
-# Settings come from .env (CHROMA_COLLECTION, EMBED_CKPT, RERANK_CKPT, HCX_API_KEY, OPENAI_API_KEY, STAGE2_* ...); shell values win.
-# Containers keep running after Ctrl+C; stop them with: docker compose --profile obs stop chroma jaeger
+# Settings come from .env (VECTOR_COLLECTION, EMBED_CKPT, RERANK_CKPT, HCX_API_KEY, OPENAI_API_KEY, STAGE2_* ...); shell values win.
+# Containers keep running after Ctrl+C; stop them with: docker compose --profile obs stop postgres jaeger
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -33,8 +33,8 @@ if ! docker info >/dev/null 2>&1; then
   for _ in $(seq 1 60); do docker info >/dev/null 2>&1 && break; sleep 2; done
   docker info >/dev/null 2>&1 || { echo "Docker daemon not running" >&2; exit 1; }
 fi
-# --wait: Chroma until healthy, Jaeger until running (it has no healthcheck)
-docker compose --profile obs up -d --wait chroma jaeger
+# --wait: postgres (+ pgvector, the vector store) until healthy, Jaeger until running (it has no healthcheck)
+docker compose --profile obs up -d --wait postgres jaeger
 
 export OTEL_EXPORTER_OTLP_ENDPOINT="${OTEL_EXPORTER_OTLP_ENDPOINT:-http://localhost:4317}"
 export PYTHONPATH=".:src:vendor/phase2/src:vendor/phase1:vendor/phase1/src"

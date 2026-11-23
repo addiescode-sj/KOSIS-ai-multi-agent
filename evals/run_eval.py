@@ -8,7 +8,7 @@
     python -m evals.run_eval --layer e2e --retriever bm25-record --stage p2-e2e --interval 5   # search top 1 -> L3
     python -m evals.run_eval --layer l0 --stage T2-28-l0                               # metadata fill rates, no search
     python -m evals.run_eval --layer l2 --stage T2-28-l2 --split dev                   # parse_query vs query_golden
-    python -m evals.run_eval --layer ablation --stage T2-28-slots --split dev --slot-source pred [--retriever chroma]
+    python -m evals.run_eval --layer ablation --stage T2-28-slots --split dev --slot-source pred [--retriever dense]
     python -m evals.run_eval --layer l012 --stage T2-28-l012                           # L0 + L1 filter (gold, pred) + L2, dev
     python -m evals.run_eval --layer agent --stage T3-06-oracle --oracle --split all   # agent metrics self-check (1.000)
     python -m evals.run_eval --layer agent --stage T3-07-react --agent <module:function> --repeat 3   # live, pass^3
@@ -53,9 +53,8 @@ E2E_CALC = DATASETS / "e2e_golden_calc.jsonl"
 POOL = DATASETS / "retrieval_pool.csv"
 # T3-23: search settings as arguments (argument > shell > .env > default). Each sets the variable evals/config.py reads.
 SEARCH_ARGS = {
-    "chroma_host": ("CHROMA_HOST", "Chroma host (default localhost)"),
-    "chroma_port": ("CHROMA_PORT", "Chroma port (default 8001)"),
-    "collection": ("CHROMA_COLLECTION", "dense collection, e.g. kosis_a_bgeft_202611032104"),
+    "database_url": ("DATABASE_URL", "PostgreSQL + pgvector (default the compose postgres on localhost)"),
+    "collection": ("VECTOR_COLLECTION", "dense collection, e.g. kosis_a_bgeft_202611032104"),
     "embed_ckpt": ("EMBED_CKPT", "query embedder checkpoint .pt, or base (untrained bge-m3)"),
     "rerank_ckpt": ("RERANK_CKPT", "stage 1 re-ranker .pt, or base (untrained bge-reranker-v2-m3); presets without stage 1 ignore it"),
     "text_format": ("TEXT_FORMAT", "table text format the collection must hold (n2-L60)"),
@@ -107,7 +106,7 @@ def main(argv: list[str] | None = None) -> Path:
     parser.add_argument("--layer", choices=("l0", "l1", "l2", "ablation", "l012", "l3", "e2e", "agent", "ragas", "online", "rules"), required=True)  # e2e: first part of L4
     parser.add_argument("--stage", required=True, help="what this run measures, e.g. T2-04-bm25")
     parser.add_argument("--split", choices=("dev", "test", "all"), help="default: dev for l012 (the slot baselines), test otherwise")
-    parser.add_argument("--retriever", default="bm25-catalog", help="l1, e2e: oracle (l1 only) | bm25-catalog | bm25-record | chroma")
+    parser.add_argument("--retriever", default="bm25-catalog", help="l1, e2e: oracle (l1 only) | bm25-catalog | bm25-record | dense (old name: chroma)")
     parser.add_argument("--k", type=int, help="default 10; ragas: 5 (tables given to the judge as contexts)")
     parser.add_argument("--tau", type=float, help="l1: fixed no-answer threshold (default: best F1 on dev)")
     parser.add_argument("--from-run", type=Path, help="l1, l3, e2e, agent: grade a past run folder instead of searching / calling the model (l1 reuses its retriever, k and tau)")
@@ -138,7 +137,7 @@ def main(argv: list[str] | None = None) -> Path:
     settings.add_argument("--env-file", type=Path, default=None, help="default: <repo>/.env (skipped when KOSIS_DOTENV=off)")
     settings.add_argument("--no-env-file", action="store_true", help="do not read any .env")
     for field, (name, what) in SEARCH_ARGS.items():
-        settings.add_argument("--" + field.replace("_", "-"), type=int if field in ("chroma_port", "answer_k") else str,
+        settings.add_argument("--" + field.replace("_", "-"), type=int if field == "answer_k" else str,
                               help=f"{name}: {what}")
     args = parser.parse_args(argv)
     # T3-46: e2e without --calc-golden = the scenario path (e2e golden + its calc file); rules reads the same scenarios
