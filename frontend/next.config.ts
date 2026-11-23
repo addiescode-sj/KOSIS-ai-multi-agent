@@ -5,6 +5,9 @@ const nextConfig: NextConfig = {
   output: "standalone",
   cacheComponents: true,
   partialPrefetching: true,
+  experimental: {
+    agentUpgrade: "security",
+  },
   // Routes renamed in PR #32 review: keep old links working
   async redirects() {
     return [
