@@ -4,6 +4,9 @@ messages.content and messages.result hold the user's question text as typed: no 
 conversation is only a random UUID, and conversations are deleted by created_at after the retention period.
 eval_runs holds run aggregates only (one evals/reports/ops_history.jsonl line per row): no golden question text,
 answer or item id.
+vector_collection / vector_item are the vector store (T3-47, PostgreSQL + pgvector): table metadata and its
+embeddings, no statistic values. Phase 2 (kosis_rag.adapters.vectorstore) reads and writes them with SQL; the models
+are here so the migration and the metadata stay one definition (tests/test_store.py).
 """
 
 from __future__ import annotations
@@ -11,7 +14,8 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import JSON, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from pgvector.sqlalchemy import Vector
+from sqlalchemy import DDL, JSON, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint, event, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -21,6 +25,12 @@ JSONType = JSON().with_variant(JSONB(), "postgresql")
 
 class Base(DeclarativeBase):
     pass
+
+
+# T3-47: vector_item has a pgvector column, so Base.metadata.create_all on PostgreSQL (tests, T3-48 log checks) needs
+# the extension first; alembic 0003_pgvector creates it the same way. SQLite (offline tests) skips it.
+event.listen(Base.metadata, "before_create",
+             DDL("CREATE EXTENSION IF NOT EXISTS vector").execute_if(dialect="postgresql"))
 
 
 class Conversation(Base):
@@ -71,3 +81,28 @@ class EvalRun(Base):
 
     FIELDS = ("run_id", "layer", "stage", "target", "latency_p50_ms", "latency_p95_ms", "input_tokens",
               "output_tokens", "cost", "currency", "tool_failure_rate", "retry_rate")
+
+
+class VectorCollection(Base):
+    """One collection: a table index build, the region chunks or a question index (name = the build's name)."""
+
+    __tablename__ = "vector_collection"
+
+    name: Mapped[str] = mapped_column(Text, primary_key=True)
+    meta: Mapped[dict] = mapped_column("metadata", JSONType)  # embed_model, doc_format, dim, index_version ...
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class VectorItem(Base):
+    """One row of a collection: id, the table key it belongs to, the embedded text, its metadata and vector."""
+
+    __tablename__ = "vector_item"
+    __table_args__ = (Index("vector_item_key", "collection", "key"),)
+
+    collection: Mapped[str] = mapped_column(Text, ForeignKey("vector_collection.name", ondelete="CASCADE"),
+                                            primary_key=True)
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    key: Mapped[str | None] = mapped_column(Text)
+    document: Mapped[str] = mapped_column(Text)
+    meta: Mapped[dict] = mapped_column("metadata", JSONType)
+    embedding: Mapped[list[float]] = mapped_column(Vector())

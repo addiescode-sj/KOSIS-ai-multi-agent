@@ -1,4 +1,4 @@
-"""Slot ablation (§4.4): filter recall per slot combination, with --retriever chroma also Hit/MRR and verdicts."""
+"""Slot ablation (§4.4): filter recall per slot combination, with --retriever dense also Hit/MRR and verdicts."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from evals.tasks.common import load_sigungu
 
 
 def run(args) -> tuple[list[dict], dict, str]:
-    """Slot ablation (§4.4): filter recall per combination; with --retriever chroma also Hit/MRR, flips, verdicts."""
+    """Slot ablation (§4.4): filter recall per combination; with --retriever dense also Hit/MRR, flips, verdicts."""
     from kosis_rag.parse.node import parse_query
 
     from evals.runners import ablation
@@ -23,8 +23,8 @@ def run(args) -> tuple[list[dict], dict, str]:
         slots = {i.qid: parse_query(i.question, sigungu=sigungu) for i in items}
     on = ablation.combos(args.slots.split(","))
     retriever = None
-    if args.retriever == "chroma":
-        retriever = runner.connect_chroma(args.k)
+    if args.retriever in runner.DENSE:
+        retriever = runner.connect_dense(args.k)
     rows = ablation.run(items, slots, records, on, retriever, args.k)
     tau = args.tau
     if tau is None and retriever is not None:  # chosen once on `none`, kept for every combination

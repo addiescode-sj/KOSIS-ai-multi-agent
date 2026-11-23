@@ -5,7 +5,7 @@
     python -m evals.suite --stage T3-07-react --only l1-graph e2e --agent backend.app.main:build_agent --scenarios <file>
 
 Each run is `python -m evals.run_eval` with stage `<prefix>-<run name>` (its own folder, report.html and ops_history
-line). A run whose needs are not met (no Chroma, no checkpoint, no key, ...) is skipped with the reason; a run that
+line). A run whose needs are not met (no vector store, no checkpoint, no key, ...) is skipped with the reason; a run that
 fails is recorded and the suite goes on. The suite folder `evals/reports/<time>-<prefix>-suite/` holds suite.md,
 suite.html and suite.json: the checks, each run's status and folder, and per run its headline metrics next to the
 baseline run with the same conditions (layer, retriever, golden hash, split, k, live vs regrade, llm).
@@ -23,7 +23,6 @@ import datetime as dt
 import io
 import json
 import os
-import socket
 from pathlib import Path
 from typing import Callable
 
@@ -35,25 +34,25 @@ V2 = ["--golden", str(DATASETS / "retrieval_golden_v2.jsonl"), "--pool", str(DAT
 # name, run_eval args, needs (keys of check()), what it measures; the order is the order they run in
 RUNS: list[tuple[str, list[str], set[str], str]] = [
     ("l0", ["--layer", "l0"], {"data"}, "메타데이터 채움률 (모델·서버 없음)"),
-    ("l0-load", ["--layer", "l0", "--retriever", "chroma"], {"data", "chroma"}, "+ Chroma 컬렉션 적재 일치"),
+    ("l0-load", ["--layer", "l0", "--retriever", "dense"], {"data", "vectors"}, "+ 벡터 컬렉션 적재 일치"),
     ("l1-bm25-record", ["--layer", "l1", "--retriever", "bm25-record"], {"data"}, "BM25 검색 (서버 없음)"),
     ("l1-v2-bm25-record", ["--layer", "l1", "--retriever", "bm25-record", *V2], {"data", "v2"}, "BM25, 골든 v2"),
-    ("l1-hybrid", ["--layer", "l1", "--retriever", "hybrid+cond"], {"data", "chroma"}, "임베딩 + BM25 + 조건 필터"),
-    ("l1-staged", ["--layer", "l1", "--retriever", "staged"], {"data", "chroma", "rerank"}, "+ 1차 리랭커"),
-    ("l1-graph", ["--layer", "l1", "--retriever", "graph:staged"], {"data", "chroma", "rerank"}, "실제 LangGraph 검색 그래프"),
-    ("ablation", ["--layer", "ablation", "--retriever", "chroma", "--split", "dev"], {"data", "chroma"}, "슬롯 필터 on/off별 검색"),
+    ("l1-hybrid", ["--layer", "l1", "--retriever", "hybrid+cond"], {"data", "vectors"}, "임베딩 + BM25 + 조건 필터"),
+    ("l1-staged", ["--layer", "l1", "--retriever", "staged"], {"data", "vectors", "rerank"}, "+ 1차 리랭커"),
+    ("l1-graph", ["--layer", "l1", "--retriever", "graph:staged"], {"data", "vectors", "rerank"}, "실제 LangGraph 검색 그래프"),
+    ("ablation", ["--layer", "ablation", "--retriever", "dense", "--split", "dev"], {"data", "vectors"}, "슬롯 필터 on/off별 검색"),
     ("l2-v1", ["--layer", "l2", "--split", "all"], {"data"}, "질의 파서 (규칙)"),
     ("l2-v2", ["--layer", "l2", "--split", "all", "--query-golden", str(DATASETS / "query_golden_v2.jsonl")], {"data", "v2"}, "질의 파서, 골든 v2"),
     ("l3", ["--layer", "l3"], {"data", "llm"}, "에이전트 그래프 한 턴, 정답 표 검색(oracle) → summarize_stat 실호출"),
     # T3-46: the calculation golden path (ragas and the regression gate read its rows); e2e-scenarios is the new set
-    ("e2e", ["--layer", "e2e", "--calc-golden", str(DATASETS / "calculation_golden.jsonl")], {"data", "chroma", "rerank", "llm"},
+    ("e2e", ["--layer", "e2e", "--calc-golden", str(DATASETS / "calculation_golden.jsonl")], {"data", "vectors", "rerank", "llm"},
      "서비스 에이전트 그래프 한 턴 (검색 → summarize_stat), 계산 골든 90문항"),
     # T3-43: judges this suite's e2e answers (--from-run is added by run()); skipped after a mock or missing e2e
     ("ragas", ["--layer", "ragas"], {"data", "judge"}, "Ragas 심판 (e2e 답: Faithfulness·Relevancy·Context P/R) → 회귀 게이트"),
     ("agent", ["--layer", "agent"], {"agent"}, "멀티턴 시나리오 → 에이전트 (T3-06)"),
     # T3-46: the e2e golden set (failure types + gold classification labels, evals/builders/e2e_golden.py)
     ("rules", ["--layer", "rules", "--split", "all"], {"e2e_golden"}, "규칙 분류 정확도 (오프라인: 정답 표로 규칙 실행값 vs 정답 라벨)"),
-    ("e2e-scenarios", ["--layer", "e2e", "--split", "all"], {"data", "chroma", "rerank", "llm", "e2e_golden"},
+    ("e2e-scenarios", ["--layer", "e2e", "--split", "all"], {"data", "vectors", "rerank", "llm", "e2e_golden"},
      "e2e 골든 시나리오 (서비스 그래프, 툴·상태·숫자 + 분류 라벨)"),
 ]
 GATE_DROP_EXIT = 2  # T3-43: a metric below the committed baseline (1 stays "a run failed")
@@ -80,7 +79,7 @@ def check(llm: str, agent: str | None, scenarios: Path | None) -> dict[str, tupl
     v2 = [p.name for p in (DATASETS / "retrieval_golden_v2.jsonl", DATASETS / "retrieval_pool_v2.csv",
                            DATASETS / "query_golden_v2.jsonl") if not p.exists()]
     out["v2"] = (not v2, f"없음: {', '.join(v2)}" if v2 else "골든 v2 파일 있음")
-    out["chroma"] = _chroma(spec)
+    out["vectors"] = _vectors(spec)
     rerank = spec.rerank_ckpt
     out["rerank"] = ((True, f"RERANK_CKPT {rerank}") if rerank and Path(rerank).exists()
                      else (False, f"RERANK_CKPT 파일 없음: {rerank}" if rerank else "RERANK_CKPT 미설정"))
@@ -99,23 +98,25 @@ def check(llm: str, agent: str | None, scenarios: Path | None) -> dict[str, tupl
     return out
 
 
-def _chroma(spec) -> tuple[bool, str]:
-    host, port, name = spec.chroma.host, spec.chroma.port, spec.chroma.collection
+def _vectors(spec) -> tuple[bool, str]:
+    """The dense collection can be opened in the vector store (T3-47: PostgreSQL + pgvector, was Chroma)."""
+    name = spec.vector_store.collection
     if not name:
-        return False, "CHROMA_COLLECTION 미설정"
+        return False, "VECTOR_COLLECTION 미설정"
     if spec.embed_ckpt and not Path(spec.embed_ckpt).exists():
         return False, f"EMBED_CKPT 파일 없음: {spec.embed_ckpt}"
-    try:
-        socket.create_connection((host, port), timeout=2).close()
-    except OSError:
-        return False, f"Chroma {host}:{port} 응답 없음 (Docker·실전 2 chroma 실행 확인)"
-    try:
-        from kosis_rag.adapters.chroma import chroma_client
+    from kosis_rag.adapters.vectorstore import safe_url, vector_client
 
-        chroma_client(spec.chroma).get_collection(name)
+    where = safe_url(spec.vector_store.url)
+    try:
+        client = vector_client(spec.vector_store)
+    except ConnectionError:
+        return False, f"PostgreSQL {where} 응답 없음 (Docker·postgres 실행 확인)"
+    try:
+        client.get_collection(name)
     except Exception as e:  # noqa: BLE001 - any failure means the collection cannot be searched
         return False, f"컬렉션 {name} 열기 실패: {type(e).__name__}"
-    return True, f"{host}:{port} · 컬렉션 {name}"
+    return True, f"{where} · 컬렉션 {name}"
 
 
 def argv_for(name: str, args: list[str], llm: str, opts: argparse.Namespace) -> list[str]:
@@ -172,7 +173,7 @@ def metrics(m: dict) -> dict[str, float | int | str | None]:
 
 def conditions(m: dict) -> dict:
     """What a baseline must share: MATCH fields, golden hash(es), live vs regrade, llm (missing on a live run = hcx),
-    and for l0 whether the Chroma load was checked (the retriever field is not recorded for l0)."""
+    and for l0 whether the vector store load was checked (the retriever field is not recorded for l0)."""
     live = m["layer"] in ("l3", "e2e") and not m.get("from_run")
     golden = m.get("golden") or {}
     return {**{k: m.get(k) for k in MATCH}, "golden": json.dumps(golden.get("sha256") or {k: v.get("sha256") for k, v in golden.items()}, sort_keys=True),

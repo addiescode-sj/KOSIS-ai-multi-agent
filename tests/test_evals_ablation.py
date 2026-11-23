@@ -80,7 +80,7 @@ def test_combos_and_masking_follow_to_filter():
 
 
 class _Filterable(BaseRetriever):
-    """A base with with_filter, like ChromaTableRetriever; remembers the filter it was given."""
+    """A base with with_filter, like DenseTableRetriever; remembers the filter it was given."""
 
     seen: list = []
     last_removed: dict = {}
