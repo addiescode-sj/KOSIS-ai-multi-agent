@@ -12,11 +12,12 @@ from __future__ import annotations
 
 import re
 import threading
+import time
 import uuid
 from contextlib import asynccontextmanager
-from typing import Any, Iterator
+from typing import Any, Iterator, Literal
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Body, Depends, FastAPI, Header, HTTPException
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 from langchain_core.messages import HumanMessage
 from langchain_core.tools import BaseTool
@@ -34,6 +35,8 @@ from kosis_agent.services.chart import make_chart_tool, to_vega_lite
 from kosis_agent.services.statistics import make_summarize_stat_tool
 from kosis_ai.schemas import StatAnswer
 from kosis_rag.schemas.io import SearchOutput
+from kosis_store.log_collector import MAX_EVENTS_PER_BATCH, TurnLogCollector
+from kosis_store.masking import mask
 
 load_env_file()  # phase 3 reads its .env; phase 1 / 2 get objects from agent_config()
 
@@ -120,6 +123,10 @@ class ChatRequest(BaseModel):
     question: str = Field(min_length=1, description="사용자 질문 (한국어)", examples=["2023년 시도별 출생아 수"])
     thread_id: str | None = Field(default=None, description="대화 ID. 같은 값을 보내면 이전 턴을 이어서 답한다. "
                                   "없으면 새 대화로 처리하고, 만든 ID를 응답에 돌려준다.", examples=["c0ffee"])
+    # T3-48 (KOS-170): for the user log only; the answer does not change
+    session_id: uuid.UUID | None = Field(default=None, description="브라우저 세션의 임의 UUID (사람을 식별하지 않음). 로그용")
+    input_method: Literal["direct", "clarify_option"] = Field(
+        default="direct", description="direct: 직접 입력 · clarify_option: 되묻기 선택지 버튼. 로그용")
 
 
 class ChatResponse(BaseModel):
@@ -223,10 +230,41 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.get("/ops/log-counts", tags=["ops"], summary="사용자 로그 쓰기 건수 (T3-48)")
+def log_counts(collector: TurnLogCollector | None = Depends(telemetry.get_collector)) -> dict[str, Any]:
+    """서비스가 뜬 뒤 쓴 행·실패·건너뛴 수 (`written_request_logs`, `failed_ui_events`, `skipped_no_trace` 등).
+    로그 쓰기가 꺼져 있으면(`DATABASE_URL` 없음) `enabled: false`."""
+    return {"enabled": collector is not None, "counts": dict(collector.counts) if collector else {}}
+
+
+INTERNAL_HEADER = "X-Kosis-Internal"
+
+
+def _internal(value: str | None) -> bool:
+    """Harness or team traffic, marked by the caller with the X-Kosis-Internal header (the browser proxy never sends it)."""
+    # not a str when the handler is called directly (tests) and FastAPI did not fill the parameter
+    return isinstance(value, str) and value.strip().lower() in {"1", "true", "yes"}
+
+
+def _log_turn(collector: TurnLogCollector | None, root: Span, req: ChatRequest, result: ChatResult | None, *,
+              internal: bool, aborted: bool = False, first_token_ms: int | None = None) -> None:
+    """Hand the finished turn to the user log (T3-48). Call after root.end(). Never raises: logging must not touch
+    the answer. The question goes in masked; harness traffic keeps no text (the row builder drops it)."""
+    if not isinstance(collector, TurnLogCollector):  # None (log off) or an unfilled Depends (direct call in tests)
+        return
+    try:
+        collector.finish(root, result.model_dump(mode="json") if result is not None else None, aborted=aborted,
+                         first_token_ms=first_token_ms, question=mask(req.question), session_id=req.session_id,
+                         is_internal=internal, input_method=req.input_method)
+    except Exception:  # noqa: BLE001 - finish already counts its own failures; this guards the call itself
+        pass
+
+
 @app.post("/chat/stream", tags=["chat"], summary="에이전트 답변 (SSE, 토큰 스트리밍)",
           response_class=EventSourceResponse, responses=UNAVAILABLE)
-def chat_stream(req: ChatRequest, graph=Depends(get_graph),
-                tracer: Tracer = Depends(telemetry.get_tracer)) -> Iterator[ServerSentEvent]:
+def chat_stream(req: ChatRequest, graph=Depends(get_graph), tracer: Tracer = Depends(telemetry.get_tracer),
+                collector: TurnLogCollector | None = Depends(telemetry.get_collector),
+                x_kosis_internal: str | None = Header(default=None)) -> Iterator[ServerSentEvent]:
     """이벤트 순서:
 
     1. `meta` — `{thread_id, trace_id}`
@@ -237,9 +275,15 @@ def chat_stream(req: ChatRequest, graph=Depends(get_graph),
 
     실행 중 예외는 `error` (`{type, detail}`)로 끝난다(상태 줄은 이미 200으로 나감)."""
     thread = req.thread_id or uuid.uuid4().hex  # no thread_id: a new conversation
+    internal = _internal(x_kosis_internal)
+    started = time.perf_counter()
     root, spans = start_turn(tracer, thread, _turn_index(graph, thread), telemetry.get_meter())
     _record_turn(root, req.question)
+    if internal:
+        root.set_attribute("kosis.internal", True)  # docs/log-schema.md 10.3: Prometheus leaves harness traffic out
     final: dict = {}
+    result: ChatResult | None = None
+    aborted, first_token_ms = False, None
     try:
         yield ServerSentEvent(event="meta", data={"thread_id": thread, "trace_id": trace_id(root)})
         for mode, chunk in graph.stream({"messages": [("user", req.question)]},
@@ -253,22 +297,34 @@ def chat_stream(req: ChatRequest, graph=Depends(get_graph),
         result = chat_result(final)
         _record_turn(root, req.question, result)
         for piece in tokens(result.answer):
+            if first_token_ms is None:  # tokens follow the whole answer today, so this is close to the latency
+                first_token_ms = round((time.perf_counter() - started) * 1000)
             yield ServerSentEvent(event="token", data={"delta": piece})
         yield ServerSentEvent(event="result", data=result)
+    except GeneratorExit:  # the client went away (Starlette closes the stream); not an Exception
+        aborted = True
+        raise
     except Exception as e:  # noqa: BLE001 - the status line is already sent; say it in the stream instead
         _fail(root, e)
         yield ServerSentEvent(event="error", data={"type": type(e).__name__, "detail": str(e)})
     finally:  # also on client disconnect (GeneratorExit): the root span always ends
         root.end()
+        _log_turn(collector, root, req, result, internal=internal, aborted=aborted, first_token_ms=first_token_ms)
 
 
 @app.post("/chat", tags=["chat"], summary="에이전트 답변 (한 번에)", response_model=ChatResponse,
           responses={**UNAVAILABLE, 500: {"description": "실행 중 오류 (trace에 기록됨)"}})
-def chat(req: ChatRequest, graph=Depends(get_graph), tracer: Tracer = Depends(telemetry.get_tracer)) -> ChatResponse:
+def chat(req: ChatRequest, graph=Depends(get_graph), tracer: Tracer = Depends(telemetry.get_tracer),
+         collector: TurnLogCollector | None = Depends(telemetry.get_collector),
+         x_kosis_internal: str | None = Header(default=None)) -> ChatResponse:
     """`/chat/stream`과 같은 그래프·같은 답. 스트림 없이 끝난 뒤 `ChatResult`를 돌려준다."""
     thread = req.thread_id or uuid.uuid4().hex
+    internal = _internal(x_kosis_internal)
     root, spans = start_turn(tracer, thread, _turn_index(graph, thread), telemetry.get_meter())
     _record_turn(root, req.question)
+    if internal:
+        root.set_attribute("kosis.internal", True)
+    result: ChatResult | None = None
     try:
         state = graph.invoke({"messages": [("user", req.question)]},
                              {"configurable": {"thread_id": thread}, "callbacks": [spans]})
@@ -280,6 +336,30 @@ def chat(req: ChatRequest, graph=Depends(get_graph), tracer: Tracer = Depends(te
         raise HTTPException(500, f"{type(e).__name__}: {e}  (trace_id {trace_id(root)})") from e
     finally:
         root.end()
+        _log_turn(collector, root, req, result, internal=internal)
+
+
+class EventsResponse(BaseModel):
+    accepted: int = Field(description="검사를 통과해 저장 대기열에 들어간 이벤트 수 (같은 event_id 중복은 1건)")
+    rejected: int = Field(description="검사에서 떨어진 수 (사유별 건수만 남고 내용은 저장하지 않음)")
+
+
+@app.post("/events", tags=["ops"], summary="화면 이벤트 수집 (T3-48)", response_model=EventsResponse, status_code=202)
+def events(batch: list[dict] = Body(..., max_length=MAX_EVENTS_PER_BATCH,
+                                    description="화면 이벤트 목록. 형식은 docs/log-schema.md 4장"),
+           collector: TurnLogCollector | None = Depends(telemetry.get_collector),
+           x_kosis_internal: str | None = Header(default=None)) -> EventsResponse:
+    """출처 클릭·답 복사·스트림 중단·피드백(👍/👎, 이유는 가려서 저장)을 받는다. 검사에 걸린 이벤트는 사유별 건수만 남긴다.
+    저장은 백그라운드라 실패해도 202를 돌려준다(화면 동작에 영향 없음). 로그 쓰기가 꺼져 있으면 검사만 한다."""
+    from datetime import datetime, timezone
+
+    from kosis_store.log_collector import check_events
+
+    if collector is None:
+        rows, rejects = check_events(batch, datetime.now(timezone.utc), is_internal=_internal(x_kosis_internal))
+        return EventsResponse(accepted=len(rows), rejected=sum(rejects.values()))
+    accepted, rejected = collector.add_events(batch, is_internal=_internal(x_kosis_internal))
+    return EventsResponse(accepted=accepted, rejected=rejected)
 
 
 @app.post("/tools/search_tables", tags=["tools"], summary="통계표 검색 (실전 2)", response_model=SearchOutput,

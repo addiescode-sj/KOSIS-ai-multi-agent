@@ -5,8 +5,8 @@ database made by this migration and one made by a phase 2 build alone hold the s
 region chunk or hypothetical question; `key` is the table key the search filters on. No approximate (HNSW) index:
 the collections are a few thousand rows and the search is an exact cosine scan.
 
-Revision ID: 0002
-Revises: 0001
+Revision ID: 0003_pgvector
+Revises: 0002_log_tables (T3-48)
 Create Date: 2026-11-20
 """
 
@@ -15,8 +15,8 @@ from alembic import op
 from pgvector.sqlalchemy import Vector
 from sqlalchemy.dialects import postgresql
 
-revision = "0002"
-down_revision = "0001"
+revision = "0003_pgvector"
+down_revision = "0002_log_tables"
 branch_labels = None
 depends_on = None
 

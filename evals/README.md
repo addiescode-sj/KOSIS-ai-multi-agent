@@ -45,7 +45,7 @@ export PYTHONPATH=.:src:vendor/phase2/src:vendor/phase1:vendor/phase1/src
   만들면 결과가 바뀌므로, 없이 만든 기준 run과는 비교하지 말고 새 기준을 다시 잡는다.
 - 벡터 DB(검색 계층, T3-47: PostgreSQL + pgvector, 옛 Chroma): Docker Desktop을 켜고 이 레포의 postgres를 띄운다.
   ```bash
-  docker compose up -d postgres && docker compose run --rm migrate    # localhost:5432, 벡터 테이블은 alembic 0002
+  docker compose up -d postgres && docker compose run --rm migrate    # localhost:5432, 벡터 테이블은 alembic 0003_pgvector
   ```
   벡터는 다시 임베딩하지 않고 옮긴다: 옛 Chroma 볼륨이 있으면 `vendor/phase2/scripts/chroma_to_pgvector.py`, 없으면 덤프 파일을 받는다(`vendor/phase2/docs/migration.md` T2-44).
   `.env`의 `DATABASE_URL`(대화 기록과 같은 DB)과 `VECTOR_COLLECTION`(옛 `CHROMA_COLLECTION`, 값 그대로)을 쓴다. Windows에서 연결이 멈추면 `localhost` 대신 `127.0.0.1`.

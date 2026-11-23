@@ -15,7 +15,7 @@ import uuid
 from datetime import datetime
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import JSON, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import DDL, JSON, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint, event, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -25,6 +25,12 @@ JSONType = JSON().with_variant(JSONB(), "postgresql")
 
 class Base(DeclarativeBase):
     pass
+
+
+# T3-47: vector_item has a pgvector column, so Base.metadata.create_all on PostgreSQL (tests, T3-48 log checks) needs
+# the extension first; alembic 0003_pgvector creates it the same way. SQLite (offline tests) skips it.
+event.listen(Base.metadata, "before_create",
+             DDL("CREATE EXTENSION IF NOT EXISTS vector").execute_if(dialect="postgresql"))
 
 
 class Conversation(Base):

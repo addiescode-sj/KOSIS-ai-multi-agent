@@ -87,3 +87,14 @@ test("an unknown spec shows its rows as a table; no rows at all gives the fixed 
   expect(view({ title: "x", mark: "bar" }).kind).toBe("none");
   expect(view({ data: { url: "data.csv" } }).kind).toBe("none");
 });
+
+test("stacked bar (T3-02 composition change): per period the part then its rest, display strings kept, no table fallback", () => {
+  const v = view(VEGA.stacked_bar);
+  expect(v.kind).toBe("stacked_bar");
+  ok(v.kind === "stacked_bar" && v.unitTitle === "값 (%)" && v.title === "서울 1인 가구 비중 비교");
+  expect(v.periods).toEqual(["2015년", "2023년"]);
+  expect(v.series.map((s) => s.name)).toEqual(["서울 1인 가구", "그 외"]);
+  expect(v.series.map((s) => s.points.map((p) => p?.display))).toEqual([["29.5%", "39.3%"], ["70.5%", "60.7%"]]);
+  // the bars add up to 100 in every period: nothing here computes, the rest is the backend's row
+  expect(v.periods.map((_, i) => v.series.reduce((sum, s) => sum + (s.points[i]?.value ?? 0), 0))).toEqual([100, 100]);
+});

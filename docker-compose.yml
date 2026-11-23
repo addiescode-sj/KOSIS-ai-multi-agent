@@ -39,7 +39,7 @@ services:
       retries: 20
 
   postgres:
-    # Conversation history and eval results (KOS-86), and the vector store (T3-47: pgvector, tables by alembic 0002).
+    # Conversation history and eval results (KOS-86), and the vector store (T3-47: pgvector, tables by alembic 0003_pgvector).
     # Was postgres:17-alpine: a volume made by that image is musl-collated; recreate it (plans/T3-47.md).
     image: pgvector/pgvector:0.8.1-pg17
     environment:
