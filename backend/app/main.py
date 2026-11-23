@@ -73,7 +73,7 @@ UNAVAILABLE = {503: {"description": "에이전트를 열 수 없음 (데이터·
 
 def _build() -> tuple[Any, dict[str, BaseTool]]:
     """The graph and the tools its nodes call, over one phase 2 SearchModule (loaded once)."""
-    from backend.app.config import agent_config, interpreter_llm, splitter_llm
+    from backend.app.config import agent_config, agent_judge, agent_steps, interpreter_llm, splitter_llm
     from kosis_rag.api import SearchModule
 
     cfg = agent_config()
@@ -82,7 +82,7 @@ def _build() -> tuple[Any, dict[str, BaseTool]]:
     # a Postgres saver once the compose Postgres is wired (KOS-121)
     graph = build_graph(search, cfg.stat_llm, retry_interval=cfg.stat_retry_interval, checkpointer=new_checkpointer(),
                         alt_table_budget=cfg.alt_table_budget, interpreter=cfg.interpreter, llm=interpreter_llm(cfg),
-                        splitter=splitter_llm(cfg))
+                        splitter=splitter_llm(cfg), judge=agent_judge(), steps=agent_steps())
     tools = [make_search_tables_tool(search),
              make_summarize_stat_tool(cfg.stat_llm, retry_interval=cfg.stat_retry_interval), make_chart_tool()]
     return graph, {t.name: t for t in tools}

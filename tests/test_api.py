@@ -74,7 +74,7 @@ def test_chat_stream_is_one_trace_with_node_tool_and_phase1_step_spans(client):
     # T3-43: what online evaluation reads back (question, final answer = the streamed result)
     assert root.attributes["kosis.turn.question"] == "2030년 출생아 수" and root.attributes["kosis.turn.answer"] == ANSWER
     by_name = {s.name: s for s in spans}
-    assert {"context", "search", "statistics", "execute_tool search_tables", "execute_tool summarize_stat"} <= set(by_name)
+    assert {"understand", "search", "statistics", "execute_tool search_tables", "execute_tool summarize_stat"} <= set(by_name)
     # phase 1 steps sit under the summarize_stat tool span, at phase 1's own offsets
     tool = by_name["execute_tool summarize_stat"]
     plan, compose = by_name["analyze.llm_plan"], by_name["compose"]
