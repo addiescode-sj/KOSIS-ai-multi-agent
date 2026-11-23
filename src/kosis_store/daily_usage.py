@@ -24,19 +24,15 @@ from kosis_store.log_metrics import day_range
 from kosis_store.log_models import DailySessionUsage, DailyUsage, RequestLog, UiEvent
 
 
-def _counts(turns: list, events: list) -> dict:
-    """Usage counts of some turns and the screen events that go with them.
+def _counts(turns: list, events: list, votes_of: dict[str, str]) -> dict:
+    """Usage counts of some turns, the click events that go with them, and the last feedback value of each answer.
 
-    Feedback counts the last feedback event of each answer (request_id), as POL-007 says a second press replaces the
-    first; `events` must be in time order. Side effects: none.
+    Feedback follows kosis_store.log_metrics (T3-49): the last feedback of an answer over all time, counted on the
+    question's day and for the question's user, so the total equals the sum over users. Side effects: none.
     """
     per_conversation = Counter(t.conversation_id for t in turns)
     clicks = Counter(e.event_type for e in events)
-    last_feedback: dict[str, str] = {}
-    for e in events:  # in time order: a later press overwrites an earlier one
-        if e.event_type == "feedback" and e.request_id:
-            last_feedback[e.request_id] = (e.props or {}).get("value")
-    votes = Counter(last_feedback.values())
+    votes = Counter(votes_of[t.request_id] for t in turns if t.request_id in votes_of)
     return {
         "questions": len(turns),
         "conversations": len(per_conversation),
@@ -57,16 +53,28 @@ def usage_of_day(session: Session, day: date) -> tuple[dict, list[dict]]:
     """
     bounds = day_range(day)
     turns = session.execute(
-        select(RequestLog.conversation_id, RequestLog.session_id, RequestLog.outcome, RequestLog.is_member)
+        select(RequestLog.request_id, RequestLog.conversation_id, RequestLog.session_id, RequestLog.outcome,
+               RequestLog.is_member)
         .where(~RequestLog.is_internal, RequestLog.created_at >= bounds["start"], RequestLog.created_at < bounds["end"])
     ).all()
-    events = session.execute(
-        select(UiEvent.event_type, UiEvent.session_id, UiEvent.request_id, UiEvent.props, UiEvent.client_ts)
+    events = session.execute(  # clicks: counted on the day they came, for the session that sent them
+        select(UiEvent.event_type, UiEvent.session_id)
         .where(~UiEvent.is_internal, UiEvent.received_at >= bounds["start"], UiEvent.received_at < bounds["end"])
-        .order_by(UiEvent.client_ts)
+        .where(UiEvent.event_type != "feedback")
     ).all()
+    # the last feedback of each of the day's answers, whenever it came (same order as log_metrics: client_ts,
+    # received_at, event_id)
+    votes_of: dict[str, str] = {}
+    ids = [t.request_id for t in turns]
+    for i in range(0, len(ids), 1000):
+        for e in session.execute(
+            select(UiEvent.request_id, UiEvent.props)
+            .where(UiEvent.event_type == "feedback", UiEvent.request_id.in_(ids[i:i + 1000]))
+            .order_by(UiEvent.client_ts, UiEvent.received_at, UiEvent.event_id)
+        ).all():
+            votes_of[e.request_id] = (e.props or {}).get("value")
 
-    total = {"day": day, **_counts(turns, events),
+    total = {"day": day, **_counts(turns, events, votes_of),
              "sessions": len({t.session_id for t in turns if t.session_id is not None})}
 
     turns_of: dict = defaultdict(list)
@@ -78,7 +86,7 @@ def usage_of_day(session: Session, day: date) -> tuple[dict, list[dict]]:
         if e.session_id is not None:
             events_of[e.session_id].append(e)
     users = [{"day": day, "session_id": sid, "is_member": any(t.is_member for t in turns_of[sid]),
-              **_counts(turns_of[sid], events_of[sid])}
+              **_counts(turns_of[sid], events_of[sid], votes_of)}
              for sid in sorted(set(turns_of) | set(events_of), key=str)]
     return total, users
 
