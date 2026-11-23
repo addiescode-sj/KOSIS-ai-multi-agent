@@ -97,7 +97,10 @@ def test_chat_answers_like_the_stream(client):
     http, _ = client
     body = http.post("/chat", json={"question": "2030년 출생아 수"}).json()
     streamed = _events(http.post("/chat/stream", json={"question": "2030년 출생아 수"}).text)[-1][1]
-    assert body["result"] == streamed and len(body["trace_id"]) == 32 and body["thread_id"]
+    # T3-51: each answer carries its own request_id (= its trace id); everything else is the same
+    assert body["result"]["request_id"] == body["trace_id"] and streamed["request_id"] != body["trace_id"]
+    assert {**body["result"], "request_id": None} == {**streamed, "request_id": None}
+    assert len(body["trace_id"]) == 32 and body["thread_id"]
 
 
 def test_the_root_span_ends_when_the_client_goes_away():
@@ -119,8 +122,8 @@ def test_tool_endpoints_call_the_tools_and_leave_a_trace_each(client):
     chart = http.post("/tools/make_chart", json={"table_key": "101_DT_1B8000H"}).json()
     assert chart["vega_lite"] is None
     roots = [s for s in memory.get_finished_spans() if s.parent is None]
-    assert [s.name for s in roots] == ["POST /tools/search_tables", "POST /tools/summarize_stat",
-                                       "POST /tools/make_chart"]
+    assert [s.name for s in roots] == ["POST /dev/tools/search_tables", "POST /dev/tools/summarize_stat",
+                                       "POST /dev/tools/make_chart"]  # T3-51: developer paths under /dev/
     assert len({s.context.trace_id for s in roots}) == 3
 
 
@@ -146,6 +149,10 @@ def test_service_tracing_never_touches_the_global_provider():
 
 def test_the_openapi_docs_list_every_endpoint():
     paths = TestClient(app).get("/openapi.json").json()["paths"]
-    assert set(paths) == {"/health", "/chat/stream", "/chat", "/tools/search_tables", "/tools/summarize_stat",
-                          "/tools/make_chart", "/threads/{thread_id}", "/events", "/ops/log-counts"}  # T3-48 log intake
+    dev = {"/dev/chat", "/dev/tools/search_tables", "/dev/tools/summarize_stat", "/dev/tools/make_chart",
+           "/dev/threads/{thread_id}"}
+    legacy = {"/chat", "/tools/search_tables", "/tools/summarize_stat", "/tools/make_chart", "/threads/{thread_id}"}
+    assert set(paths) == {"/health", "/chat/stream", "/events", "/ops/log-counts",  # T3-48 log intake
+                          "/feedback", "/chat/{thread_id}"} | dev | legacy  # T3-51 contract (docs/service/api.md)
+    assert all(op.get("deprecated") for p in legacy for op in paths[p].values())
     assert "text/event-stream" in json.dumps(paths["/chat/stream"])

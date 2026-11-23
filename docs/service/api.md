@@ -39,7 +39,7 @@
 | 요청 ID | 질문 한 건 = `request_id`. **OTel trace ID(32자리 hex)와 같은 값**이라 Jaeger에서 바로 찾을 수 있다. 로그·피드백·trace를 이 값으로 묶는다 |
 | 시간 | 저장은 UTC(ISO 8601), 집계는 KST 날짜 |
 | 표 ID | `table_key` = `"<org_id>_<tbl_id>"`. 표 ID·조사명·표 이름·링크는 서버 통계표 레지스트리에서만 나온다. 레지스트리에 없는 키는 422 |
-| 내부 트래픽 | 평가 하네스·팀원은 `X-Internal: true` 헤더를 보낸다 → 로그에 `is_internal=true`, 사용자 지표에서 제외. **[결정 필요]** F-PVOWFN 추천안은 IP 대역 식별 |
+| 내부 트래픽 | 평가 하네스·팀원은 `X-Internal: true` 헤더를 보낸다(T3-48의 `X-Kosis-Internal`도 받음) → 로그에 `is_internal=true`, 사용자 지표에서 제외. **[결정 필요]** F-PVOWFN 추천안은 IP 대역 식별 |
 | 비회원 세션 | 마지막 사용 후 **1시간** 지나면 만료(PL-BIWRBV). 만료 판정은 세션 테이블 `last_used_at` |
 
 ### 오류 응답 (SSE가 아닌 엔드포인트)
@@ -323,7 +323,7 @@ F-JJWJTZ는 "재검색·재연결 중임을 일반 진행과 구분해 보여 �
 | 로그인 쿠키 있음(회원) | 대화와 턴 연쇄 삭제(hard delete) + 체크포인트 | 내 대화가 아니면 404 |
 | 쿠키 없음(비회원) | PostgreSQL의 체크포인트·세션 행(이전 턴). 브라우저는 `sessionStorage` 목록에서 항목을 지운다 | 헤더 `X-Session-Id`가 그 `thread_id`를 만든 세션과 다르면 404 |
 
-- 응답 `204`. 운영 로그(질문 원문·피드백)는 로그 보관 기간(30일)까지 남는다(삭제 확인 창·개인정보 안내에 적음).
+- 응답 `204`. 운영 로그(질문 원문·피드백 이유)는 로그 보관 기간(**90일**, 11/23 김병석 결정 — T3-48 로그 설계와 같음)까지 남는다(삭제 확인 창·개인정보 안내에 적음). 90일이 지나면 정리 배치(`python -m kosis_store.cleanup`)가 원문만 비운다.
 
 ---
 
@@ -341,23 +341,20 @@ F-JJWJTZ는 "재검색·재연결 중임을 일반 진행과 구분해 보여 �
 }
 ```
 
-- 응답 `202 { "accepted": 1, "quarantined": 0 }`. 서버 수신 시각을 함께 저장한다. 검사에 걸린 이벤트는 버리지 않고 사유와 함께 따로 저장한다(PL-FTYVRR).
+- 응답 `202 { "accepted": 1, "rejected": 0 }`. 서버 수신 시각을 함께 저장한다. 검사에 걸린 이벤트는 **사유별 건수만** 남기고 내용은 저장하지 않는다(개인정보, `ingest_rejects`, T3-48 — 11/23 김병석 결정으로 코드 기준 유지).
 - 같은 `event_id`가 다시 오면 처음 것을 유지한다(중복 무시).
 - 전송은 백그라운드로 하고, 실패해도 답에 영향을 주지 않는다(FE는 버리고 건수만 센다).
 - 공통 필드는 F-QRZCBS와 KOS-169 로그 스키마를 따른다. IP·기기 식별자·이름·연락처는 넣지 않는다.
 
 | `event_type` | `props` |
 | -- | -- |
-| `page_view` | `screen_id` |
-| `question_submit` | `query_length`, `input_method`(`direct`·`clarify_option`), `request_id`(서버 `meta`에서 받은 값) |
-| `answer_first_token` | `elapsed_ms` (질문 전송 → 첫 `token`) |
-| `answer_done` | `elapsed_ms`, `received_nodes`, `table_keys` |
-| `stream_abort` | `elapsed_ms` |
 | `citation_click` | `table_key`, `rank` |
-| `chart_view` · `chart_interact` | `chart_type` |
-| `feedback` | `value`, `category`, `reason`(가린 값) |
 | `copy_answer` | (공통 필드만) |
-| `history_opened` | (비회원 사이드바 항목 다시 열기, F-LXYAOS) |
+| `stream_abort` | `elapsed_ms` |
+| `feedback` | `value`, 선택지, `reason`(가린 값) |
+
+- **화면 이벤트는 위 4종**이다(11/23 김병석 결정, T3-48 범위와 같음). 질문 전송·첫 글자·답 완료 시각과 입력 방식은 서버가 `request_logs`에 이미 남기므로 화면에서 다시 보내지 않는다. 페이지·차트 보기와 `history_opened`는 1차에서 받지 않는다.
+- `feedback` 이벤트의 선택지 필드 이름·코드는 지금 `choice`·`accurate`·`found_table`(T3-48)이고 `POST /feedback`의 `category` 코드(3장)로 맞출 예정이다(PR #37 병합 뒤, T3-51 K2). 피드백 저장의 기준은 `POST /feedback`이다.
 
 - 11/12 초안의 `suggestion_click`·`faq_open`은 추천 질문·FAQ 삭제로 뺐다.
 - 서버 이벤트(F-OIPLFF: `node_done`, `tool_call`, `llm_call`, `answer_result`, `error`)는 이 API를 거치지 않고 서버가 직접 적재한다.
@@ -428,19 +425,19 @@ GET /admin/feedback?value=down&from=…&to=…&cursor=…
 
 | # | 바꿀 곳 | 내용 | 담당(제안) |
 | -- | -- | -- | -- |
-| 1 | `backend/app/main.py` `ChatRequest` | `question` 최대 200자, `retry_of`, `input_method`, `X-Session-Id` 헤더 | 이선주 · 전민기 |
-| 2 | `backend/app/main.py` `/chat/stream` | `meta.expired`, `retry` 이벤트, `error.retryable`·`request_id`, `result.request_id`(= trace_id) | 이선주 · 전민기 |
+| 1 | `backend/app/main.py` `ChatRequest` | `question` 최대 200자, `retry_of`, `input_method`, `X-Session-Id` 헤더 | ✅ T3-51 (옛 본문 `session_id`도 받음) |
+| 2 | `backend/app/main.py` `/chat/stream` | `meta.expired`, `retry` 이벤트, `error.retryable`·`request_id`, `result.request_id`(= trace_id) | ✅ T3-51 (`retry` 이벤트만 그래프 담당 3-1로 남음) |
 | 3 | `graph/state.py` `ChatResult` | `outcome`에 `partial`·`general`, `answer_origin`에 `general`, `limits`, `clarify_options`, `sub_results[].chart`, `picked[].survey·url` 확인 | 전민기 |
 | 3-1 | 그래프 | 통계 외 질문 → 일반 답변 경로(숫자 검사 포함), 부분 답변 종료 경로, 재시도 상한(PL-KDMYOY) | 전민기 · 이선주 |
-| 4 | `graph/state.py` `new_checkpointer` | InMemorySaver → PostgreSQL saver(KOS-121), 세션 테이블 `last_used_at`, 1시간 만료 정리 배치 | 김병석 |
+| 4 | `graph/state.py` `new_checkpointer` | InMemorySaver → PostgreSQL saver(KOS-121), 세션 테이블 `last_used_at`, 1시간 만료 정리 배치 | ✅ T3-51 (`postgres_checkpointer`, `chat_sessions`·`chat_requests`, `python -m kosis_store.cleanup`). 평가 `build_agent()`는 메모리 그대로 |
 | 5 | `kosis_store` | `feedback`, `events`, `events_quarantine`, `daily_metrics`, `sessions`, `users` 테이블 + Alembic. 회원 대화(지금 `conversations`·`messages`에 `user_id`·`title`·`updated_at` 추가. F-JVQZTL의 `conversation_turns` 이름과 맞출지 결정) | 임도유 · 김병석 |
-| 6 | 신규 라우터 | `/feedback`, `DELETE /chat/{id}`(회원·비회원 공통), `/events`, `/auth/*`, `GET /chat` · `GET /chat/{id}` | 이선주 · 임도유 · 김병석 |
+| 6 | 신규 라우터 | `/feedback`, `DELETE /chat/{id}`(회원·비회원 공통), `/events`, `/auth/*`, `GET /chat` · `GET /chat/{id}` | `/feedback`·비회원 `DELETE /chat/{id}` ✅ T3-51 (`feedback` 테이블, alembic `0004_service_api`), `/events` ✅ T3-48. 로그인·회원 대화는 별도 태스크 |
 | 6-0 | 회원 대화 정리 배치 | `conversations.updated_at` 기준 90일 지난 대화·턴 삭제(매일), 비회원 세션 정리 배치와 같이 돈다 | 김병석 |
 | 6-1 | 카카오 앱 · 비밀값 | 카카오 개발자 앱 등록(로컬·배포 Redirect URI), `KAKAO_*`·쿠키 서명 키를 `.env.example`과 Secrets Manager에 추가 | 김병석 |
 | 6-2 | `frontend/` | 홈·사이드바 로그인 버튼, 로그인 실패 안내, 회원 사이드바 목록·이전 대화 복원, 로그아웃 | Addie Lee |
-| 6-3 | 개발용 주소 이름 변경 | `backend/app/main.py`의 `POST /chat`·`/tools/*`·`GET /threads/{id}`를 `/dev/` 아래로, 프론트 `threadLost()`는 `meta.expired`로, 표 검색은 `/dev/tools/search_tables`로(8장) | 이선주 · 임도유 |
-| 7 | 배포 설정 | 개발용 엔드포인트 `/dev/*` 배포에서 막기 | 김병석 |
-| 8 | `docker-compose.yml` · `pyproject.toml` | 아직 남은 `redis` 서비스·`REDIS_URL`·`redis>=5.0` 제거(11/08 결정) | 김병석 |
+| 6-3 | 개발용 주소 이름 변경 | `backend/app/main.py`의 `POST /chat`·`/tools/*`·`GET /threads/{id}`를 `/dev/` 아래로, 프론트 `threadLost()`는 `meta.expired`로, 표 검색은 `/dev/tools/search_tables`로(8장) | 백엔드 ✅ T3-51 (옛 주소는 deprecated로 남김 → 프론트가 바뀌면 삭제). 프론트 2곳은 임도유 |
+| 7 | 배포 설정 | 개발용 엔드포인트 `/dev/*` 배포에서 막기 | 스위치 ✅ T3-51 (`KOSIS_DISABLE_DEV_ROUTES=1`이면 `/dev/*`와 옛 주소 404). 배포 환경 값 넣기는 김병석 |
+| 8 | `docker-compose.yml` · `pyproject.toml` | 아직 남은 `redis` 서비스·`REDIS_URL`·`redis>=5.0` 제거(11/08 결정) | ✅ T3-51 |
 
 ## 10. 결정 목록
 

@@ -187,7 +187,8 @@ def test_every_turn_becomes_one_row(store):
     sid = str(uuid.uuid4())
     meta = http.post("/chat/stream", json={"question": "2030년 출생아 수 010-1234-5678", "thread_id": "t1",
                                            "session_id": sid}).text
-    http.post("/chat", json={"question": "2031년은?", "thread_id": "t1", "input_method": "clarify_option"})
+    http.post("/chat", json={"question": "2031년은?", "thread_id": "t1", "input_method": "clarify_option",
+                             "session_id": sid})  # T3-51: only the session that started t1 continues it
     turns += 2
     http, provider, collector = _service(store, _graph("refuse"))
     http.post("/chat/stream", json={"question": "오늘 날씨", "thread_id": "t2"})
