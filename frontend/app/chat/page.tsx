@@ -4,25 +4,32 @@ import { CircleCheck, MessageSquare, Search, Trash2 } from "lucide-react";
 import Link from "next/link";
 import { useState } from "react";
 
+import { KakaoLoginButton } from "@/components/account/kakao-login-button";
 import { AppShell } from "@/components/app-shell";
+import { DeleteChatDialog } from "@/components/chat/history/delete-chat-dialog";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { Dialog } from "@/components/ui/dialog";
-import { conversations, matchConversations } from "@/lib/chat/conversations";
-import { useConversations } from "@/lib/chat/use-conversations";
-import type { Conversation } from "@/types/conversation";
+import { matchConversations } from "@/lib/chat/conversations";
+import { formatDay } from "@/lib/chat/history";
+import { itemsFromBrowser } from "@/lib/chat/restore";
+import { useChatList } from "@/lib/chat/use-chat-list";
+import type { ConversationItem } from "@/types/account";
 
-// `/chat`: the conversations saved in this browser.
+// `/chat`: a member's conversations from the account (GET /chat), or a guest's saved in this browser.
 
 export default function ConversationsPage() {
-  const list = useConversations();
+  const list = useChatList();
   const [query, setQuery] = useState("");
-  const [pending, setPending] = useState<Conversation | null>(null);
+  const [pending, setPending] = useState<ConversationItem | null>(null);
   const [deleted, setDeleted] = useState(false);
-  const shown = matchConversations(list, query);
+  const q = query.trim().toLowerCase();
+  // a guest's search reads every question and answer; the server list has titles only
+  const shown = list.member
+    ? list.items.filter((c) => !q || c.title.toLowerCase().includes(q))
+    : itemsFromBrowser(matchConversations(list.browser, query));
 
   return (
-    <AppShell title="대화 목록" sub="이 브라우저에 저장된 대화">
+    <AppShell title="대화 목록" sub={list.member ? "카카오 계정에 저장된 대화" : "이 브라우저에 저장된 비회원 대화"}>
       <div className="mx-auto max-w-4xl space-y-4">
         {deleted && (
           <div role="status" className="flex items-center gap-3 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
@@ -32,11 +39,16 @@ export default function ConversationsPage() {
         <div className="flex items-center gap-3">
           <label className="flex h-10 flex-1 items-center gap-2 rounded-lg border border-line bg-white px-3 text-sm focus-within:border-brand-500">
             <Search size={16} className="text-mute" />
-            <input value={query} onChange={(e) => setQuery(e.target.value)} className="w-full outline-none" placeholder="대화 제목·내용 검색" />
+            <input value={query} onChange={(e) => setQuery(e.target.value)} className="w-full outline-none" placeholder={list.member ? "대화 제목 검색" : "대화 제목·내용 검색"} />
           </label>
-          <Button asChild><Link href="/">새 대화</Link></Button>
+          {/* eslint-disable-next-line @next/next/no-html-link-for-pages -- full load: see the "새 대화" link in app-shell */}
+          <Button asChild><a href="/">새 대화</a></Button>
         </div>
-        {shown.length ? (
+        {list.error ? (
+          <Card className="px-5 py-12 text-center text-sm text-red-600">{list.error}</Card>
+        ) : list.loading ? (
+          <Card className="px-5 py-12 text-center text-sm text-sub">대화 목록을 불러오는 중입니다…</Card>
+        ) : shown.length ? (
           <Card className="divide-y divide-line">
             {shown.map((c) => (
               <div key={c.id} className="flex items-center gap-4 px-5 py-4 hover:bg-gray-50/70">
@@ -45,9 +57,7 @@ export default function ConversationsPage() {
                 </span>
                 <Link href={`/chat/${c.id}`} className="min-w-0 flex-1">
                   <p className="truncate text-[15px] font-medium">{c.title}</p>
-                  <p className="mt-0.5 text-xs text-mute">
-                    {new Date(c.updatedAt).toLocaleString("ko-KR")} · 질문 {c.messages.filter((m) => m.role === "user").length}개
-                  </p>
+                  <p className="mt-0.5 text-xs text-mute">{formatDay(c.updatedAt)} · 질문 {c.questions}개</p>
                 </Link>
                 <Button variant="ghost" size="sm" className="text-mute hover:text-red-600" onClick={() => setPending(c)}>
                   <Trash2 />삭제
@@ -57,29 +67,17 @@ export default function ConversationsPage() {
           </Card>
         ) : (
           <Card className="px-5 py-12 text-center text-sm text-sub">
-            {list.length ? "일치하는 대화가 없어요." : "아직 저장된 대화가 없어요. 새 대화에서 질문해 보세요."}
+            {list.items.length ? "일치하는 대화가 없어요." : "아직 저장된 대화가 없어요. 새 대화에서 질문해 보세요."}
           </Card>
         )}
+        {!list.member && !list.loading && (
+          <div className="flex flex-col items-center gap-3 pt-2 text-center text-[13px] text-sub">
+            로그인하면 어느 기기에서나 대화를 볼 수 있어요.
+            <KakaoLoginButton size="sm" />
+          </div>
+        )}
       </div>
-      <Dialog.Root open={pending !== null} onOpenChange={(open) => !open && setPending(null)}>
-        <Dialog.Content variant="destructive">
-          <Dialog.Title>이 대화를 삭제하시겠습니까?</Dialog.Title>
-          <Dialog.Description>‘{pending?.title}’ 대화를 이 브라우저에서 지웁니다. 삭제하면 되돌릴 수 없습니다.</Dialog.Description>
-          <Dialog.Footer>
-            <Dialog.Close asChild><Button variant="secondary">취소</Button></Dialog.Close>
-            <Button
-              variant="destructive"
-              onClick={() => {
-                if (pending) conversations.remove(pending.id);
-                setPending(null);
-                setDeleted(true);
-              }}
-            >
-              삭제
-            </Button>
-          </Dialog.Footer>
-        </Dialog.Content>
-      </Dialog.Root>
+      <DeleteChatDialog item={pending} member={list.member} onClose={() => setPending(null)} onDeleted={() => setDeleted(true)} />
     </AppShell>
   );
 }

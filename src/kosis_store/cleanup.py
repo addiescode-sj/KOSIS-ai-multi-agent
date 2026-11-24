@@ -1,8 +1,8 @@
 """Daily cleanup job (T3-51, docs/service/api.md 0, 4; docs/log-schema.md 13; KOS-167):
 
-1. Guest conversations unused for SESSION_TTL: their checkpoint (LangGraph PostgresSaver) and chat_sessions /
+1. Guest conversations, and a member's unsaved ones, unused for SESSION_TTL: their checkpoint (LangGraph PostgresSaver) and chat_sessions /
    chat_requests rows.
-1b. Member conversations (T3-54) whose last question is older than 90 days: checkpoint, sessions, requests and saved
+1b. Member conversations (T3-54) whose last question is older than the member's limit (90 or 30 days): checkpoint, sessions, requests and saved
    turns; and logins that have expired.
 2. Raw text older than RETENTION: request_logs.question, request_rewrites.text (T3-50), ui_events.reason (T3-48 purge functions) and feedback.reason.
    Rows and the other columns stay. Running it again changes nothing.

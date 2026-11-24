@@ -631,7 +631,7 @@
           "auth"
         ],
         "summary": "카카오에서 돌아옴",
-        "description": "로그인하고 원래 화면으로 보낸다. 동의 취소·카카오 오류·위조된 요청이면 `?login=failed`를 붙여 비회원으로 돌려보낸다.",
+        "description": "로그인하고 원래 화면으로 보낸다. 동의 취소·카카오 오류·위조된 요청이면 `/login?error=kakao`(로그인 실패 안내)로 보낸다.",
         "operationId": "kakao_callback_auth_kakao_callback_get",
         "parameters": [
           {
@@ -770,7 +770,7 @@
           "auth"
         ],
         "summary": "회원 탈퇴",
-        "description": "회원 정보, 모든 기기의 로그인, 저장된 대화를 바로 지운다. 운영 로그는 계정과 이어지지 않은 채 보관 기간까지 남는다.",
+        "description": "회원 정보, 모든 기기의 로그인, 저장된 대화, 피드백을 바로 지운다. 운영 로그는 계정과 이어지지 않은 채 보관 기간까지 남는다.",
         "operationId": "withdraw_auth_me_delete",
         "responses": {
           "204": {
@@ -792,6 +792,66 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "내 설정 바꾸기",
+        "description": "보낸 항목만 바꾼다. `save_history`를 끄면 새 대화를 저장하지 않는다(이미 저장된 대화는 이어서 저장).\n`retention_days`는 마지막 질문부터 세며 매일 정리 때 적용한다.",
+        "operationId": "update_me_auth_me_patch",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MeUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MeResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "로그인이 필요함",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "로그인 확인 불가",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
                 }
               }
             }
@@ -2008,6 +2068,11 @@
             "format": "date-time",
             "title": "Updated At",
             "description": "마지막으로 물은 시각 (최근 순 정렬 기준)"
+          },
+          "questions": {
+            "type": "integer",
+            "title": "Questions",
+            "description": "질문 수"
           }
         },
         "type": "object",
@@ -2015,7 +2080,8 @@
           "id",
           "title",
           "created_at",
-          "updated_at"
+          "updated_at",
+          "questions"
         ],
         "title": "ConversationItem"
       },
@@ -2517,14 +2583,104 @@
             "type": "string",
             "title": "Nickname",
             "description": "카카오 닉네임"
+          },
+          "display_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display Name",
+            "description": "화면에 보일 이름. null이면 카카오 닉네임"
+          },
+          "color": {
+            "type": "string",
+            "enum": [
+              "blue",
+              "green",
+              "amber",
+              "rose",
+              "slate"
+            ],
+            "title": "Color",
+            "description": "프로필 색"
+          },
+          "save_history": {
+            "type": "boolean",
+            "title": "Save History",
+            "description": "새 대화를 계정에 저장할지"
+          },
+          "retention_days": {
+            "type": "integer",
+            "enum": [
+              90,
+              30
+            ],
+            "title": "Retention Days",
+            "description": "마지막 질문부터 대화를 보관하는 날 수"
           }
         },
         "type": "object",
         "required": [
           "user_id",
-          "nickname"
+          "nickname",
+          "display_name",
+          "color",
+          "save_history",
+          "retention_days"
         ],
         "title": "MeResponse"
+      },
+      "MeUpdate": {
+        "properties": {
+          "display_name": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 20,
+                "minLength": 1,
+                "pattern": "^[^\\x00-\\x1f\\x7f]+$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display Name"
+          },
+          "color": {
+            "type": "string",
+            "enum": [
+              "blue",
+              "green",
+              "amber",
+              "rose",
+              "slate"
+            ],
+            "title": "Color",
+            "default": "blue"
+          },
+          "save_history": {
+            "type": "boolean",
+            "title": "Save History",
+            "default": true
+          },
+          "retention_days": {
+            "type": "integer",
+            "enum": [
+              90,
+              30
+            ],
+            "title": "Retention Days",
+            "default": 90
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "MeUpdate",
+        "description": "PATCH /auth/me: only the fields sent are changed. Only display_name may be null (back to the Kakao nickname)."
       },
       "PeriodSpec": {
         "properties": {

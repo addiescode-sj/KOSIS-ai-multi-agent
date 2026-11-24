@@ -127,7 +127,8 @@ def safe_return(path: str | None) -> str:
 
 
 def failed_return(path: str) -> str:
-    return f"{path}{'&' if '?' in path else '?'}login=failed"
+    """The login screen with its failure notice; `next` keeps the page for another try."""
+    return "/login?" + urlencode({"error": "kakao", **({"next": path} if path != "/" else {})})
 
 
 def redirect(location: str) -> RedirectResponse:

@@ -19,6 +19,8 @@ Members (T3-54)
   member sending an id that is not theirs (an unknown id is never adopted).
 - One turn at a time: a second question while one runs raises Busy (until it ends, or BUSY_LIMIT after a crash).
 - A finished turn is saved as one transaction; a conversation deleted while it ran is not saved again.
+- With save_history off a new conversation is not saved (an already saved one goes on). Like a guest's it ends an hour
+  after the last question. retention_days (90 or 30) is the member's own limit.
 - A login is a random token; only its SHA-256 is stored. It ends LOGIN_TTL after signing in (no extension).
 """
 
@@ -45,6 +47,7 @@ SESSION_TTL = timedelta(minutes=int(os.environ.get("KOSIS_SESSION_TTL_MINUTES", 
 FEEDBACK_WINDOW = timedelta(hours=24)  # api.md 3: guest answers take feedback for 24 hours
 LOGIN_TTL = timedelta(days=14)  # T3-54 decision: 14 days from signing in
 MEMBER_RETENTION = timedelta(days=90)  # 11/19 decision
+RETENTION_DAYS = (90, 30)  # what a member may choose
 BUSY_LIMIT = timedelta(minutes=5)  # a turn that never ended (crash) stops blocking the conversation after this
 TITLE_MAX = 40
 PAGE = 30
@@ -161,8 +164,10 @@ class ServiceStore:
 
     def expired_threads(self, now: datetime) -> list[str]:
         with session_scope(self.engine) as s:
-            return list(s.scalars(select(ChatSession.thread_id).where(
-                ChatSession.user_id.is_(None), ChatSession.last_used_at < now - SESSION_TTL)))
+            idle = s.execute(select(ChatSession.thread_id, ChatSession.user_id).where(
+                ChatSession.last_used_at < now - SESSION_TTL)).all()
+            saved = set(s.scalars(select(Conversation.id).where(Conversation.user_id.is_not(None))))
+        return [t for t, user in idle if user is None or parse_id(t) not in saved]
 
     # ------------------------------------------------------------ members (T3-54)
 
@@ -212,6 +217,11 @@ class ServiceStore:
             if row is not None and row.user_id == user_id:
                 if row.busy_until is not None and _aware(row.busy_until) > now:
                     raise Busy(row.thread_id)
+                if now - _aware(row.last_used_at) > SESSION_TTL and s.get(Conversation, cid) is None:
+                    fresh = str(uuid.uuid4())  # an unsaved conversation ends like a guest's
+                    s.add(ChatSession(thread_id=fresh, user_id=user_id, created_at=now, last_used_at=now,
+                                      busy_until=now + BUSY_LIMIT))
+                    return Opened(fresh, expired=True, new=True)
                 row.last_used_at, row.busy_until = now, now + BUSY_LIMIT
                 return Opened(row.thread_id, expired=False, new=False)
             fresh = str(uuid.uuid4())
@@ -221,7 +231,8 @@ class ServiceStore:
 
     def save_turn(self, thread_id: str, user_id: uuid.UUID, question: str, answer: str, result: dict,
                   now: datetime) -> bool:
-        """Save a finished member turn (question and answer together). False: the conversation was deleted meanwhile."""
+        """Save a finished member turn (question and answer together). False: not saved, because the conversation was
+        deleted meanwhile or is a new one of a member who keeps no history."""
         cid = uuid.UUID(thread_id)
         with session_scope(self.engine) as s:
             row = s.get(ChatSession, thread_id, with_for_update=True)  # one writer per conversation
@@ -229,6 +240,8 @@ class ServiceStore:
                 return False
             conv = s.get(Conversation, cid)
             if conv is None:
+                if not s.scalar(select(User.save_history).where(User.id == user_id)):
+                    return False
                 s.add(Conversation(id=cid, user_id=user_id, title=title_of(question), created_at=now, updated_at=now))
                 s.flush()
             else:
@@ -259,6 +272,21 @@ class ServiceStore:
         more = len(rows) > limit
         rows = rows[:limit]
         return rows, _encode_cursor(rows[-1].updated_at, rows[-1].id) if more else None
+
+    def question_counts(self, ids: list[uuid.UUID]) -> dict[uuid.UUID, int]:
+        with session_scope(self.engine) as s:
+            rows = s.execute(select(Message.conversation_id, func.count()).where(
+                Message.conversation_id.in_(ids), Message.role == "user").group_by(Message.conversation_id))
+            return {cid: n for cid, n in rows}
+
+    def account(self, user_id: uuid.UUID, changes: dict | None = None) -> User | None:
+        """The member's row, after applying the settings in `changes`; None when the account is gone."""
+        with session_scope(self.engine) as s:
+            user = s.get(User, user_id)
+            if user is not None:
+                for name, value in (changes or {}).items():
+                    setattr(user, name, value)
+            return user
 
     def conversation(self, conversation_id: str, user_id: uuid.UUID) -> tuple[Conversation, list[Message]] | None:
         cid = parse_id(conversation_id)
@@ -291,14 +319,15 @@ class ServiceStore:
                 [cid for t in thread_ids if (cid := parse_id(t))])))
 
     def delete_member(self, user_id: uuid.UUID) -> None:
-        """Withdrawal: the member and, by foreign key, every login, conversation, turn and request of theirs."""
+        """Withdrawal: the member and, by foreign key, every login, conversation, turn, request and feedback of theirs."""
         with session_scope(self.engine) as s:
             s.execute(delete(User).where(User.id == user_id))
 
     def old_member_threads(self, now: datetime) -> list[str]:
         with session_scope(self.engine) as s:
-            return list(s.scalars(select(ChatSession.thread_id).where(
-                ChatSession.user_id.is_not(None), ChatSession.last_used_at < now - MEMBER_RETENTION)))
+            return list(s.scalars(select(ChatSession.thread_id).join(User, User.id == ChatSession.user_id).where(or_(
+                *(and_(User.retention_days == d, ChatSession.last_used_at < now - timedelta(days=d))
+                  for d in RETENTION_DAYS)))))
 
     def purge_logins(self, now: datetime) -> int:
         with session_scope(self.engine) as s:
@@ -319,13 +348,13 @@ class ServiceStore:
             return None if row is None else (row.session_id, _aware(row.created_at), row.user_id)
 
     def save_feedback(self, request_id: str, session_id: str | None, value: str, category: str | None,
-                      reason: str | None, now: datetime) -> tuple[uuid.UUID, bool]:
+                      reason: str | None, now: datetime, user_id: uuid.UUID | None = None) -> tuple[uuid.UUID, bool]:
         """Insert or replace the answer's feedback; returns (feedback id, replaced an earlier one)."""
         with session_scope(self.engine) as s:
             row = s.scalar(select(Feedback).where(Feedback.request_id == request_id))
             if row is None:
-                row = Feedback(id=uuid.uuid4(), request_id=request_id, session_id=session_id, value=value,
-                               category=category, reason=reason, created_at=now, updated_at=now)
+                row = Feedback(id=uuid.uuid4(), request_id=request_id, session_id=session_id, user_id=user_id,
+                               value=value, category=category, reason=reason, created_at=now, updated_at=now)
                 s.add(row)
                 return row.id, False
             row.value, row.category, row.reason, row.updated_at = value, category, reason, now

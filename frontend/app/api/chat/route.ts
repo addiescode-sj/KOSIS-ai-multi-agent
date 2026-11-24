@@ -84,7 +84,8 @@ async function threadLost(backend: string, threadId: string, signal: AbortSignal
 async function detail(res: Response): Promise<string> {
   const text = await res.text().catch(() => "");
   try {
-    return JSON.parse(text).detail ?? text;
+    const body = JSON.parse(text);
+    return body.error?.message ?? body.detail ?? text;
   } catch {
     return text || res.statusText;
   }

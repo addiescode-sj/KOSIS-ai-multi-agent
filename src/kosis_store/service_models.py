@@ -60,6 +60,8 @@ class Feedback(Base):
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     request_id: Mapped[str] = mapped_column(String(32), unique=True)
     session_id: Mapped[str | None] = mapped_column(String(64))
+    # the member who gave it: goes with the account on withdrawal, also when the conversation was deleted before
+    user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
     value: Mapped[str] = mapped_column(String(8))
     category: Mapped[str | None] = mapped_column(String(32))  # NULL: closed without a choice (api.md 10, proposal 3)
     reason: Mapped[str | None] = mapped_column(Text)  # masked; NULL after the retention period

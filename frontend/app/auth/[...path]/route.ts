@@ -8,4 +8,4 @@ async function handle(request: Request, { params }: Context) {
   return proxy(request, backendPath("/auth", (await params).path));
 }
 
-export { handle as GET, handle as POST, handle as DELETE };
+export { handle as GET, handle as POST, handle as PATCH, handle as DELETE };

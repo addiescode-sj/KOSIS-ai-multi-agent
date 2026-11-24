@@ -20,7 +20,7 @@ from backend.app.main import app, get_checkpointer
 from kosis_store import cleanup
 from kosis_store.db import session_scope
 from kosis_store.models import Conversation, LoginSession, Message, User
-from kosis_store.service_models import ChatRequestRow, ChatSession
+from kosis_store.service_models import ChatRequestRow, ChatSession, Feedback
 from kosis_store.service_store import BUSY_LIMIT, LOGIN_TTL, MEMBER_RETENTION, BadCursor, Busy, ServiceStore
 from tests.test_service_api import Service
 
@@ -99,7 +99,7 @@ def test_login_creates_one_member_and_logs_in_again_as_the_same(svc):
     assert me["nickname"] == "민수"
     svc.kakao.nickname = "민수2"
     again = svc.login().get("/auth/me").json()
-    assert again == {"user_id": me["user_id"], "nickname": "민수2"} and _count(svc, User) == 1
+    assert again == {**me, "nickname": "민수2"} and _count(svc, User) == 1
     sent = parse_qs(svc.kakao.calls[0].content.decode())
     assert sent["code"] == ["CODE"] and sent["redirect_uri"] == ["http://localhost:3000/auth/kakao/callback"]
 
@@ -132,7 +132,7 @@ def test_forged_or_cancelled_callbacks_do_not_log_in(svc, params):
     http = svc.browser()
     http.get("/auth/kakao/login", params={"next": "/chat"})
     res = http.get("/auth/kakao/callback", params=params)
-    assert res.status_code == 302 and res.headers["location"] == "/chat?login=failed"
+    assert res.status_code == 302 and res.headers["location"] == "/login?error=kakao&next=%2Fchat"
     assert http.get("/auth/me").status_code == 401 and not svc.kakao.calls
 
 
@@ -141,14 +141,14 @@ def test_a_cancel_with_the_right_state_does_not_log_in(svc):
     start = http.get("/auth/kakao/login")
     state = parse_qs(urlsplit(start.headers["location"]).query)["state"][0]
     res = http.get("/auth/kakao/callback", params={"error": "access_denied", "state": state, "code": "C"})
-    assert res.headers["location"] == "/?login=failed" and not svc.kakao.calls
+    assert res.headers["location"] == "/login?error=kakao" and not svc.kakao.calls
 
 
 def test_the_state_works_once(svc):
     http = svc.browser()
     state = parse_qs(urlsplit(http.get("/auth/kakao/login").headers["location"]).query)["state"][0]
     assert http.get("/auth/kakao/callback", params={"code": "C", "state": state}).headers["location"] == "/"
-    assert "login=failed" in http.get("/auth/kakao/callback", params={"code": "C", "state": state}).headers["location"]
+    assert "/login?error=kakao" in http.get("/auth/kakao/callback", params={"code": "C", "state": state}).headers["location"]
 
 
 @pytest.mark.parametrize("bad", ["https://evil.example", "//evil.example", "/\\evil.example", "/\t/evil.example",
@@ -160,7 +160,7 @@ def test_return_paths_stay_on_our_pages(bad):
 def test_return_paths_that_are_ours_are_kept():
     assert auth.safe_return("/chat/abc?x=1") == "/chat/abc?x=1"
     assert auth.safe_return("/%2f%2fevil.example") == "/%2f%2fevil.example"  # still a path of this site
-    assert auth.failed_return("/a?x=1") == "/a?x=1&login=failed"
+    assert auth.failed_return("/a?x=1&error=y") == "/login?error=kakao&next=%2Fa%3Fx%3D1%26error%3Dy"
 
 
 @pytest.mark.parametrize("fail", ["down", "garbage", "refused"])
@@ -170,7 +170,7 @@ def test_a_kakao_failure_leaves_a_working_guest(svc, fail, caplog):
     state = parse_qs(urlsplit(http.get("/auth/kakao/login").headers["location"]).query)["state"][0]
     with caplog.at_level(logging.DEBUG):
         res = http.get("/auth/kakao/callback", params={"code": "THE-CODE", "state": state})
-    assert res.headers["location"] == "/?login=failed"
+    assert res.headers["location"] == "/login?error=kakao"
     ours = "\n".join(r.getMessage() for r in caplog.records if r.name.startswith("kosis"))
     assert "SECRET-DETAIL" not in ours and "THE-CODE" not in ours and "csecret" not in ours and ours
     assert svc.ask_as(http)[0] == 200 and _count(svc, User) == 0
@@ -179,7 +179,7 @@ def test_a_kakao_failure_leaves_a_working_guest(svc, fail, caplog):
 def test_login_without_keys_returns_to_the_page(svc, monkeypatch):
     monkeypatch.delenv("KAKAO_CLIENT_SECRET")
     app.dependency_overrides.pop(auth.get_kakao)
-    assert svc.browser().get("/auth/kakao/login").headers["location"] == "/?login=failed"
+    assert svc.browser().get("/auth/kakao/login").headers["location"] == "/login?error=kakao"
 
 
 def test_login_ends_after_14_days(svc):
@@ -235,7 +235,7 @@ def test_turns_are_saved_listed_restored_and_continued(svc):
     status, ev = svc.ask_as(http, "2031년은?", thread.replace("-", "").upper())  # any UUID spelling is the same one
     assert status == 200 and ev["meta"]["thread_id"] == thread
     items = http.get("/chat").json()["items"]
-    assert [i["id"] for i in items] == [thread] and items[0]["title"] == "2030년 출생아 수"
+    assert [i["id"] for i in items] == [thread] and items[0]["title"] == "2030년 출생아 수" and items[0]["questions"] == 2
     detail = svc.login().get(f"/chat/{thread}").json()  # another device
     assert [(t["turn"], t["question"]) for t in detail["turns"]] == [(1, "2030년 출생아 수"), (2, "2031년은?")]
     assert detail["turns"][1]["result"] == ev["result"]
@@ -410,6 +410,76 @@ def test_cleanup_keeps_members_past_the_hour_and_drops_them_after_90_days(svc):
     cleanup.drop_threads(svc.store, svc.store.old_member_threads(later), saver)
     assert dropped == [guest, thread] and _count(svc, Conversation) == _count(svc, Message) == 0
     assert svc.store.purge_logins(later) == 1 and _count(svc, User) == 1
+
+
+# ---------------------------------------------------------------- settings (Change 1)
+
+def test_settings_are_kept_on_the_account(svc):
+    http = svc.login()
+    assert http.get("/auth/me").json() == {**http.get("/auth/me").json(), "display_name": None, "color": "blue",
+                                           "save_history": True, "retention_days": 90}
+    res = http.patch("/auth/me", json={"display_name": " 통계왕 ", "color": "rose"}, headers=ORIGIN)
+    assert res.status_code == 200 and (res.json()["display_name"], res.json()["color"]) == ("통계왕", "rose")
+    other = svc.login()  # another device; logging in again keeps them
+    assert other.get("/auth/me").json() == res.json()
+    assert other.patch("/auth/me", json={"display_name": None}, headers=ORIGIN).json()["display_name"] is None
+    assert other.get("/auth/me").json()["color"] == "rose"
+
+
+@pytest.mark.parametrize("bad", [{"display_name": " "}, {"display_name": "가" * 21}, {"display_name": "a\x00b"},
+                                 {"color": "purple"}, {"color": None}, {"save_history": None}, {"retention_days": 365},
+                                 {"nickname": "x"}, {"kakao_id": "1"}])
+def test_bad_settings_are_refused(svc, bad):
+    http = svc.login()
+    before = http.get("/auth/me").json()
+    assert http.patch("/auth/me", json=bad, headers=ORIGIN).status_code == 422 and http.get("/auth/me").json() == before
+
+
+def test_settings_need_a_login_from_our_pages(svc):
+    assert svc.browser().patch("/auth/me", json={"color": "rose"}).status_code == 401
+    assert svc.login().patch("/auth/me", json={"color": "rose"}, headers={"Origin": "https://evil"}).status_code == 403
+
+
+def test_history_off_keeps_new_conversations_unsaved_and_saved_ones_going(svc):
+    http = svc.login()
+    old = svc.ask_as(http)[1]["meta"]["thread_id"]
+    http.patch("/auth/me", json={"save_history": False}, headers=ORIGIN)
+    new = svc.ask_as(http, "2031년 출생아 수")[1]["meta"]["thread_id"]
+    assert svc.ask_as(http, "그 전해는?", new)[1]["meta"]["thread_id"] == new  # follow-ups still work
+    svc.ask_as(http, "2032년은?", old)
+    assert [(i["id"], i["questions"]) for i in http.get("/chat").json()["items"]] == [(old, 2)]
+    assert http.get(f"/chat/{new}").status_code == 404
+
+
+def test_an_unsaved_conversation_ends_after_an_hour(svc):
+    user = svc.store.member(svc.store.login("1", "a", NOW), NOW)
+    svc.store.account(user.id, {"save_history": False})
+    thread = svc.store.open_member_thread(None, user.id, NOW).thread_id
+    assert not svc.store.save_turn(thread, user.id, "q", "a", {}, NOW)
+    svc.store.end_turn(thread)
+    later = NOW + timedelta(hours=2)
+    again = svc.store.open_member_thread(thread, user.id, later)
+    assert again.expired and again.thread_id != thread and svc.store.expired_threads(later) == [thread]
+
+
+def test_thirty_days_is_the_members_own_limit(svc):
+    threads = {}
+    for kakao_id, days in (("1", 30), ("2", 90)):
+        user = svc.store.member(svc.store.login(kakao_id, "a", NOW), NOW)
+        svc.store.account(user.id, {"retention_days": days})
+        threads[days] = svc.store.open_member_thread(None, user.id, NOW).thread_id
+        svc.store.save_turn(threads[days], user.id, "q", "a", {}, NOW)
+    assert svc.store.old_member_threads(NOW + timedelta(days=31)) == [threads[30]]
+
+
+def test_withdrawal_removes_feedback_of_deleted_conversations_too(svc):
+    http = svc.login()
+    meta = svc.ask_as(http)[1]["meta"]
+    assert http.post("/feedback", json={"request_id": meta["trace_id"], "value": "up"}, headers=ORIGIN).status_code == 200
+    http.delete(f"/chat/{meta['thread_id']}", headers=ORIGIN)
+    assert _count(svc, Feedback) == 1
+    http.delete("/auth/me", headers=ORIGIN)
+    assert _count(svc, Feedback) == 0
 
 
 # ---------------------------------------------------------------- PostgreSQL

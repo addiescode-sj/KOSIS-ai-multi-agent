@@ -37,6 +37,7 @@ class ConversationItem(BaseModel):
     title: str = Field(description="첫 질문 앞부분")
     created_at: datetime
     updated_at: datetime = Field(description="마지막으로 물은 시각 (최근 순 정렬 기준)")
+    questions: int = Field(description="질문 수")
 
 
 class ConversationList(BaseModel):

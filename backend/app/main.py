@@ -47,7 +47,7 @@ from kosis_agent.retrieval.search import make_search_tables_tool
 from kosis_agent.services.chart import make_chart_tool, to_vega_lite
 from kosis_agent.services.statistics import make_summarize_stat_tool
 from kosis_rag.schemas.io import SearchOutput
-from kosis_store.auth.schemas import MeResponse
+from kosis_store.auth.schemas import MeResponse, MeUpdate
 from kosis_store.chat.schemas import (ChatRequest, ChatResponse, ConversationDetail, ConversationItem,
                                       ConversationList, ConversationTurn, ThreadMessage, ThreadState)
 from kosis_store.events.schemas import EventsResponse
@@ -511,7 +511,8 @@ def feedback(req: FeedbackRequest, request: Request, store: ServiceStore = Depen
     if not mine:
         raise ApiError(404, "not_found", "피드백을 남길 답을 찾을 수 없습니다.")
     reason = mask(req.reason.strip()) if req.reason and req.reason.strip() else None
-    feedback_id, updated = store.save_feedback(req.request_id, session, req.value, req.category, reason, _now())
+    feedback_id, updated = store.save_feedback(req.request_id, session, req.value, req.category, reason, _now(),
+                                               owner[2])
     return FeedbackResponse(feedback_id=feedback_id, updated=updated)
 
 
@@ -573,8 +574,10 @@ def list_chats(cursor: str | None = None, member: Member = Depends(require_membe
         rows, following = store.conversations(member.id, cursor)
     except BadCursor:
         raise ApiError(422, "invalid_cursor", "잘못된 cursor입니다.") from None
+    counts = store.question_counts([c.id for c in rows])
     return ConversationList(next_cursor=following, items=[
-        ConversationItem(id=c.id, title=c.title or "", created_at=c.created_at, updated_at=c.updated_at) for c in rows])
+        ConversationItem(id=c.id, title=c.title or "", created_at=c.created_at, updated_at=c.updated_at,
+                         questions=counts.get(c.id, 0)) for c in rows])
 
 
 @app.get("/chat/{thread_id}", tags=["chat"], summary="내 대화 다시 열기 (회원)", response_model=ConversationDetail,
@@ -610,7 +613,7 @@ def kakao_login(next: str | None = None, kakao: auth.Kakao = Depends(auth.get_ka
 @app.get("/auth/kakao/callback", tags=["auth"], summary="카카오에서 돌아옴", status_code=302, response_class=Response)
 def kakao_callback(request: Request, code: str | None = None, state: str | None = None, error: str | None = None,
                    kakao: auth.Kakao = Depends(auth.get_kakao), store: ServiceStore = Depends(get_store)) -> Response:
-    """로그인하고 원래 화면으로 보낸다. 동의 취소·카카오 오류·위조된 요청이면 `?login=failed`를 붙여 비회원으로 돌려보낸다."""
+    """로그인하고 원래 화면으로 보낸다. 동의 취소·카카오 오류·위조된 요청이면 `/login?error=kakao`(로그인 실패 안내)로 보낸다."""
     expected, back = auth.read_state(request)
     res = auth.redirect(auth.failed_return(back))
     if auth.same_state(expected, state) and code and not error:
@@ -644,15 +647,32 @@ def logout(request: Request, store: ServiceStore = Depends(get_store)) -> Respon
 
 
 @app.get("/auth/me", tags=["auth"], summary="내 정보", response_model=MeResponse, responses=LOGIN_REQUIRED)
-def me(response: Response, member: Member = Depends(require_member)) -> MeResponse:
+def me(response: Response, member: Member = Depends(require_member),
+       store: ServiceStore = Depends(get_store)) -> MeResponse:
     response.headers["Cache-Control"] = "no-store"
-    return MeResponse(user_id=member.id, nickname=member.nickname)
+    return _me(store.account(member.id))
+
+
+def _me(user: Any) -> MeResponse:
+    if user is None:  # withdrawn on another device meanwhile
+        raise ApiError(401, "login_required", "로그인이 필요합니다.")
+    return MeResponse(user_id=user.id, nickname=user.nickname, display_name=user.display_name, color=user.color,
+                      save_history=user.save_history, retention_days=user.retention_days)
+
+
+@app.patch("/auth/me", tags=["auth"], summary="내 설정 바꾸기", response_model=MeResponse, responses=LOGIN_REQUIRED)
+def update_me(req: MeUpdate, response: Response, member: Member = Depends(require_member),
+              store: ServiceStore = Depends(get_store)) -> MeResponse:
+    """보낸 항목만 바꾼다. `save_history`를 끄면 새 대화를 저장하지 않는다(이미 저장된 대화는 이어서 저장).
+    `retention_days`는 마지막 질문부터 세며 매일 정리 때 적용한다."""
+    response.headers["Cache-Control"] = "no-store"
+    return _me(store.account(member.id, req.model_dump(exclude_unset=True)))
 
 
 @app.delete("/auth/me", tags=["auth"], summary="회원 탈퇴", status_code=204, responses=LOGIN_REQUIRED)
 def withdraw(member: Member = Depends(require_member), store: ServiceStore = Depends(get_store),
              checkpointer: Any = Depends(get_checkpointer)) -> Response:
-    """회원 정보, 모든 기기의 로그인, 저장된 대화를 바로 지운다. 운영 로그는 계정과 이어지지 않은 채 보관 기간까지 남는다."""
+    """회원 정보, 모든 기기의 로그인, 저장된 대화, 피드백을 바로 지운다. 운영 로그는 계정과 이어지지 않은 채 보관 기간까지 남는다."""
     _drop_checkpoints(checkpointer, store.member_threads(member.id))
     store.delete_member(member.id)
     res = Response(status_code=204, headers={"Cache-Control": "no-store"})
