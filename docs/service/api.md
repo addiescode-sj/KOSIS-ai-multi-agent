@@ -431,7 +431,7 @@ GET /admin/feedback?value=down&from=…&to=…&cursor=…
 | 3-1 | 그래프 | 통계 외 질문 → 일반 답변 경로(숫자 검사 포함), 부분 답변 종료 경로, 재시도 상한(PL-KDMYOY) | 전민기 · 이선주 |
 | 4 | `graph/state.py` `new_checkpointer` | InMemorySaver → PostgreSQL saver(KOS-121), 세션 테이블 `last_used_at`, 1시간 만료 정리 배치 | ✅ T3-51 (`postgres_checkpointer`, `chat_sessions`·`chat_requests`, `python -m kosis_store.cleanup`). 평가 `build_agent()`는 메모리 그대로 |
 | 5 | `kosis_store` | `feedback`, `events`, `events_quarantine`, `daily_metrics`, `sessions`, `users` 테이블 + Alembic. 회원 대화(지금 `conversations`·`messages`에 `user_id`·`title`·`updated_at` 추가. F-JVQZTL의 `conversation_turns` 이름과 맞출지 결정) | 임도유 · 김병석 |
-| 6 | 신규 라우터 | `/feedback`, `DELETE /chat/{id}`(회원·비회원 공통), `/events`, `/auth/*`, `GET /chat` · `GET /chat/{id}` | `/feedback`·비회원 `DELETE /chat/{id}` ✅ T3-51 (`feedback` 테이블, alembic `0004_service_api`), `/events` ✅ T3-48. 로그인·회원 대화는 별도 태스크 |
+| 6 | 신규 라우터 | `/feedback`, `DELETE /chat/{id}`(회원·비회원 공통), `/events`, `/auth/*`, `GET /chat` · `GET /chat/{id}` | `/feedback`·비회원 `DELETE /chat/{id}` ✅ T3-51 (`feedback` 테이블, alembic `0005_service_api`), `/events` ✅ T3-48. 로그인·회원 대화는 별도 태스크 |
 | 6-0 | 회원 대화 정리 배치 | `conversations.updated_at` 기준 90일 지난 대화·턴 삭제(매일), 비회원 세션 정리 배치와 같이 돈다 | 김병석 |
 | 6-1 | 카카오 앱 · 비밀값 | 카카오 개발자 앱 등록(로컬·배포 Redirect URI), `KAKAO_*`·쿠키 서명 키를 `.env.example`과 Secrets Manager에 추가 | 김병석 |
 | 6-2 | `frontend/` | 홈·사이드바 로그인 버튼, 로그인 실패 안내, 회원 사이드바 목록·이전 대화 복원, 로그아웃 | Addie Lee |

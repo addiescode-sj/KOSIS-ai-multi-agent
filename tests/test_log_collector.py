@@ -300,8 +300,8 @@ def pg():
 
 
 def _turn(conversation, turn, session=None, outcome="answered", internal=False, member=False,
-          at=datetime(2026, 11, 23, 1, 0, tzinfo=timezone.utc)):
-    return RequestLog(request_id=uuid.uuid4().hex, conversation_id=conversation, turn_index=turn, session_id=session,
+          at=datetime(2026, 11, 23, 1, 0, tzinfo=timezone.utc), request_id=None):
+    return RequestLog(request_id=request_id or uuid.uuid4().hex, conversation_id=conversation, turn_index=turn, session_id=session,
                       outcome=outcome, is_internal=internal, is_member=member, created_at=at,
                       question=None if internal else "q")
 
@@ -318,8 +318,9 @@ def test_daily_usage_total_and_per_user_match_hand_counts_and_rebuild_the_same(p
     s1, s2, s3 = sorted((uuid.uuid4() for _ in range(3)), key=str)
     r1 = "cd" * 16
     rows = [
-        _turn("A", 0, s1, member=True), _turn("A", 1, s1, member=True), _turn("A", 2, s1, member=True),  # 3 turns
-        _turn("B", 0, s2, outcome="aborted"),
+        _turn("A", 0, s1, member=True, request_id=r1), _turn("A", 1, s1, member=True),
+        _turn("A", 2, s1, member=True),  # 3 turns
+        _turn("B", 0, s2, outcome="aborted", request_id="ef" * 16),
         _turn("C", 0, None),  # no session id sent: in the total only
         _turn("H", 0, None, internal=True),  # harness: left out
         _turn("D", 0, s2, at=datetime(2026, 11, 23, 15, 30, tzinfo=timezone.utc)),  # 00:30 on 11/24 KST
@@ -327,6 +328,7 @@ def test_daily_usage_total_and_per_user_match_hand_counts_and_rebuild_the_same(p
         _ui("feedback", r1, "down", session=s1, at=datetime(2026, 11, 23, 1, 0, tzinfo=timezone.utc)),
         _ui("feedback", r1, "up", session=s1, at=datetime(2026, 11, 23, 1, 5, tzinfo=timezone.utc)),  # last: up
         _ui("feedback", "ef" * 16, "down", session=s2),
+        _ui("feedback", "99" * 16, "down", session=s2),  # an answer with no question row: not counted anywhere
         _ui("copy_answer", session=s3),  # a user who only copied an answer that day
         _ui("citation_click", internal=True, session=s1),
     ]

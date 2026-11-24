@@ -93,8 +93,12 @@ def postgres_checkpointer(url: str):
     conninfo = url.replace("postgresql+psycopg://", "postgresql://", 1)
     pool = ConnectionPool(conninfo, max_size=10, open=True,
                           kwargs={"autocommit": True, "prepare_threshold": 0, "row_factory": dict_row})
-    saver = PostgresSaver(pool, serde=_serde())
-    saver.setup()
+    try:
+        saver = PostgresSaver(pool, serde=_serde())
+        saver.setup()
+    except BaseException:  # 열지 못하면 재연결을 계속 시도하는 풀을 남기지 않는다
+        pool.close()
+        raise
     return saver
 
 

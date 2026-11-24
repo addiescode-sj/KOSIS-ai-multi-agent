@@ -26,6 +26,7 @@ from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.trace import Tracer
+from sqlalchemy import Engine
 
 from kosis_agent.observability.tracing import resource as make_resource
 from kosis_store.log_collector import TurnLogCollector
@@ -33,6 +34,7 @@ from kosis_store.log_collector import TurnLogCollector
 _provider: TracerProvider | None = None
 _meters: MeterProvider | None = None
 _collector: TurnLogCollector | None = None
+_log_engine: Engine | None = None  # the collector's database
 
 
 def start() -> TracerProvider:
@@ -56,11 +58,14 @@ def start() -> TracerProvider:
 
 def stop() -> None:
     """Flush and close (FastAPI lifespan end)."""
-    global _provider, _meters, _collector
+    global _provider, _meters, _collector, _log_engine
     if _provider is not None:
         _provider.shutdown()  # also shuts the log collector down: queued rows are written first
         _provider = None
         _collector = None
+    if _log_engine is not None:  # after the queued rows are written
+        _log_engine.dispose()
+        _log_engine = None
     if _meters is not None:
         _meters.shutdown()
         _meters = None
@@ -68,12 +73,14 @@ def stop() -> None:
 
 def _make_collector() -> TurnLogCollector | None:
     """The user log writer on DATABASE_URL, or None when the database is not configured or KOSIS_USER_LOG=0."""
+    global _log_engine
     if os.environ.get("KOSIS_USER_LOG", "1").strip() == "0" or not os.environ.get("DATABASE_URL", "").strip():
         return None
     from kosis_store.db import make_engine
     from kosis_store.log_collector import db_writer
 
-    return TurnLogCollector(db_writer(make_engine()))
+    _log_engine = make_engine()
+    return TurnLogCollector(db_writer(_log_engine))
 
 
 def get_collector() -> TurnLogCollector | None:

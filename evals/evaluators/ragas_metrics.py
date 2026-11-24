@@ -21,6 +21,7 @@ CI never need it.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import math
 import re
 import sys
@@ -37,6 +38,27 @@ METRICS = RAGAS_METRICS + ID_METRICS
 RETRIEVAL = {"context_precision", "context_recall", "id_context_precision", "id_context_recall"}
 CONTEXT_FORMAT = "n2-L60:bm25_text:2000"  # table text format and per-context cap: part of the quality gate key
 MAX_CONTEXT_CHARS = 2000  # ponytail: a few tables have 16k chars of labels; the head holds name, survey, period, items
+# {model: {"input": n, "output": n}} of the judge job running in this context (T3-50): an httpx hook on the judge's
+# OpenAI client adds each response's usage, so a disk-cache hit costs 0 tokens, as it does on the bill
+_JOB_USAGE: contextvars.ContextVar[dict | None] = contextvars.ContextVar("judge_usage", default=None)
+
+
+async def record_usage(response) -> None:
+    """httpx response hook: chat (prompt/completion_tokens) and embeddings (prompt_tokens) usage, per model."""
+    usage = _JOB_USAGE.get()
+    if usage is None or response.status_code != 200:
+        return
+    await response.aread()
+    try:
+        body = response.json()
+    except ValueError:
+        return
+    u = body.get("usage") or {}
+    t = usage.setdefault(body.get("model") or "unknown", {"input": 0, "output": 0})
+    t["input"] += int(u.get("prompt_tokens") or 0)
+    t["output"] += int(u.get("completion_tokens") or 0)
+
+
 RETRIES = 2  # judge call retries after an error (2026-11-17: 3 APITimeoutError in one 90-question run)
 LOW = 0.5  # a score below this is a "low" row the report attributes to a graph node
 TEXT_NODES = ("fallback_chatbot", "compose_llm", "template", "answer_final")  # phase 1 spans that write the answer text
@@ -204,7 +226,10 @@ class RagasScorer:
 
         self.version = ragas.__version__
         cache = DiskCacheBackend(str(cache_dir)) if cache_dir else None
-        client = AsyncOpenAI()
+        from openai import DefaultAsyncHttpxClient
+
+        # the SDK's own defaults (timeout, limits) plus the usage hook
+        client = AsyncOpenAI(http_client=DefaultAsyncHttpxClient(event_hooks={"response": [record_usage]}))
         # max_tokens: faithfulness lists every claim of a long answer; the default cut one off (IncompleteOutputException)
         llm = llm_factory(model, client=client, cache=cache, temperature=0, max_tokens=8192)
         embeddings = OpenAIEmbeddings(client=client, model=embed_model, cache=cache)
@@ -212,28 +237,31 @@ class RagasScorer:
                         "context_precision": ContextPrecisionWithReference(llm=llm), "context_recall": ContextRecall(llm=llm)}
         self.concurrency = concurrency
 
-    async def _one(self, sem: asyncio.Semaphore, metric: str, kwargs: dict) -> tuple[float | None, str | None, float]:
+    async def _one(self, sem: asyncio.Semaphore, metric: str, kwargs: dict) -> tuple[float | None, str | None, float, dict]:
         async with sem:
+            usage: dict = {}
+            _JOB_USAGE.set(usage)  # this gather task's own context: concurrent jobs do not mix
             t0 = time.perf_counter()
             error = None
             for attempt in range(RETRIES + 1):  # transient API errors (timeouts) must not move the gated means
                 try:
                     value = (await self.metrics[metric].ascore(**kwargs)).value
                     value = None if value is None or (isinstance(value, float) and math.isnan(value)) else float(value)
-                    return value, None, (time.perf_counter() - t0) * 1000
+                    return value, None, (time.perf_counter() - t0) * 1000, usage
                 except Exception as e:  # one failed judgement is a None score, not a failed run
                     error = f"{type(e).__name__}: {e}"[:300]
                     if attempt < RETRIES:
                         await asyncio.sleep(2 ** attempt)
-            return None, error, (time.perf_counter() - t0) * 1000
+            return None, error, (time.perf_counter() - t0) * 1000, usage
 
-    async def ascore_all(self, jobs: list[tuple[int, str, dict]]) -> list[tuple[float | None, str | None, float]]:
+    async def ascore_all(self, jobs: list[tuple[int, str, dict]]) -> list[tuple[float | None, str | None, float, dict]]:
         sem = asyncio.Semaphore(self.concurrency)
         return await asyncio.gather(*(self._one(sem, metric, kwargs) for _, metric, kwargs in jobs))
 
     def score(self, jobs: list[tuple[int, str, dict]]) -> list[tuple[float | None, str | None, float]]:
-        """(row index, metric, ascore kwargs) -> (score or None, error or None, ms), in order."""
+        """(row index, metric, ascore kwargs) -> (score or None, error or None, ms, judge tokens by model), in order."""
         return asyncio.run(self.ascore_all(jobs))
 
 
-Scorer = Callable[[list[tuple[int, str, dict]]], list[tuple[float | None, str | None, float]]]
+# a scorer may leave out the 4th item (judge tokens by model); tests' fake judges do
+Scorer = Callable[[list[tuple[int, str, dict]]], list[tuple]]

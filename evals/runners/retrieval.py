@@ -136,6 +136,15 @@ def build(name: str, items: list[RetrievalItem], k: int) -> Runnable:
     return retrievers[name]
 
 
+def stage2_model(kind: str) -> str:
+    """The model a stage 2 kind (clova | hcx | gpt) ran on: STAGE2_MODEL or phase 2's default, the service's own
+    config, so ops prices the real model (T3-50: a local Qwen on STAGE2=gpt is not gpt). The kind when it has no config."""
+    from evals.config import stage2_llm
+
+    llm = stage2_llm(kind)
+    return llm.model if llm is not None and llm.model else kind
+
+
 def run(retriever: BaseRetriever, items: list[RetrievalItem], k: int, telemetry=None) -> list[dict]:
     """One row per question. telemetry (evals.runners.agent.tracing("l1")): each search is a live trace whose root is
     `execute_tool search_tables`, the span the service's search step has, with the graph nodes under it (T3-32)."""
@@ -143,6 +152,7 @@ def run(retriever: BaseRetriever, items: list[RetrievalItem], k: int, telemetry=
 
     tracer = telemetry[0].get_tracer("kosis-agent") if telemetry else None
     rows = []
+    models: dict[str, str] = {}  # stage 2 kind -> model, read once per run
     for n, item in enumerate(items, 1):
         counter, nodes = UsageCallback(), NodeSpans()
         root = None
@@ -170,6 +180,7 @@ def run(retriever: BaseRetriever, items: list[RetrievalItem], k: int, telemetry=
                    "trace_spans": span_rows(root, mine)}  # the live trace, for report.html
         meta = docs[0].metadata if docs else {}
         s2_calls, s2_in, s2_out, s2_retried = stage2_usage(meta)
+        s2_model = models.setdefault(meta["stage2"], stage2_model(meta["stage2"])) if meta.get("stage2_calls") else None
         rows.append({
             "qid": item.qid, "split": item.split, "qtype": item.qtype, "answerable": item.answerable,
             "no_answer_reason": item.no_answer_reason,
@@ -183,11 +194,11 @@ def run(retriever: BaseRetriever, items: list[RetrievalItem], k: int, telemetry=
             "llm_calls": counter.calls + s2_calls,
             "input_tokens": counter.input_tokens + s2_in,
             "output_tokens": counter.output_tokens + s2_out,
-            "model": ",".join(sorted(counter.models | ({meta["stage2"]} if meta.get("stage2_calls") else set()))) or None,
+            "model": ",".join(sorted(counter.models | ({s2_model} if s2_model else set()))) or None,
             # per model (T3-39): the callback's models share its totals only when there is one; rerank2 apart
             "tokens_by_model": {**({next(iter(counter.models)): {"input": counter.input_tokens, "output": counter.output_tokens}}
                                    if len(counter.models) == 1 else {}),
-                                **({meta["stage2"]: {"input": s2_in, "output": s2_out}} if meta.get("stage2_calls") else {})},
+                                **({s2_model: {"input": s2_in, "output": s2_out}} if s2_model else {})},
             "failed": error is not None,
             "retried": s2_retried,  # the stage 2 API retried (429/5xx); the retrievers themselves do not retry
             "error": error,

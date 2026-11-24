@@ -19,7 +19,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 from evals.evaluators.calculation import ERROR_INFO
-from evals.ops import read_history
+from evals.ops import cost_basis, read_history
 from evals.trace import SEARCH_TOOL, STAGES, STAT_TOOL
 
 QTYPE_ORDER = ["all", "exact_name", "concept", "sibling", "multi_condition", "period_cycle", "multi_table", "ambiguous"]
@@ -322,7 +322,10 @@ def ops_body(op: dict, rows: list[dict], history: list[dict]) -> str:
     cost = "—" if no_llm else f"{c['total']:.2f} {c['currency']}" if c["total"] is not None else "단가 미설정"
     tiles = [tile(f"{op['latency_ms']['p50']:.0f} ms", "Latency p50"), tile(f"{op['latency_ms']['p95']:.0f} ms", "Latency p95"),
              tile(f"{op['tokens']['input']:,}", "입력 토큰"), tile(f"{op['tokens']['output']:,}", "출력 토큰"),
-             tile(cost, "Cost (LLM 호출 없음)" if no_llm else "Cost"), tile(pct(op["tool_failure_rate"]), f"Tool Failure Rate ({op['tool_calls']}회)"),
+             tile(cost, "Cost (LLM 호출 없음)" if no_llm else "Cost"),
+             *([tile(f"{c['per_request_mean']:.3f} {c['currency']}", f"요청당 비용 ({op['tool_calls']}건 평균)")]
+               if c.get("per_request_mean") is not None else []),
+             tile(pct(op["tool_failure_rate"]), f"Tool Failure Rate ({op['tool_calls']}회)"),
              tile(pct(op["retry_rate"]), "재시도 비율")]
     latencies = [r["latency_ms"] for r in rows if "latency_ms" in r]
     labels, counts = histogram(latencies)
@@ -336,13 +339,19 @@ def ops_body(op: dict, rows: list[dict], history: list[dict]) -> str:
     note = "" if no_llm or c["total"] is not None else f'<p class="note">비용: 단가 미설정 모델 {esc(", ".join(c["unpriced_models"]) or "-")} → evals/pricing.json에 1K 토큰 단가를 넣으면 계산된다.</p>'
     if by_model := c.get("by_model"):  # T3-39: a turn may call two models; tokens and cost per model
         note += '<p class="note">모델별: ' + " · ".join(
-            f'{esc(m)} 입력 {t["input"]:,} / 출력 {t["output"]:,}' + (f' / {t["cost"]:.4f}' if t.get("cost") is not None else " / 단가 없음")
+            f'{esc(m)} 입력 {t["input"]:,} / 출력 {t["output"]:,}'
+            + (f' / {t["cost"]:.4f} {esc(t.get("currency") or "")}' if t.get("cost") is not None else " / 단가 없음")
             for m, t in by_model.items()) + "</p>"
+    if c["total"] is not None and (basis := cost_basis(c)):  # T3-50: the total converts currencies with a fixed rate
+        note += f'<p class="note">비용 합계는 {esc(c["currency"])} 환산{esc(basis)}. 환율은 evals/pricing.json fx.</p>'
+    cost_hist = [(h["stage"], h["cost_per_request"]) for h in history if h.get("cost_per_request") is not None]
     trends = "".join([
         f'<div class="card"><h2>{title}</h2>{trend([(h["stage"], h[key] or 0) for h in history], fmt)}</div>'
         for title, key, fmt in [("Latency p95 추이 (ms)", "latency_p95_ms", lambda v: f"{v:.0f}"),
                                 ("입력+출력 토큰 추이", "total_tokens", lambda v: f"{v:,.0f}"),
                                 ("Tool Failure Rate 추이", "tool_failure_rate", lambda v: f"{v * 100:.0f}%")]])
+    if cost_hist:  # only runs priced since T3-50: an older null is unknown, not 0
+        trends += f'<div class="card"><h2>요청당 비용 추이 ({esc(c["currency"] or "")})</h2>{trend(cost_hist, lambda v: f"{v:.3f}")}</div>'
     return "".join(['<h2 style="margin-top:28px">운영 지표</h2>', '<div class="tiles">', *tiles, "</div>", note,
                     '<div class="grid2"><div class="card"><h2>Latency 분포</h2><p class="note">x축은 구간 시작값(ms), y축은 문항 수.</p>', lat, "</div>",
                     tok_chart, "</div>",

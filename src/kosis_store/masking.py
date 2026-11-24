@@ -1,6 +1,7 @@
 """Masking of personal data in free text before it is stored (plans/T3-48.md, docs/log-schema.md 3).
 
-Free text reaches the log in two columns only: request_logs.question and feedback.reason. Both go through mask() first.
+Free text reaches the log in three columns only: request_logs.question, request_rewrites.text (the question the agent
+rewrote, T3-50) and ui_events.reason. All go through mask() first.
 The patterns are the ones a statistics question can carry by mistake: an e-mail address, a phone number, a resident
 registration number, a card number. Numbers a statistics question needs (years like 2023, ranges like 2015~2023,
 counts like 1,234,567) must stay; the tests hold both sides.

@@ -1,7 +1,7 @@
 """Conversation ownership, guest expiry, request owners and feedback for the service API (T3-51,
 docs/service/api.md sections 0, 2, 3, 4).
 
-One implementation over SQLAlchemy. With DATABASE_URL it uses the service PostgreSQL (tables by alembic 0004); without
+One implementation over SQLAlchemy. With DATABASE_URL it uses the service PostgreSQL (tables by alembic 0005); without
 it, an in-memory SQLite database, so the rules are the same in local runs and tests (state is then lost on restart).
 
 Rules
@@ -53,6 +53,10 @@ class ServiceStore:
         engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
         Base.metadata.create_all(engine, tables=[ChatSession.__table__, ChatRequestRow.__table__, Feedback.__table__])
         return cls(engine)
+
+    def close(self) -> None:
+        """Close the engine's pooled connections (server shutdown)."""
+        self.engine.dispose()
 
     # ------------------------------------------------------------ conversations
 

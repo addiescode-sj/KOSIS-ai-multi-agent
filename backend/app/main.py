@@ -168,6 +168,22 @@ def get_store() -> ServiceStore:
         return _store
 
 
+def disconnect_db() -> None:
+    """Close every database connection of this process: queued log rows are written first (telemetry.stop), then the
+    checkpointer pool and the store engine. Called by backend/app/server.py on the way out; calling it again is safe.
+    One failing close does not stop the others."""
+    global _agent, _store, _checkpointer
+    store, checkpointer = _store, _checkpointer  # no _lock: a thread stuck while opening must not block the exit
+    _agent, _store, _checkpointer = None, None, None
+    pool = getattr(checkpointer, "conn", None)  # PostgresSaver's pool; the in-memory checkpointer has none
+    for close in (telemetry.stop, getattr(pool, "close", None), getattr(store, "close", None)):
+        if close is not None:
+            try:
+                close()
+            except Exception:  # noqa: BLE001 - keep closing the rest
+                log.exception("closing the database failed")
+
+
 def _loaded() -> tuple[Any, dict[str, BaseTool]]:
     """_build() on first use (not at startup, so /health works without the vector store, data/ or keys). A failure is a 503;
     the next request tries again."""

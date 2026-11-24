@@ -4,18 +4,16 @@ Conversation ownership and guest expiry (chat_sessions), request owners for feed
 👍/👎 of each answer (feedback). The conversation state itself is in LangGraph's checkpoint tables, which
 PostgresSaver.setup() creates outside Alembic (migrations/env.py leaves them out of autogenerate).
 
-Open PR #37 (T3-49) also adds a revision after 0003_pgvector; whichever merges second moves its down_revision.
-
-Revision ID: 0004_service_api
-Revises: 0003_pgvector
+Revision ID: 0005_service_api
+Revises: 0004_request_rewrites
 Create Date: 2026-11-23
 """
 
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0004_service_api"
-down_revision = "0003_pgvector"
+revision = "0005_service_api"
+down_revision = "0004_request_rewrites"
 branch_labels = None
 depends_on = None
 

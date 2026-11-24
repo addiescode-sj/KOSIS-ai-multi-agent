@@ -2,7 +2,7 @@
 
 1. Guest conversations unused for SESSION_TTL: their checkpoint (LangGraph PostgresSaver) and chat_sessions /
    chat_requests rows.
-2. Raw text older than RETENTION: request_logs.question, ui_events.reason (T3-48 purge functions) and feedback.reason.
+2. Raw text older than RETENTION: request_logs.question, request_rewrites.text (T3-50), ui_events.reason (T3-48 purge functions) and feedback.reason.
    Rows and the other columns stay. Running it again changes nothing.
 
     python -m kosis_store.cleanup            # uses DATABASE_URL
@@ -18,7 +18,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import delete, func, select, update
 
 from kosis_store.db import make_engine, session_scope
-from kosis_store.log_metrics import purge_feedback_reasons, purge_questions
+from kosis_store.log_metrics import purge_feedback_reasons, purge_questions, purge_rewrites
 from kosis_store.service_models import ChatRequestRow, ChatSession, Feedback
 from kosis_store.service_store import ServiceStore
 
@@ -40,7 +40,8 @@ def drop_threads(store: ServiceStore, thread_ids: list[str], checkpointer=None) 
 def purge_raw_text(store: ServiceStore, before: datetime) -> dict[str, int]:
     """Clear the masked free text older than `before`; returns cleared counts per column."""
     with session_scope(store.engine) as s:
-        out = {"request_logs.question": purge_questions(s, before), "ui_events.reason": purge_feedback_reasons(s, before)}
+        out = {"request_logs.question": purge_questions(s, before), "request_rewrites.text": purge_rewrites(s, before),
+               "ui_events.reason": purge_feedback_reasons(s, before)}
         out["feedback.reason"] = s.execute(update(Feedback).where(Feedback.updated_at < before,
                                                                   Feedback.reason.is_not(None))
                                            .values(reason=None)).rowcount

@@ -16,6 +16,7 @@ import hashlib
 from typing import Any, Iterable
 
 from kosis_store.log_models import LOG_VERSION, UNKNOWN_REASON, clean_spans, failed_stage
+from kosis_store.masking import mask
 
 ROOT_SPAN = "invoke_agent"
 TOOL_PREFIX = "execute_tool "
@@ -158,5 +159,55 @@ def row_from_turn(spans: Iterable, result: dict | None, *, aborted: bool = False
         "llm_calls": len(llm),
         "input_tokens": sum(s.get("input_tokens", 0) for s in llm),
         "output_tokens": sum(s.get("output_tokens", 0) for s in llm),
+        "rewrite_kind": rewrite_kind(result),
+        "interpreted_by": r.get("interpreted_by") if result is not None else None,
         "log_version": LOG_VERSION,
     }
+
+
+# ---------------------------------------------------------------- rewritten questions (T3-50)
+def rewrite_kind(result: dict | None) -> str | None:
+    """How the agent read the turn's question, from the finished ChatResult (plans/T3-50.md, first match wins).
+
+    - chart_only: answer_origin "chart". Its resolved_question is a copy of the earlier question, not a rewrite.
+    - multi: sub_results is set (the sub-questions are the rewrites; resolved_question holds the last one only).
+    - carry_over: resolved_question differs from the question. reused_table is not read: a carry-over turn whose earlier
+      table refused searches again with the rewritten question and ends with reused_table False.
+    - reference: reused_table without a rewrite ("그 표에서 ...").
+    - new: everything else. A multi-query turn whose sub-questions all found the same table runs as one question and has
+      no sub_results, so it is "new" (the graph does not hand its sub-questions out).
+    None when the turn raised before it had a result. Side effects: none.
+    """
+    if result is None:
+        return None
+    if result.get("answer_origin") == "chart":
+        return "chart_only"
+    if result.get("sub_results") is not None:
+        return "multi"
+    resolved = result.get("resolved_question")
+    if resolved and resolved != result.get("question"):
+        return "carry_over"
+    return "reference" if result.get("reused_table") else "new"
+
+
+def rewrite_rows(request_id: str, result: dict | None, *, is_internal: bool = False) -> list[dict]:
+    """The request_rewrites rows of one turn: the masked standalone question of a carry-over turn, or one row per
+    sub-question of a multi-query turn. No rows for other turns, and none for harness traffic (no text is kept for it).
+
+    The ChatResult text is not masked yet, and a rewrite can carry words of the earlier question, so mask() runs here.
+    Side effects: none.
+    """
+    if is_internal:
+        return []
+    kind = rewrite_kind(result)
+    if kind == "carry_over":
+        texts = [("resolved", result["resolved_question"])]
+    elif kind == "multi":
+        texts = [("sub_question", s.get("question")) for s in result["sub_results"] if s.get("question")]
+    else:
+        return []
+    rows = []
+    for seq, (text_kind, raw) in enumerate(texts):
+        masked = mask(raw)
+        rows.append({"request_id": request_id, "seq": seq, "kind": text_kind, "text": masked, "text_len": len(masked)})
+    return rows
