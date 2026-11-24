@@ -1,9 +1,12 @@
 """L1 retrieval evaluator: pure functions over ranked table keys. Knows nothing about LangChain.
 
 Per item: the rank of the first gold key (any slot, any alternative), Hit@k, reciprocal rank, Complete@k (every
-slot covered in the top k) and SlotRecall@k. No answer: an item is predicted unanswerable when the top-1 score is
-below tau (or nothing came back); positives are the unanswerable items. tau is chosen on dev and applied to test,
-because BM25 scores above 0 whenever one bigram overlaps, so "no candidates" alone never refuses.
+slot covered in the top k) and SlotRecall@k. No answer (2026-11-19): no threshold. An item is predicted unanswerable
+when the search itself refused (`refused`: the graph's gate route, else the stage 2 LLM picked nothing or no table
+came back); positives are the unanswerable items. The stage 2 LLM re-ranker makes the call the old tau made.
+Overall accuracy (전체 정답률, `is_correct`): an answerable item is right when the search did not refuse and its top 1
+table is a gold key (Hit@1); an unanswerable item is right when the search refused. A failed search is wrong.
+tau (`predict_no_answer`, `best_tau`) is kept only for the slot ablation layer, which has no stage 2.
 """
 
 from __future__ import annotations
@@ -59,6 +62,7 @@ def filter_pass(item: RetrievalItem, passed: set[str]) -> bool:
 
 
 def predict_no_answer(top_score: float | None, tau: float) -> bool:
+    """Ablation layer only (no stage 2 there). L1 uses `refused`."""
     return top_score is None or top_score < tau
 
 
@@ -67,25 +71,54 @@ def llm_no_answer(row: dict) -> bool:
     return row.get("stage2_picked_n") == 0 and not row.get("stage2_error")
 
 
-def no_answer_rules(rows: list[dict]) -> dict:
-    """No-answer P/R/F1 under three rules on rows that carry `no_answer_pred` (tau) and stage 2 fields (T2-09).
+def refused(row: dict) -> bool:
+    """Did the search itself refuse (find no table)? No tau. The graph's gate span decides (route == "refuse");
+    a row without a gate span (a non-graph retriever) falls back to: the stage 2 LLM picked nothing, or no table came
+    back. A plain retriever (BM25, hybrid) therefore never refuses."""
+    gate = next((s for s in row.get("search_spans") or [] if s.get("name") == "gate"), None)
+    if gate is not None:
+        return (gate.get("attributes") or {}).get("route") == "refuse"
+    return llm_no_answer(row) or not row.get("keys")
 
-    tau: top-1 score below tau · llm: the LLM picked nothing · either: one of the two. Also per gold reason, the
-    recall of each rule (out_of_scope / no_period / no_item), how many answerable items each rule refused, and how
-    often the LLM's reason matched the gold reason on the unanswerable items it refused.
-    """
-    preds = {"tau": lambda r: r["no_answer_pred"], "llm": llm_no_answer,
-             "either": lambda r: r["no_answer_pred"] or llm_no_answer(r)}
-    out: dict = {}
-    for name, pred in preds.items():
-        m = prf([(pred(r), not r["answerable"]) for r in rows])
-        reasons = sorted({r["no_answer_reason"] for r in rows if not r["answerable"]})
-        m["recall_by_reason"] = {g: [sum(1 for r in rows if r["no_answer_reason"] == g and pred(r)),
-                                     sum(1 for r in rows if r["no_answer_reason"] == g)] for g in reasons}
-        out[name] = m
-    refused = [r for r in rows if not r["answerable"] and llm_no_answer(r)]
-    out["llm_reason_match"] = [sum(1 for r in refused if r.get("stage2_reason") == r["no_answer_reason"]), len(refused)]
-    out["llm_errors"] = sum(1 for r in rows if r.get("stage2_error"))
+
+def is_correct(row: dict, gold: set[str]) -> bool:
+    """One item of the overall accuracy. row carries answerable, keys, error and no_answer_pred (= refused(row)).
+    Answerable: not refused and the top 1 table is a gold key. Unanswerable: refused. A failed search is wrong."""
+    if row.get("error"):
+        return False
+    if row["answerable"]:
+        return not row["no_answer_pred"] and bool(row["keys"]) and row["keys"][0] in gold
+    return bool(row["no_answer_pred"])
+
+
+OUTCOMES = {"hit": "정답 (1위가 정답 표)", "wrong_table": "다른 표 1위", "wrong_refusal": "답 있는데 거절",
+            "refused": "답 없음 거절 (정답)", "answered_unanswerable": "답 없는데 표를 냄", "error": "실행 오류"}
+
+
+def outcome(row: dict) -> str:
+    """Key of OUTCOMES for a row that carries answerable, error, no_answer_pred and correct."""
+    if row.get("error"):
+        return "error"
+    if row["answerable"]:
+        return "hit" if row["correct"] else "wrong_refusal" if row["no_answer_pred"] else "wrong_table"
+    return "refused" if row["correct"] else "answered_unanswerable"
+
+
+def accuracy(rows: list[dict], by: str = "split") -> dict[str, dict]:
+    """Overall accuracy ('all' and per group under `by`): every item counts, answerable or not.
+    acc_ans = Hit@1 with refusals counted wrong; acc_una = share of unanswerable items refused (None: no such item)."""
+    groups: dict[str, list[dict]] = defaultdict(list)
+    for row in rows:
+        groups["all"].append(row)
+        groups[str(row.get(by))].append(row)
+    out = {}
+    for name, members in groups.items():
+        ans = [r for r in members if r["answerable"]]
+        una = [r for r in members if not r["answerable"]]
+        out[name] = {"n": len(members), "correct": sum(r["correct"] for r in members),
+                     "acc": sum(r["correct"] for r in members) / len(members),
+                     "n_ans": len(ans), "acc_ans": sum(r["correct"] for r in ans) / len(ans) if ans else None,
+                     "n_una": len(una), "acc_una": sum(r["correct"] for r in una) / len(una) if una else None}
     return out
 
 
@@ -101,7 +134,8 @@ def prf(pairs: list[tuple[bool, bool]]) -> dict:
 
 
 def best_tau(rows: list[tuple[float | None, bool]]) -> float:
-    """Threshold with the best no-answer F1 over (top-1 score, gold no-answer) rows; ties keep the lowest tau."""
+    """Ablation layer only. Threshold with the best no-answer F1 over (top-1 score, gold no-answer) rows; ties keep
+    the lowest tau."""
     candidates = sorted({s for s, _ in rows if s is not None}) + [float("inf")]
     best, best_f1 = 0.0, -1.0
     for tau in [0.0, *candidates]:
@@ -126,7 +160,7 @@ def aggregate(rows: list[dict], by: str = "qtype") -> dict[str, dict]:
 
 def refusal_by_reason(rows: list[dict], reasons: dict[str, str]) -> dict[str, dict]:
     """§4.3: share of unanswerable questions predicted no-answer, per gold reason (no_period must not regress when
-    filters relax). reasons = {qid: no_answer_reason}; rows carry `no_answer_pred`."""
+    filters relax). reasons = {qid: no_answer_reason}; rows carry `no_answer_pred` (L1: the search's own refusal)."""
     out: dict[str, dict] = {}
     for r in rows:
         if r["qid"] in reasons:
