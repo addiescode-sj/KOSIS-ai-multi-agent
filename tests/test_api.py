@@ -153,6 +153,7 @@ def test_the_openapi_docs_list_every_endpoint():
            "/dev/threads/{thread_id}"}
     legacy = {"/chat", "/tools/search_tables", "/tools/summarize_stat", "/tools/make_chart", "/threads/{thread_id}"}
     assert set(paths) == {"/health", "/chat/stream", "/events", "/ops/log-counts",  # T3-48 log intake
-                          "/feedback", "/chat/{thread_id}"} | dev | legacy  # T3-51 contract (docs/service/api.md)
-    assert all(op.get("deprecated") for p in legacy for op in paths[p].values())
+                          "/feedback", "/chat/{thread_id}",  # T3-51 contract (docs/service/api.md)
+                          "/auth/kakao/login", "/auth/kakao/callback", "/auth/logout", "/auth/me"} | dev | legacy  # T3-54
+    assert all(op.get("deprecated") for p in legacy for m, op in paths[p].items() if (p, m) != ("/chat", "get"))
     assert "text/event-stream" in json.dumps(paths["/chat/stream"])

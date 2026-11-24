@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import uuid
-from typing import Literal
+from datetime import datetime
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -29,6 +30,31 @@ class ChatResponse(BaseModel):
     trace_id: str = Field(description="이 요청의 OpenTelemetry trace ID = request_id (32자리 hex, Jaeger 검색)")
     expired: bool = Field(default=False, description="보낸 대화가 1시간 지나 만료돼 새 대화로 답했으면 true")
     result: ChatResult
+
+
+class ConversationItem(BaseModel):
+    id: uuid.UUID
+    title: str = Field(description="첫 질문 앞부분")
+    created_at: datetime
+    updated_at: datetime = Field(description="마지막으로 물은 시각 (최근 순 정렬 기준)")
+
+
+class ConversationList(BaseModel):
+    items: list[ConversationItem]
+    next_cursor: str | None = Field(description="다음 쪽이 있으면 `cursor`로 보낼 값")
+
+
+class ConversationTurn(BaseModel):
+    turn: int
+    question: str
+    result: dict[str, Any] = Field(description="그때의 `ChatResult` (답·차트·출처)")
+    created_at: datetime
+
+
+class ConversationDetail(BaseModel):
+    id: uuid.UUID
+    title: str
+    turns: list[ConversationTurn]
 
 
 class ThreadMessage(BaseModel):

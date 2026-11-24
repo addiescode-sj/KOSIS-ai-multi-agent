@@ -366,7 +366,7 @@ F-JJWJTZ는 "재검색·재연결 중임을 일반 진행과 구분해 보여 �
 
 **11/19 결정: 카카오 로그인과 회원 대화는 기능 동결(11/22) 전에 넣는다.** F-DCIQJH 규칙, 11/19 홈 와이어프레임("로그인 후 대화 시작"·"카카오로 로그인" 버튼)과 같다. Manyfast R-GYWJRI·PL-EQDDSH·PRD 위험 칸의 "2차, 미정" 문구는 이 결정에 맞춰 고친다.
 
-동결까지 기간이 짧으므로 카카오 앱 등록(REST API 키, Redirect URI를 로컬·배포 주소 둘 다 등록)과 비밀값(`KAKAO_CLIENT_ID`·`KAKAO_CLIENT_SECRET`·쿠키 서명 키) 주입을 먼저 끝낸다. 비밀값은 배포 환경에서 Secrets Manager로 넣는다(KOS-162).
+동결까지 기간이 짧으므로 카카오 앱 등록(REST API 키, Redirect URI를 로컬·배포 주소 둘 다 등록)과 비밀값(`KAKAO_CLIENT_ID`·`KAKAO_CLIENT_SECRET`·`KAKAO_REDIRECT_URI`) 주입을 먼저 끝낸다. 비밀값은 배포 환경에서 Secrets Manager로 넣는다(KOS-162).
 
 | 메서드 · 경로 | 설명 |
 | -- | -- |
@@ -374,10 +374,15 @@ F-JJWJTZ는 "재검색·재연결 중임을 일반 진행과 구분해 보여 �
 | `GET /auth/kakao/callback?code=…` | 토큰 교환 → `users`(카카오 회원번호·닉네임만, 이메일 없음) 확인·생성 → PostgreSQL 세션 행 + httpOnly 쿠키 → 원래 화면으로 302. 동의 취소·카카오 오류면 원래 화면에 "로그인하지 못했습니다", 비회원으로 계속 사용 |
 | `POST /auth/logout` | **현재 기기의** 세션 행 삭제, 쿠키 만료, 204. 세션이 이미 없어도 204. 다른 기기 세션은 유지 |
 | `GET /auth/me` | `{ "user_id": "…", "nickname": "…" }` 또는 401 |
+| `DELETE /auth/me` **(11/24 추가)** | 회원 탈퇴. 회원 정보·모든 기기 로그인·저장된 대화를 바로 지움, 204. 카카오 쪽 연결 해제는 사용자가 카카오에서 한다 |
 | `GET /chat?cursor=…` | 내 대화 목록(최근 순) `{ items: [{ id, title, created_at, updated_at }], next_cursor }`. `title`은 첫 질문 일부(F-JVQZTL은 AI 생성 제목도 언급 → **[결정 필요]**) |
 | `GET /chat/{id}` | 턴 목록 `{ id, title, turns: [{ turn, question, result, created_at }] }` → 질문·답·차트·출처 복원(차트 spec은 `result`에 저장됨) |
 | `DELETE /chat/{id}` | 대화와 턴 연쇄 삭제(hard delete), 204. 비회원과 같은 주소(4장) |
 
+- **11/24 결정(T3-54)**: 로그인 유지 14일(연장 없음). 쿠키는 임의 토큰이고 DB에는 해시만 둬서 서명 키가 없다. 제목은 첫 질문 앞부분, 대화 수 상한 없음.
+- 로그인 시작은 `/auth/kakao/login?next=<돌아갈 화면 경로>`(`<a>`로 이동, `<Link>` 금지). 실패하면 그 화면에 `?login=failed`가 붙는다.
+- 돌아올 주소는 프론트 주소의 `/auth/kakao/callback`(`KAKAO_REDIRECT_URI`). 프론트가 `/auth/*`를 백엔드로, `/api/conversations`·`/api/conversations/{id}`를 `GET·DELETE /chat…`으로 넘긴다.
+- 회원의 같은 대화에 답하는 중이면 다음 질문은 409 `conversation_busy`. 쿠키가 있는 쓰기 요청의 `Origin`이 다르면 403. 로그인을 확인할 수 없으면 회원 API는 503이고 `/chat/stream`은 비회원으로 답한다.
 - 로그인 없이 `GET /chat`·`GET /chat/{id}` → 401. 남의 대화 ID → 404.
 - DB 테이블 이름 `conversations`는 그대로 둔다(주소만 `/chat`).
 - 로그인 전 비회원 대화는 계정으로 옮기지 않는다(PL-BIWRBV, 로그인 화면에 안내).
@@ -434,7 +439,7 @@ GET /admin/feedback?value=down&from=…&to=…&cursor=…
 | 5 | `kosis_store` | `feedback`, `events`, `events_quarantine`, `daily_metrics`, `sessions`, `users` 테이블 + Alembic. 회원 대화(지금 `conversations`·`messages`에 `user_id`·`title`·`updated_at` 추가. F-JVQZTL의 `conversation_turns` 이름과 맞출지 결정) | 임도유 · 김병석 |
 | 6 | 신규 라우터 | `/feedback`, `DELETE /chat/{id}`(회원·비회원 공통), `/events`, `/auth/*`, `GET /chat` · `GET /chat/{id}` | `/feedback`·비회원 `DELETE /chat/{id}` ✅ T3-51 (`feedback` 테이블, alembic `0005_service_api`), `/events` ✅ T3-48. 로그인·회원 대화는 별도 태스크 |
 | 6-0 | 회원 대화 정리 배치 | `conversations.updated_at` 기준 90일 지난 대화·턴 삭제(매일), 비회원 세션 정리 배치와 같이 돈다 | 김병석 |
-| 6-1 | 카카오 앱 · 비밀값 | 카카오 개발자 앱 등록(로컬·배포 Redirect URI), `KAKAO_*`·쿠키 서명 키를 `.env.example`과 Secrets Manager에 추가 | 김병석 |
+| 6-1 | 카카오 앱 · 비밀값 | 카카오 개발자 앱 등록(로컬·배포 Redirect URI), `KAKAO_*`를 `.env.example`과 Secrets Manager에 추가 | 김병석 |
 | 6-2 | `frontend/` | 홈·사이드바 로그인 버튼, 로그인 실패 안내, 회원 사이드바 목록·이전 대화 복원, 로그아웃 | Addie Lee |
 | 6-3 | 개발용 주소 이름 변경 | `backend/app/main.py`의 `POST /chat`·`/tools/*`·`GET /threads/{id}`를 `/dev/` 아래로, 프론트 `threadLost()`는 `meta.expired`로, 표 검색은 `/dev/tools/search_tables`로(8장) | 백엔드 ✅ T3-51 (옛 주소는 deprecated로 남김 → 프론트가 바뀌면 삭제). 프론트 2곳은 임도유 |
 | 7 | 배포 설정 | 개발용 엔드포인트 `/dev/*` 배포에서 막기 | 스위치 ✅ T3-51 (`KOSIS_DISABLE_DEV_ROUTES=1`이면 `/dev/*`와 옛 주소 404). 배포 환경 값 넣기는 김병석 |

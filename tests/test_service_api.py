@@ -196,7 +196,8 @@ def test_cleanup_drops_expired_threads_and_old_text(tmp_path):
                            created_at=stale, updated_at=stale))
             s.add(Feedback(id=uuid.uuid4(), request_id="n" * 32, value="up", category="other", reason="새 이유",
                            created_at=now, updated_at=now))
-        assert cleanup.run(svc.store, now, dry_run=True) == {"expired_threads": 1, "feedback.reason": 1}
+        assert cleanup.run(svc.store, now, dry_run=True) == {"expired_threads": 1, "old_member_threads": 0,
+                                                                "feedback.reason": 1}
         counts = cleanup.run(svc.store, now, svc.checkpointer)
         assert counts["expired_threads"] == 1 and counts["feedback.reason"] == 1
         assert svc.checkpointer.get_tuple({"configurable": {"thread_id": old_thread}}) is None

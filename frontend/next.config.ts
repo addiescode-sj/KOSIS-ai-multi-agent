@@ -3,6 +3,8 @@ import type { NextConfig } from "next";
 const nextConfig: NextConfig = {
   // Minimal server bundle for the Docker image (see frontend/Dockerfile)
   output: "standalone",
+  // The Kakao callback address holds the login code: keep it out of the dev server log (T3-54)
+  logging: { incomingRequests: { ignore: [/^\/auth\//]} },
   cacheComponents: true,
   partialPrefetching: true,
   experimental: {
