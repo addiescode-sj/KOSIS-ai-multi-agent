@@ -1,6 +1,6 @@
 """T3-52: data review queries and their indexes (plans/T3-52.md option A), on PostgreSQL built by the migrations.
 
-- the index definitions as migration 0005 leaves them (and the old session index it replaces)
+- the index definitions as migration 0006 leaves them (and the old session index it replaces)
 - review_turns / review_count against hand counts (one outcome, one user's flow, last feedback, filters, pages)
 - the planner picks the review indexes on a bulk of made-up rows (no golden question, no provided data)
 """
@@ -54,7 +54,7 @@ def _indexdefs(engine) -> dict[str, str]:
 
 
 @pytest.mark.postgres
-def test_migration_0005_defines_the_review_indexes_and_reverts(migrated):
+def test_migration_0006_defines_the_review_indexes_and_reverts(migrated):
     engine, cfg = migrated
     defs = _indexdefs(engine)
     assert defs["ix_request_logs_outcome_created"].endswith("USING btree (outcome, created_at)")
@@ -64,7 +64,7 @@ def test_migration_0005_defines_the_review_indexes_and_reverts(migrated):
 
     from alembic import command
 
-    command.downgrade(cfg, "0004_request_rewrites")
+    command.downgrade(cfg, "0005_service_api")
     defs = _indexdefs(engine)
     assert "ix_request_logs_session_id" in defs
     assert not {"ix_request_logs_outcome_created", "ix_request_logs_session_created"} & set(defs)
