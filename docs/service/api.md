@@ -2,6 +2,7 @@
 
 > 상태: **확정 · 리뷰 반영** (2026-11-23, 이선주 리뷰: 사용자용 대화 주소 `/chat`으로 통일 · 개발용 `/dev/*`로 구분)
 > 기준: Manyfast `KOSIS_통계프로젝트` 11/19 기능 명세·와이어프레임(30쪽), 11/18 기획 결정, 코드 `7342c45`(main)
+> 코드에서 뽑은 문서: [openapi.json](openapi.json) · [swagger.html](swagger.html)(브라우저로 열기). 아직 만들지 않은 API(로그인·회원 대화)는 이 문서에만 있다. API를 바꾸면 `scripts/export_openapi.py`를 다시 돌린다
 > 경로: Web (Next.js) → REST API (FastAPI) → AI 파이프라인(LangGraph) · PostgreSQL(+pgvector)
 
 이 문서는 중반 이슈(KOS-159 AI 파이프라인 · KOS-160 FE · KOS-161 DB query · KOS-162 인프라)가 같은 계약을 보고 일하도록 엔드포인트와 요청·응답 형식을 정한다.

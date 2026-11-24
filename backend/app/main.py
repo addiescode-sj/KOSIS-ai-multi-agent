@@ -25,7 +25,7 @@ import uuid
 from collections import defaultdict, deque
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from typing import Any, Iterator, Literal
+from typing import Any, Iterator
 
 from fastapi import Body, Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
@@ -33,7 +33,6 @@ from fastapi.sse import EventSourceResponse, ServerSentEvent
 from langchain_core.messages import HumanMessage
 from langchain_core.tools import BaseTool
 from opentelemetry.trace import Span, Tracer
-from pydantic import BaseModel, Field
 
 import kosis_agent  # noqa: F401  (sets KOSIS_WORKSPACE before phase 1 / phase 2 modules load)
 from backend.app import telemetry
@@ -44,12 +43,16 @@ from kosis_agent.observability.tracing import LiveSpans, record_error, start_tur
 from kosis_agent.retrieval.search import make_search_tables_tool
 from kosis_agent.services.chart import make_chart_tool, to_vega_lite
 from kosis_agent.services.statistics import make_summarize_stat_tool
-from kosis_ai.schemas import StatAnswer
 from kosis_rag.schemas.io import SearchOutput
+from kosis_store.chat.schemas import ChatRequest, ChatResponse, ThreadMessage, ThreadState
+from kosis_store.events.schemas import EventsResponse
+from kosis_store.feedback.schemas import FeedbackRequest, FeedbackResponse
 from kosis_store.log_collector import MAX_EVENTS_PER_BATCH, TurnLogCollector
 from kosis_store.masking import mask
+from kosis_store.schemas import ErrorResponse
 from kosis_store.service_models import FEEDBACK_CATEGORIES
 from kosis_store.service_store import FEEDBACK_WINDOW, Opened, ServiceStore, make_service_store
+from kosis_store.tools.schemas import ChartRequest, ChartResponse, SearchRequest, StatRequest, StatResponse
 
 load_env_file()  # phase 3 reads its .env; phase 1 / 2 get objects from agent_config()
 log = logging.getLogger("kosis.api")
@@ -64,7 +67,6 @@ TAGS = [
 
 # old developer paths, kept until the frontend uses /dev/* (docs/service/api.md 8)
 LEGACY_DEV_PATHS = re.compile(r"^/(tools/.+|threads/.+)$")
-QUESTION_MAX = 200  # F-OMBGQM
 
 
 @asynccontextmanager
@@ -204,80 +206,6 @@ def get_graph():
 
 def get_tools() -> dict[str, BaseTool]:
     return _loaded()[1]
-
-
-# ---------------------------------------------------------------- request / response models
-
-class ChatRequest(BaseModel):
-    question: str = Field(min_length=1, max_length=QUESTION_MAX, description="사용자 질문 (한국어, 200자까지)",
-                          examples=["2023년 시도별 출생아 수"])
-    thread_id: str | None = Field(default=None, description="대화 ID. 같은 값을 보내면 이전 턴을 이어서 답한다. "
-                                  "없으면 새 대화로 처리하고, 만든 ID를 `meta`로 돌려준다.", examples=["c0ffee"])
-    retry_of: str | None = Field(default=None, description="\"다시 시도\"로 보낼 때 원 요청의 request_id (F-ZTUGMI)")
-    # T3-48 (KOS-170) put the session in the body; the contract sends it as the X-Session-Id header (both accepted)
-    session_id: uuid.UUID | None = Field(default=None, description="옛 방식: 브라우저 세션 UUID. `X-Session-Id` 헤더를 쓴다")
-    input_method: Literal["direct", "clarify_option"] = Field(
-        default="direct", description="direct: 직접 입력 · clarify_option: 되묻기 선택지 버튼. 로그용")
-
-
-class ChatResponse(BaseModel):
-    thread_id: str = Field(description="이 턴의 대화 ID (다음 턴에 그대로 보낸다)")
-    trace_id: str = Field(description="이 요청의 OpenTelemetry trace ID = request_id (32자리 hex, Jaeger 검색)")
-    expired: bool = Field(default=False, description="보낸 대화가 1시간 지나 만료돼 새 대화로 답했으면 true")
-    result: ChatResult
-
-
-class FeedbackRequest(BaseModel):
-    request_id: str = Field(min_length=1, max_length=32, description="답의 request_id (`meta.trace_id`)")
-    value: Literal["up", "down"]
-    category: str | None = Field(default=None, description="선택지 코드 (docs/service/api.md 3). 고르지 않고 닫으면 null")
-    reason: str | None = Field(default=None, max_length=200, description="이유 0~200자. category=other면 필수")
-
-
-class FeedbackResponse(BaseModel):
-    feedback_id: uuid.UUID
-    updated: bool = Field(description="같은 답에 이미 남긴 피드백을 바꿨으면 true")
-
-
-class SearchRequest(BaseModel):
-    question: str = Field(min_length=1, description="통계표를 찾을 질문", examples=["2023년 시도별 출생아 수"])
-
-
-class StatRequest(BaseModel):
-    question: str = Field(min_length=1, description="표 하나로 답할 질문", examples=["2023년 출생아 수"])
-    table_key: str = Field(min_length=1, description="tables.csv 키 `<org_id>_<tbl_id>` (search_tables의 picked[].key)",
-                           examples=["101_DT_1B8000H"])
-
-
-class StatResponse(BaseModel):
-    answer: StatAnswer = Field(description="실전 1 답: answered | refused(이유 포함) | clarify")
-    chart: dict | None = Field(description="실전 1 ChartSpec. `/dev/tools/make_chart`의 `chart`로 그대로 넘긴다")
-    vega_lite: dict | None = Field(description="chart를 기본 종류로 그린 Vega-Lite spec")
-
-
-class ChartRequest(BaseModel):
-    table_key: str = Field(min_length=1, description="차트를 만든 표 키", examples=["101_DT_1B8000H"])
-    chart: dict | None = Field(default=None, description="`/dev/tools/summarize_stat` 응답의 chart (ChartSpec)")
-    chart_type: str | None = Field(default=None, description="bar | line | pie. 없으면 실전 1이 고른 종류",
-                                   examples=["bar"])
-
-
-class ChartResponse(BaseModel):
-    vega_lite: dict | None = Field(description="Vega-Lite spec. 차트 데이터가 없으면 null")
-    kind: str | None = Field(description="실제로 그린 종류")
-    note: str | None = Field(description="요청한 종류로 못 그렸을 때의 안내")
-
-
-class ThreadMessage(BaseModel):
-    role: str = Field(description="user | assistant")
-    content: str
-
-
-class ThreadState(BaseModel):
-    thread_id: str
-    turns: int = Field(description="사용자 질문 수")
-    active_table: str | None = Field(description="대화가 지금 보고 있는 표 키 (다음 턴의 \"그 표\")")
-    messages: list[ThreadMessage]
 
 
 # ---------------------------------------------------------------- helpers
@@ -465,8 +393,11 @@ def chat_stream(req: ChatRequest, graph=Depends(get_graph), tracer: Tracer = Dep
 
 
 @app.post("/feedback", tags=["feedback"], summary="피드백 저장 (👍/👎 · 선택지 · 이유)", response_model=FeedbackResponse,
-          responses={404: {"description": "없거나 남의 요청, 또는 24시간 지남"}, 422: {"description": "선택지 조합 오류"},
-                     429: {"description": "같은 IP 분당 10회 초과"}})
+          responses={404: {"description": "없거나 남의 요청, 또는 24시간 지남", "model": ErrorResponse},
+                     422: {"description": "선택지 조합 오류(`error`) 또는 입력 형식 오류(`detail`)", "content": {
+                         "application/json": {"schema": {"anyOf": [{"$ref": "#/components/schemas/ErrorResponse"},
+                                                                   {"$ref": "#/components/schemas/HTTPValidationError"}]}}}},
+                     429: {"description": "같은 IP 분당 10회 초과", "model": ErrorResponse}})
 def feedback(req: FeedbackRequest, request: Request, store: ServiceStore = Depends(get_store),
              x_session_id: str | None = Header(default=None)) -> FeedbackResponse:
     """docs/service/api.md 3. 같은 `request_id`에 다시 보내면 마지막 값으로 바꾼다(`updated: true`).
@@ -504,7 +435,7 @@ def _rate_ok(ip: str) -> bool:
 
 
 @app.delete("/chat/{thread_id}", tags=["chat"], summary="대화 삭제", status_code=204,
-            responses={404: {"description": "없거나 남의 대화"}})
+            responses={404: {"description": "없거나 남의 대화", "model": ErrorResponse}})
 def delete_chat(thread_id: str, store: ServiceStore = Depends(get_store),
                 checkpointer: Any = Depends(get_checkpointer),
                 x_session_id: str | None = Header(default=None)) -> Response:
@@ -552,11 +483,6 @@ def chat(req: ChatRequest, graph=Depends(get_graph), tracer: Tracer = Depends(te
     finally:
         root.end()
         _log_turn(collector, root, req, result, internal=internal, session=session)
-
-
-class EventsResponse(BaseModel):
-    accepted: int = Field(description="검사를 통과해 저장 대기열에 들어간 이벤트 수 (같은 event_id 중복은 1건)")
-    rejected: int = Field(description="검사에서 떨어진 수 (사유별 건수만 남고 내용은 저장하지 않음)")
 
 
 @app.post("/events", tags=["ops"], summary="화면 이벤트 수집 (T3-48)", response_model=EventsResponse, status_code=202)
