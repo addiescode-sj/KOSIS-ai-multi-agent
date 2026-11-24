@@ -575,7 +575,7 @@ sum by (gen_ai_request_model) (increase(kosis_llm_finishes_total{$env, gen_ai_re
 - 공통 필터(기간·회원/비회원·내부 트래픽)는 14.1과 같다. `failed`와 `error`는 따로 저장되므로 따로 본다.
 - `request_logs`를 직접 읽는다(공통 `turns` CTE를 거치지 않음). 그래야 결과·세션 조건이 인덱스까지 내려간다.
 
-### 16.2 인덱스 (마이그레이션 `0005_review_indexes`)
+### 16.2 인덱스 (마이그레이션 `0006_review_indexes`)
 | 인덱스 | 쓰이는 곳 |
 |---|---|
 | `ix_request_logs_outcome_created (outcome, created_at)` | 드문 결과의 목록(예: 오류), 결과별 건수 |

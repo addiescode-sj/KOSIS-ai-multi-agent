@@ -203,7 +203,7 @@ def down_answers(session: Session, flt: MetricFilter, *, page: int = 1, size: in
 
 # ---------------------------------------------------------------- data review (T3-52)
 # Review lists read request_logs directly (no `turns` CTE), so the outcome / session condition reaches the table scan and
-# the composite indexes of migration 0005 serve it: (outcome, created_at) for one outcome over a period, (session_id,
+# the composite indexes of migration 0006 serve it: (outcome, created_at) for one outcome over a period, (session_id,
 # created_at) for one user's questions over a period. Each row gets its last feedback with one lookup on
 # ix_ui_events_request_id (same order as the T3-49 rule), so only the feedback of the listed questions is read. A
 # dedicated feedback index was measured and left out: it slowed the T3-49 metric queries (plans/T3-52.md Result).

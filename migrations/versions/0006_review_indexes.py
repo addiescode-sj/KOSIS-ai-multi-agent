@@ -1,7 +1,7 @@
 """data review indexes (T3-52): one outcome / one user over a period
 
-Revision ID: 0005_review_indexes
-Revises: 0004_request_rewrites
+Revision ID: 0006_review_indexes
+Revises: 0005_service_api (T3-51, merged first as #40)
 Create Date: 2026-11-24
 
 (session_id, created_at) replaces the single-column session index: its leading column serves session_id alone.
@@ -14,8 +14,8 @@ with CREATE INDEX CONCURRENTLY outside a transaction instead.
 
 from alembic import op
 
-revision = "0005_review_indexes"
-down_revision = "0004_request_rewrites"
+revision = "0006_review_indexes"
+down_revision = "0005_service_api"
 branch_labels = None
 depends_on = None
 
