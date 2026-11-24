@@ -201,6 +201,72 @@ def down_answers(session: Session, flt: MetricFilter, *, page: int = 1, size: in
     return {"total": total, "rows": rows}
 
 
+# ---------------------------------------------------------------- data review (T3-52)
+# Review lists read request_logs directly (no `turns` CTE), so the outcome / session condition reaches the table scan and
+# the composite indexes of migration 0005 serve it: (outcome, created_at) for one outcome over a period, (session_id,
+# created_at) for one user's questions over a period. Each row gets its last feedback with one lookup on
+# ix_ui_events_request_id (same order as the T3-49 rule), so only the feedback of the listed questions is read. A
+# dedicated feedback index was measured and left out: it slowed the T3-49 metric queries (plans/T3-52.md Result).
+_REVIEW_FILTER = """created_at >= :start AND created_at < :end
+      AND (:include_internal OR NOT is_internal)
+      AND (:user = 'all' OR is_member = (:user = 'member'))"""
+_REVIEW_COLUMNS = """t.request_id, t.created_at, t.conversation_id, t.turn_index, t.session_id, t.is_member, t.outcome,
+           t.reason_code, t.failed_stage, t.picked_key, t.survey_name, t.question, t.rewrite_kind,
+           f.value AS feedback, f.choice AS feedback_choice"""
+_REVIEW_FEEDBACK = """LEFT JOIN LATERAL (
+        SELECT e.props->>'value' AS value, e.props->>'choice' AS choice FROM ui_events e
+        WHERE e.request_id = t.request_id AND e.event_type = 'feedback' AND e.request_id IS NOT NULL
+        ORDER BY e.client_ts DESC, e.received_at DESC, e.event_id DESC LIMIT 1) f ON true"""
+
+
+def _review_where(outcome: str | None, session_id) -> tuple[str, dict]:
+    """The review WHERE clause and its extra parameters. A condition is written only when it is given (an "x IS NULL
+    OR" form would keep the planner from the composite index). ValueError for an unknown outcome."""
+    from kosis_store.log_models import OUTCOMES
+
+    where, extra = [_REVIEW_FILTER], {}
+    if outcome is not None:
+        if outcome not in OUTCOMES:
+            raise ValueError(f"outcome must be one of {', '.join(OUTCOMES)}, not {outcome!r}")
+        where.append("outcome = :outcome")
+        extra["outcome"] = outcome
+    if session_id is not None:
+        where.append("session_id = :session_id")
+        extra["session_id"] = session_id
+    return "\n      AND ".join(where), extra
+
+
+def review_turns(session: Session, flt: MetricFilter, *, outcome: str | None = None, session_id=None, page: int = 1,
+                 size: int = 50) -> list[dict]:
+    """Questions to review under the common filter, with their last feedback (T3-52).
+
+    outcome: one stored outcome (answered, refused, clarify, failed, error, aborted), newest first. session_id: one
+    user's questions in time order (oldest first), to follow the flow. Neither: all questions of the period, newest
+    first. The text columns are the masked values (empty after retention). Count with review_count. Side effects: reads.
+    """
+    sql, params = review_sql(flt, outcome=outcome, session_id=session_id, page=page, size=size)
+    return [dict(r) for r in session.execute(text(sql), params).mappings()]
+
+
+def review_sql(flt: MetricFilter, *, outcome: str | None = None, session_id=None, page: int = 1,
+               size: int = 50) -> tuple[str, dict]:
+    """The SQL and parameters review_turns runs (also for EXPLAIN in tests and checks). Side effects: none."""
+    if page < 1 or not 1 <= size <= 500:
+        raise ValueError("page starts at 1 and size is 1..500")
+    where, extra = _review_where(outcome, session_id)
+    order = "ASC" if session_id is not None and outcome is None else "DESC"
+    sql = (f"SELECT {_REVIEW_COLUMNS}\n    FROM request_logs t {_REVIEW_FEEDBACK}\n    WHERE {where}\n"
+           f"    ORDER BY t.created_at {order}, t.request_id LIMIT :limit OFFSET :offset")
+    return sql, {**flt.params(), **extra, "limit": size, "offset": (page - 1) * size}
+
+
+def review_count(session: Session, flt: MetricFilter, *, outcome: str | None = None, session_id=None) -> int:
+    """How many questions review_turns would list over all pages (counted apart, so a page stops early). Side
+    effects: reads."""
+    where, extra = _review_where(outcome, session_id)
+    return session.execute(text(f"SELECT count(*) FROM request_logs WHERE {where}"), {**flt.params(), **extra}).scalar()
+
+
 def tab(session: Session, name: str, flt: MetricFilter) -> dict[str, list[dict]]:
     """All metrics of a screen tab (summary, quality, usage, cost) under one filter. Side effects: reads."""
     return {m: query(session, m, flt) for m in TABS[name]}
@@ -234,19 +300,6 @@ def purge_feedback_reasons(session: Session, before: datetime) -> int:
     """Set the feedback reason of screen events received before `before` to NULL; returns how many (T3-48).
     Side effects: updates rows."""
     return session.execute(text(PURGE_FEEDBACK_REASONS), {"before": before}).rowcount
-
-
-def purge_rewrites(session: Session, before: datetime) -> int:
-    """Set the text of rewritten questions stored before `before` to NULL; returns how many (T3-50). Run it with
-    purge_questions and the same cutoff. Side effects: updates rows."""
-    return session.execute(text(PURGE_REWRITES), {"before": before}).rowcount
-
-
-def purge_texts(session: Session, before: datetime) -> dict[str, int]:
-    """All free text past retention: questions, rewritten questions, feedback reasons. Returns the rows changed per
-    column. Side effects: updates rows."""
-    return {"question": purge_questions(session, before), "rewrite": purge_rewrites(session, before),
-            "feedback_reason": purge_feedback_reasons(session, before)}
 
 
 def purge_rewrites(session: Session, before: datetime) -> int:
