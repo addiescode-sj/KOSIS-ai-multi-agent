@@ -47,7 +47,8 @@ from kosis_agent.retrieval.search import make_search_tables_tool
 from kosis_agent.services.chart import CHART_NAMES, make_chart_tool, to_vega_lite
 from kosis_agent.services.combine import combine_text, make_combine_values_tool
 from kosis_agent.services.statistics import make_summarize_stat_tool
-from kosis_chat.api import summarize_stat_run
+from kosis_agent.retrieval.together import together_keys
+from kosis_chat.api import summarize_stat_run, summarize_stats_run
 from kosis_chat.schemas.io import StatOutput
 from kosis_chat.schemas.resources import LLMConfig as StatLLMConfig
 from kosis_rag.parse.node import parse_query
@@ -99,7 +100,8 @@ def default_parser(search: Any) -> Callable[[str], ParsedQuery]:
 
 
 def build_graph(search: Any, stat_llm: StatLLMConfig, *, retry_interval: float = 0.0,
-                summarize: Callable[..., StatOutput] = summarize_stat_run, checkpointer: Any = None,
+                summarize: Callable[..., StatOutput] = summarize_stat_run,
+                summarize_many: Callable[..., StatOutput] = summarize_stats_run, checkpointer: Any = None,
                 alt_table_budget: int = 0, parse: Callable[[str], ParsedQuery] | None = None,
                 interpreter: Mode = "hybrid", llm: LLMReader | None = None, splitter: SplitReader | None = None):
     """메인 그래프를 compile한다.
@@ -125,7 +127,8 @@ def build_graph(search: Any, stat_llm: StatLLMConfig, *, retry_interval: float =
     if alt_table_budget < 0:
         raise ValueError("alt_table_budget cannot be negative")
     search_tables = make_search_tables_tool(search)
-    summarize_stat = make_summarize_stat_tool(stat_llm, retry_interval=retry_interval, summarize=summarize)
+    summarize_stat = make_summarize_stat_tool(stat_llm, retry_interval=retry_interval, summarize=summarize,
+                                              summarize_many=summarize_many)
     make_chart = make_chart_tool()
     combine_values = make_combine_values_tool()
     parse = parse or default_parser(search)
@@ -188,11 +191,14 @@ def build_graph(search: Any, stat_llm: StatLLMConfig, *, retry_interval: float =
             return None if tried else state["active_table"]
         return next((k for k in candidate_keys(state["search"]) if k not in tried), None)
 
-    def ask(question: str, key: str, config: RunnableConfig) -> StatOutput:
-        """summarize_stat 툴 한 번: 질문 + 표 키 + 그 질문을 실전 2 규칙으로 읽은 조건 4개."""
+    def ask(question: str, key: str, config: RunnableConfig, keys: list[str] | None = None) -> StatOutput:
+        """summarize_stat 툴 한 번: 질문 + 표 키 + 그 질문을 실전 2 규칙으로 읽은 조건 4개.
+        keys(T3-51)가 있으면 표 여러 개를 함께 넘긴다(첫 표 = key). 없으면 인자는 예전과 같다."""
         parsed = parse(question)
         args = {"question": question, "table_key": key,
                 **{field: getattr(parsed, field) for field in CONDITION_FIELDS}}
+        if keys:
+            args["table_keys"] = keys
         return call_tool(summarize_stat, args, config).artifact
 
     def multi_node(state: AgentState, config: RunnableConfig) -> dict:
@@ -251,10 +257,22 @@ def build_graph(search: Any, stat_llm: StatLLMConfig, *, retry_interval: float =
         """
         key = next_table(state)
         question = state.get("resolved_question") or state["question"]
+        attempts = list(state["attempts"])
+        # T3-51: 새 검색의 첫 시도이고 2차가 "함께 읽어야 할 표"를 냈으면 그 표들을 한 번에 묻는다.
+        # 멀티 답이 답함이 아니면 지금 경로(첫 표 하나)로 다시 묻는다: 한 표 경로보다 나빠지지 않게.
+        # 시도 기록의 key는 "A+B"라서 next_table이 첫 표를 건너뛰지 않는다.
+        together = [] if state["reused_table"] or attempts else together_keys(state.get("search"))
+        if together:
+            stat = ask(question, together[0], config, keys=together)
+            answer = stat.answer
+            attempts.append({"key": "+".join(together), "outcome": answer.outcome,
+                             "reason": answer.refusal.reason if answer.refusal else None})
+            if answer.outcome == "answered":
+                return {"attempts": attempts, "stat": stat, "table_key": together[0]}
         stat = ask(question, key, config)
         answer = stat.answer
-        attempts = [*state["attempts"], {"key": key, "outcome": answer.outcome,
-                                         "reason": answer.refusal.reason if answer.refusal else None}]
+        attempts = [*attempts, {"key": key, "outcome": answer.outcome,
+                                "reason": answer.refusal.reason if answer.refusal else None}]
         # 턴은 마지막으로 시도한 표에서 끝난다. 대체 표로 다시 들어오면 그 표의 결과로 덮어쓴다.
         # 평가 하네스도 "마지막 summarize_stat 호출"을 이 턴의 표·답으로 채점하므로 둘이 같은 기준이다.
         return {"attempts": attempts, "stat": stat, "table_key": key}

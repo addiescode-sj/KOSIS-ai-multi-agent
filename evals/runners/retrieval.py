@@ -63,6 +63,8 @@ STAGED = {
     "hybrid+cond-gpt": {"cond_filter": True, "rerank_ckpt": "", "stage2": "gpt"},  # same prompt, gpt-4o-mini
     # stage 1 + the OpenAI-compatible stage 2: gpt-4o-mini, or STAGE2_MODEL on STAGE2_BASE_URL (e.g. vLLM Gemma, T3-33)
     "staged-gpt": {"cond_filter": True, "stage2": "gpt"},
+    "staged-gpt-condyears": {"cond_filter": True, "cond_scope": "years", "stage2": "gpt"},  # KOS-192: only years / period filter
+    "staged-condyears": {"cond_filter": True, "cond_scope": "years", "stage2": "none"},  # KOS-192: the same up to stage 1, no LLM
 }
 
 
@@ -115,6 +117,9 @@ def build(name: str, items: list[RetrievalItem], k: int) -> Runnable:
     if name == "chroma":  # needs the shared server and CHROMA_COLLECTION (T2-26)
         return connect_chroma(k)
     if name in STAGED:  # the pipeline keeps its own pool of 50; the runner cuts to k
+        if STAGED[name].get("cond_scope", "all") != "all":  # KOS-192: the legacy path has no cond_scope
+            raise ValueError(f"preset {name!r} sets cond_scope={STAGED[name]['cond_scope']!r}, which only the graph "
+                             f"search applies: use --retriever {GRAPH}{name}")
         from kosis_rag.legacy.pipeline import build_search
 
         return build_search(_resources(name))

@@ -10,8 +10,13 @@ then reads os.environ. In the container compose passes the same file as `env_fil
     CHROMA_HOST CHROMA_PORT CHROMA_COLLECTION      Chroma server and the dense collection (default localhost:8001)
     TEXT_FORMAT EMBED_CKPT RERANK_CKPT RERANK_MODE  table text check, query embedder, stage 1 cross-encoder
     STAGE2 COND_FILTER ANSWER_K                     stage 2 LLM (clova | hcx | gpt | none), conditions, k default
+    COND_SCOPE                                      which conditions filter: all (phase 2 default) | years (KOS-192 best L1,
+                                                    the same as scripts/answerability/e2e_condyears.py)
     STAGE2_MODEL STAGE2_BASE_URL STAGE2_API_KEY     stage 2 model (default phase 2's per STAGE2), an OpenAI-compatible server
                                                     (STAGE2=gpt only) and its key (default the STAGE2 key below) (T3-33)
+    STAGE2_MAX_TOKENS                               stage 2 output cap (default phase 2's: 512 for gpt); a thinking model needs room
+    STAGE2_PROMPT                                   stage 2 prompt: v4 (default, phase 2's) | v4m (v4 + a "together" multi-table
+                                                    verdict, kosis_agent/retrieval/together.py, T3-51)
     HQ_BUILD HQ_WEIGHT HQ_BM25                      reverse HyDE question index (empty HQ_BUILD = off)
     HCX_API_KEY HCX_THINKING OPENAI_API_KEY         stage 2 keys (clova / hcx: HCX_API_KEY, gpt: OPENAI_API_KEY)
     STAT_PROVIDER STAT_MODEL STAT_RETRY_INTERVAL    phase 1 model (hcx = HCX-DASH-002 default | openai | gemma | mock), seconds before a retry
@@ -71,12 +76,20 @@ def stage2_llm(name: str) -> SearchLLMConfig | None:
 
     Stage 2's own variables (phase 2 PR #48, T3-33): STAGE2_MODEL swaps the model, STAGE2_BASE_URL points at an
     OpenAI-compatible server (phase 2 uses it only on its openai provider, i.e. STAGE2=gpt) and STAGE2_API_KEY is
-    that server's key; without it the STAGE2 name's usual key (STAGE2_KEY_ENV). evals.config calls this too."""
+    that server's key; without it the STAGE2 name's usual key (STAGE2_KEY_ENV). evals.config calls this too.
+    STAGE2_MAX_TOKENS caps the output (thinking tokens count toward it; Qwen 3.8 reasoning levels); unset = phase 2's.
+    STAGE2_PROMPT (T3-51) picks the selector phase 2 builds for hcx / gpt: v4 = phase 2's, v4m = the together selector.
+    It is applied here, before any SearchModule is built, because the service, e2e and L1 all come through this function."""
+    from kosis_agent.retrieval import together
+
+    together.apply(_env("STAGE2_PROMPT"))
     if name in OFF or name not in selectors.LLM_RERANKERS:
         return None
-    return selectors.default_config(name, api_key=_env("STAGE2_API_KEY") or _env(STAGE2_KEY_ENV[name]),
-                                    thinking=(_env("HCX_THINKING") or "none").strip().lower(),
-                                    model=_env("STAGE2_MODEL"), base_url=_env("STAGE2_BASE_URL"))
+    config = selectors.default_config(name, api_key=_env("STAGE2_API_KEY") or _env(STAGE2_KEY_ENV[name]),
+                                      thinking=(_env("HCX_THINKING") or "none").strip().lower(),
+                                      model=_env("STAGE2_MODEL"), base_url=_env("STAGE2_BASE_URL"))
+    max_tokens = (_env("STAGE2_MAX_TOKENS") or "").strip()
+    return config.model_copy(update={"max_tokens": int(max_tokens)}) if max_tokens else config
 
 
 # STAT_PROVIDER=openai | gemma (T3-28): phase 1 on an OpenAI-compatible chat model through the provider this repo
@@ -152,7 +165,10 @@ def agent_config() -> AgentConfig:
     """
     root = workspace()
     data = root / "data"
+    # COND_SCOPE (KOS-192 best L1: years) is passed only when set: a phase 2 without the cond_scope option keeps working
+    scope = (_env("COND_SCOPE") or "").strip().lower()
     options = SearchOptions(
+        **({"cond_scope": scope} if scope else {}),
         cond_filter=(_env("COND_FILTER") or "on").strip().lower() not in OFF,
         rerank_mode=_env("RERANK_MODE") or "blend",
         stage2=(_env("STAGE2") or "none").strip().lower(),

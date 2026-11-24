@@ -9,7 +9,7 @@ from backend.app import config
 NAMES = ("KOSIS_WORKSPACE", "CHROMA_HOST", "CHROMA_PORT", "CHROMA_COLLECTION", "TEXT_FORMAT", "EMBED_CKPT",
          "RERANK_CKPT", "RERANK_MODE", "STAGE2", "COND_FILTER", "ANSWER_K", "HQ_BUILD", "HQ_WEIGHT", "HQ_BM25",
          "HCX_API_KEY", "HCX_THINKING", "OPENAI_API_KEY", "STAT_PROVIDER", "STAT_MODEL", "STAT_RETRY_INTERVAL",
-         "STAGE2_MODEL", "STAGE2_BASE_URL", "STAGE2_API_KEY")
+         "STAGE2_MODEL", "STAGE2_BASE_URL", "STAGE2_API_KEY", "COND_SCOPE", "STAGE2_PROMPT")
 
 
 @pytest.fixture
@@ -92,3 +92,10 @@ def test_stage2_model_server_and_key_have_their_own_variables(env):
     env.delenv("STAGE2_API_KEY")  # no stage 2 key: the STAGE2 name's usual key
     assert config.stage2_llm("gpt").api_key.get_secret_value() == "sk-openai"
     assert config.stage2_llm("none") is None
+
+
+def test_cond_scope_years_is_the_best_l1_setting_for_the_service_graph(env):
+    """T3-51: COND_SCOPE=years gives build_agent() the KOS-192 setting without the e2e_condyears builder."""
+    assert config.agent_config().options.cond_scope == "all"  # unset = phase 2 default
+    env.setenv("COND_SCOPE", "Years")
+    assert config.agent_config().options.cond_scope == "years"

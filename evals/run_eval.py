@@ -14,7 +14,7 @@
     python -m evals.run_eval --layer agent --stage T3-07-react --agent <module:function> --repeat 3   # live, pass^3
     python -m evals.run_eval --layer ragas --stage T3-19-ragas --from-run <e2e run folder>          # Ragas judge (T3-19)
 
-L1 runs every item (BM25 is fast) so the no-answer threshold tau is chosen on dev and applied to the split shown.
+L1 runs every item and grades the split shown: overall accuracy, Hit@k and the search's own refusals (no tau).
 Every run writes results.jsonl, manifest.json, ops.json (latency, tokens, cost, tool failure rate), report.md and
 report.html (charts, evals.report_html), and appends one aggregate line to evals/reports/ops_history.jsonl.
 Run folders hold question text and table keys and stay out of git; ops_history holds aggregates only.
@@ -109,8 +109,8 @@ def main(argv: list[str] | None = None) -> Path:
     parser.add_argument("--split", choices=("dev", "test", "all"), help="default: dev for l012 (the slot baselines), test otherwise")
     parser.add_argument("--retriever", default="bm25-catalog", help="l1, e2e: oracle (l1 only) | bm25-catalog | bm25-record | chroma")
     parser.add_argument("--k", type=int, help="default 10; ragas: 5 (tables given to the judge as contexts)")
-    parser.add_argument("--tau", type=float, help="l1: fixed no-answer threshold (default: best F1 on dev)")
-    parser.add_argument("--from-run", type=Path, help="l1, l3, e2e, agent: grade a past run folder instead of searching / calling the model (l1 reuses its retriever, k and tau)")
+    parser.add_argument("--tau", type=float, help="ablation: fixed no-answer threshold (default: best F1 on dev). l1 has no tau: it grades the search's own refusals")
+    parser.add_argument("--from-run", type=Path, help="l1, l3, e2e, agent: grade a past run folder instead of searching / calling the model (l1 reuses its retriever and k)")
     parser.add_argument("--slot-source", choices=("gold", "pred"), default="pred", help="ablation: query_golden labels or parse_query")
     parser.add_argument("--slots", default="year,cycle,region,dimension,measure", help="ablation: slots to switch")
     parser.add_argument("--golden", type=Path, default=GOLDEN, help="l0, l1, ablation, l012, e2e (§6.3 table slots by qid): retrieval golden (v2: retrieval_golden_v2.jsonl)")
@@ -210,6 +210,8 @@ def main(argv: list[str] | None = None) -> Path:
         "vendor_phase2": git("-C", "vendor/phase2", "rev-parse", "HEAD"),
         "retriever": args.retriever if args.layer in ("l1", "ablation", "l012") else None,
         "top_k": args.k if args.layer in ("l1", "ablation", "l012", "ragas") else None,
+        # which stage 2 model / server / output cap ran (the key is not written)
+        "stage2_llm": {k.lower(): os.environ.get(f"STAGE2_{k}") for k in ("MODEL", "BASE_URL", "MAX_TOKENS")},
         "slot_source": "gold,pred" if args.layer == "l012" else args.slot_source if slotted else None,
         "slots": args.slots if slotted else None,
         "from_run": str(args.from_run) if args.from_run else None,

@@ -194,9 +194,12 @@ def l1_body(m: dict, rows: list[dict]) -> str:
     s = m["summary"]
     agg = s["metrics"]
     a = agg.get("all", {})
-    tiles = [tile(pct(a.get("hit@1", 0)), "Hit@1"), tile(pct(a.get("hit@5", 0)), "Hit@5"), tile(f"{a.get('rr', 0):.3f}", "MRR"),
+    acc = s.get("accuracy") or {}  # 2026-11-19: overall accuracy, no tau (older runs have neither)
+    acc_all = acc.get("all")
+    tiles = ([tile(pct(acc_all["acc"]), f"전체 정답률 ({acc_all['correct']}/{acc_all['n']})")] if acc_all else []) + [
+             tile(pct(a.get("hit@1", 0)), "Hit@1"), tile(pct(a.get("hit@5", 0)), "Hit@5"), tile(f"{a.get('rr', 0):.3f}", "MRR"),
              tile(pct(a.get("slot_recall@5", 0)), "SlotRecall@5"), tile(pct(a.get("complete@2", 0)), "Complete@2"),
-             tile(f"{s['no_answer']['f1']:.3f}", f"답 없음 F1 (τ={s['tau']:.3g})")]
+             tile(f"{s['no_answer']['f1']:.3f}", "답 없음 F1 (실제 거절)" if "tau" not in s else f"답 없음 F1 (τ={s['tau']:.3g})")]
     cats = [c for c in QTYPE_ORDER if c in agg]
     chart = hbar_groups(cats, [("Hit@1", "--series-1", [agg[c]["hit@1"] for c in cats]),
                                ("Hit@5", "--series-2", [agg[c]["hit@5"] for c in cats]),
@@ -217,12 +220,31 @@ def l1_body(m: dict, rows: list[dict]) -> str:
                         + "".join(f"슬롯{i + 1} {chip(k)}" for i, k in enumerate(r["slot_ranks"]))
                         + f'</td><td class="num">{r["slot_recall@10"]:.2f}</td></tr>' for r in multi)
     na = s["no_answer"]
+
+    def acc_table(groups: dict, label: str, skip_all: bool) -> str:
+        def cell(x):
+            return "-" if x is None else pct(x)
+        body = "".join(f'<tr><td>{esc(name)}</td><td class="num">{g["n"]}</td><td class="num">{g["correct"]}</td>'
+                       f'<td class="num"><b>{pct(g["acc"])}</b></td><td class="num">{cell(g["acc_ans"])} ({g["n_ans"]})</td>'
+                       f'<td class="num">{cell(g["acc_una"])} ({g["n_una"]})</td></tr>'
+                       for name, g in groups.items() if not (skip_all and name == "all"))
+        return (f"<table><tr><th>{label}</th><th>문항</th><th>정답</th><th>전체 정답률</th><th>답 있는 문항 (Hit@1, 거절 반영)</th>"
+                f"<th>답 없는 문항 (거절)</th></tr>{body}</table>")
+
+    outcomes = s.get("outcomes") or {}
+    out_note = " · ".join(f"{esc(OUTCOME_KO.get(k, k))} {v}" for k, v in sorted(outcomes.items()))
+    acc_card = ('<div class="card"><h2>전체 정답률</h2><p class="note">전체 문항 중 맞게 처리한 비율. 답 있는 문항은 거절하지 않고 1위 표가 정답 표일 때, '
+                '답 없는 문항은 표를 찾지 않았을 때(거절) 정답. 실행 오류는 오답. 거절은 검색 그래프 gate 기준(타우 없음).</p>'
+                + acc_table(acc, "split", False) + '<p class="note">유형별</p>' + acc_table(s.get("accuracy_by_qtype") or {}, "qtype", True)
+                + (f'<p class="note">결과 유형: {out_note}</p>' if out_note else "") + "</div>") if acc_all else ""
     return "".join([
-        '<div class="tiles">', *tiles, "</div>",
-        '<div class="card"><h2>유형별 Hit@k</h2><p class="note">답 있는 문항 기준. 막대 끝 숫자는 Hit@10.</p>',
+        '<div class="tiles">', *tiles, "</div>", acc_card,
+        '<div class="card"><h2>유형별 Hit@k</h2><p class="note">답 있는 문항 기준, 거절과 무관하게 순위만 본다. 막대 끝 숫자는 Hit@10.</p>',
         legend([("Hit@1", "--series-1"), ("Hit@5", "--series-2"), ("Hit@10", "--series-3")]), chart, "</div>",
         '<div class="grid2"><div class="card"><h2>첫 정답 순위 분포</h2><p class="note">어느 슬롯이든 첫 정답이 나온 순위. "밖" = 상위 10개에 없음.</p>', ranks, "</div>",
-        f'<div class="card"><h2>답 없음 판정</h2><p class="note">top-1 점수 &lt; τ이면 답 없음. τ는 dev에서 F1 최대로 고른다.</p>'
+        (f'<div class="card"><h2>답 없음 판정</h2><p class="note">top-1 점수 &lt; τ이면 답 없음. τ는 dev에서 F1 최대로 고른다.</p>' if "tau" in s else
+         '<div class="card"><h2>답 없음 판정 (실제 거절)</h2><p class="note">검색 그래프가 표를 찾지 않은(gate refuse) 문항을 답 없음으로 본다. '
+         'gate 기록이 없으면 2차 LLM이 0개를 골랐거나 결과가 0개일 때. 타우 없음.</p>') +
         f'<table><tr><th>Precision</th><th>Recall</th><th>F1</th><th>TP</th><th>FP</th><th>FN</th></tr><tr>'
         f'<td class="num">{na["precision"]:.3f}</td><td class="num">{na["recall"]:.3f}</td><td class="num">{na["f1"]:.3f}</td>'
         f'<td class="num">{na["tp"]}</td><td class="num">{na["fp"]}</td><td class="num">{na["fn"]}</td></tr></table></div></div>',
@@ -430,10 +452,23 @@ def failures_body(m: dict, rows: list[dict]) -> str:
     ])
 
 
+OUTCOME_KO = {"hit": "정답", "wrong_table": "다른 표 1위", "wrong_refusal": "답 있는데 거절", "refused": "답 없음 거절",
+              "answered_unanswerable": "답 없는데 표 냄", "error": "실행 오류"}  # evaluators.retrieval.OUTCOMES, short
+
+
+def outcome_chip(r: dict) -> str:
+    """L1 row verdict of the overall accuracy (row["outcome"]); '-' for runs graded before it existed."""
+    o = r.get("outcome")
+    if o is None:
+        return "-"
+    return f'<span class="chip {"ok" if r.get("correct") else "bad"}">{"✓" if r.get("correct") else "✕"} {esc(OUTCOME_KO.get(o, o))}</span>'
+
+
 def rows_table(layer: str, rows: list[dict]) -> str:
     if layer == "l1":
-        head = ["qid", "split", "qtype", "질문", "첫 정답", "슬롯 순위", "top-3", "ms"]
+        head = ["qid", "split", "qtype", "질문", "판정", "첫 정답", "슬롯 순위", "top-3", "ms"]
         body = "".join(f'<tr><td>{esc(r["qid"])}</td><td>{esc(r["split"])}</td><td>{esc(r["qtype"])}</td><td>{esc(r.get("question", ""))}</td>'
+                       f'<td>{outcome_chip(r)}</td>'
                        f'<td class="num">{esc(r.get("rank") or ("답 없음" if not r["answerable"] else "-"))}</td><td>{esc(r.get("slot_ranks", ""))}</td>'
                        f'<td>{esc(", ".join(r["keys"][:3]))}</td><td class="num">{r["latency_ms"]:.1f}</td></tr>' for r in rows)
     elif layer == "e2e":
@@ -465,7 +500,8 @@ GUIDE = {  # layer -> how to read this page, one line per item
     "ablation": ["조합별로 슬롯 필터를 켜고 끄며 정답 표가 필터에서 살아남는지(filter recall) 본다. recall이 떨어지는 슬롯이 해로운 슬롯이다.",
                  "후보 중앙값: 필터 뒤 남은 표 수. 작을수록 검색이 쉬워지지만 recall이 떨어지면 안 된다.", NO_TRACE],
     "l012": ["L0(메타데이터) → L1 필터(정답 슬롯 / 파서 슬롯) → L2(질의 이해) 순서로 한 페이지에 모았다. 각 섹션 아래에 그 계층의 운영 지표가 있다.", NO_TRACE],
-    "l1": ["Hit@k: 정답 표가 상위 k개 안에 든 문항 비율. MRR: 첫 정답 순위의 역수 평균. 둘 다 높을수록 좋다.",
+    "l1": ["전체 정답률: 전체 문항 중 맞게 처리한 비율(답 있는 문항은 거절 없이 1위가 정답 표, 답 없는 문항은 거절). 타우는 쓰지 않는다.",
+           "Hit@k: 정답 표가 상위 k개 안에 든 문항 비율. MRR: 첫 정답 순위의 역수 평균. 둘 다 높을수록 좋다.",
            "LangGraph 검색이면 '실패 노드' 표에서 정답 표를 어느 노드가 밀어냈는지와 노드 경로를 본다.",
            "trace: 문항마다 execute_tool search_tables 아래 검색 노드의 실제 지연(워터폴)과 노드별 지연 표."],
     "l3": ["에이전트 그래프 한 턴에 정답 표를 준 채로(oracle 검색) summarize_stat의 숫자를 원본 Parquet 셀과 대조한다. PASS 비율이 높을수록 좋다.",
@@ -769,19 +805,29 @@ def render(run: Path, questions: dict[str, str] | None = None) -> str:
             f"{guide(layer)}{body}{ops}{table}</main></div></body></html>")
 
 
-def questions_of(layer: str) -> dict[str, str]:
-    from evals.schemas import DATASETS
+def questions_of(layer: str, manifest: dict | None = None) -> dict[str, str]:
+    from evals.schemas import DATASETS, ROOT
 
-    path = DATASETS / ("retrieval_golden.jsonl" if layer == "l1" else "calculation_golden.jsonl")
-    if not path.exists():
-        return {}
-    return {d["qid"]: d["question"] for d in map(json.loads, path.read_text(encoding="utf-8").splitlines()) if d}
+    paths = [DATASETS / ("retrieval_golden.jsonl" if layer == "l1" else "calculation_golden.jsonl")]
+    golden = ((manifest or {}).get("golden") or {}).get("path")  # the golden file(s) the run was graded on (--golden, --calc-golden)
+    if golden:
+        given = [ROOT / g.strip().replace("\\", "/") for g in golden.split(" + ")]  # several files: calc_ref joins them
+        if all(g.exists() for g in given):
+            paths = given
+    out: dict[str, str] = {}
+    for path in paths:
+        if path.exists():
+            # e2e scenario runs list the scenario file too (sid rows, no qid): only rows with a qid name a question
+            out |= {d["qid"]: d["question"] for d in map(json.loads, path.read_text(encoding="utf-8").splitlines())
+                    if d and "qid" in d}
+    return out
 
 
 def write(run: Path) -> Path:
-    layer = json.loads((run / "manifest.json").read_text(encoding="utf-8"))["layer"]
+    manifest = json.loads((run / "manifest.json").read_text(encoding="utf-8"))
+    layer = manifest["layer"]
     out = run / "report.html"
-    out.write_text(render(run, questions_of(layer)), encoding="utf-8")
+    out.write_text(render(run, questions_of(layer, manifest)), encoding="utf-8")
     return out
 
 

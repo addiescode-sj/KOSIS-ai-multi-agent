@@ -23,7 +23,29 @@ def test_hit_mrr_and_complete_over_slots():
     assert retrieval.score_item(item, ["b", "a"])["complete@2"] == 1  # both slots in the top 2
 
 
-def test_no_answer_threshold_and_prf():
+def test_refusal_and_overall_accuracy_without_tau():
+    gate = lambda route: [{"name": "gate", "attributes": {"route": route}}]
+    assert retrieval.refused({"keys": ["a"], "search_spans": gate("refuse")})
+    assert not retrieval.refused({"keys": ["a"], "stage2_picked_n": 0, "search_spans": gate("found")})  # gate decides
+    assert retrieval.refused({"keys": ["a"], "stage2_picked_n": 0})  # no gate span: the LLM picked nothing
+    assert not retrieval.refused({"keys": ["a"], "stage2_picked_n": 0, "stage2_error": "401"})  # a failed call is no verdict
+    assert retrieval.refused({"keys": []}) and not retrieval.refused({"keys": ["a"], "top_score": 0.0})  # no tau
+    rows = [{"split": "dev", "answerable": True, "keys": ["g", "x"], "no_answer_pred": False},   # hit
+            {"split": "dev", "answerable": True, "keys": ["x", "g"], "no_answer_pred": False},   # another table first
+            {"split": "dev", "answerable": True, "keys": ["g"], "no_answer_pred": True},         # refused an answerable one
+            {"split": "test", "answerable": False, "keys": [], "no_answer_pred": True},          # refused: right
+            {"split": "test", "answerable": False, "keys": ["x"], "no_answer_pred": False},      # found a table: wrong
+            {"split": "test", "answerable": True, "keys": ["g"], "no_answer_pred": False, "error": "boom"}]
+    for r in rows:
+        r["correct"] = int(retrieval.is_correct(r, {"g"}))
+    assert [r["correct"] for r in rows] == [1, 0, 0, 1, 0, 0]
+    assert [retrieval.outcome(r) for r in rows] == ["hit", "wrong_table", "wrong_refusal", "refused", "answered_unanswerable", "error"]
+    acc = retrieval.accuracy(rows)
+    assert (acc["all"]["n"], acc["all"]["correct"]) == (6, 2) and acc["all"]["acc"] == 2 / 6
+    assert acc["dev"]["acc_ans"] == 1 / 3 and acc["dev"]["acc_una"] is None and acc["test"]["acc_una"] == 0.5
+
+
+def test_no_answer_threshold_and_prf():  # tau is left for the ablation layer only
     rows = [(0.9, False), (0.8, False), (0.2, True), (None, True), (0.85, True)]
     tau = retrieval.best_tau(rows)
     # tau 0.8 refuses 0.2 and None (F1 0.8); tau 0.9 also refuses 0.85 and wrongly 0.8 (F1 0.857), so 0.9 wins

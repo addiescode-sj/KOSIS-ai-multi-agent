@@ -134,7 +134,9 @@ def metrics(m: dict) -> dict[str, float | int | str | None]:
     s, layer = m["summary"], m["layer"]
     if layer == "l1":
         a = s["metrics"]["all"]
-        return {"Hit@1": a["hit@1"], "Hit@5": a["hit@5"], "Hit@10": a["hit@10"], "MRR": a["rr"], "답 없음 F1": s["no_answer"]["f1"]}
+        acc = (s.get("accuracy") or {}).get("all", {}).get("acc")
+        return {**({"전체 정답률": acc} if acc is not None else {}),
+                "Hit@1": a["hit@1"], "Hit@5": a["hit@5"], "Hit@10": a["hit@10"], "MRR": a["rr"], "답 없음 F1": s["no_answer"]["f1"]}
     if layer == "l2":
         a = s["metrics"]["all"]
         return {"모든 필드": a["all_fields"], "regions": a.get("regions"), "period_start": a.get("period_start"), "cycle": a.get("cycle")}

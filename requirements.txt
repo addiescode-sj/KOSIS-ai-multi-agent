@@ -1,0 +1,51 @@
+# Phase 3 (종합) 의존성 — conda/pip용. 버전은 uv.lock(2026-11-07)과 같게 고정했다.
+# pyproject.toml이 기준이다: 의존성을 바꾸면 이 파일도 같이 고친다.
+#
+# 설치 (Anaconda Prompt, conda 환경 kosis, Python 3.12):
+#   1) GPU를 쓸 때만 torch를 먼저 CUDA 빌드로 설치 (PyPI의 Windows torch는 CPU 빌드):
+#        pip install torch==2.15.0 --index-url https://download.pytorch.org/whl/cu<버전>   (예: cu128, nvidia-smi의 CUDA 버전에 맞춤)
+#   2) pip install -r requirements.txt
+#
+# 실행: set PYTHONPATH=.;src;vendor\phase2\src;vendor\phase1;vendor\phase1\src  후  python -m evals.run_eval ...
+
+# Backend
+fastapi==0.162.0
+uvicorn[standard]==0.54.0
+pydantic==2.14.2
+
+# AI workflow (HCX through langchain-naver)
+langgraph==1.2.19
+langchain-core==1.7.4
+langchain-naver==0.1.1
+
+# Phase 1 runtime
+pandas==3.1.0
+pyarrow==26.0.1
+pyyaml==6.0.3
+python-dotenv==1.2.4
+
+# Phase 2 runtime
+rank-bm25==0.2.2
+chromadb-client==1.5.9
+openai==3.3.0              # stage 2 gpt-4o-mini re-ranker (kosis_rag.llm.openai)
+
+# Query embedder / re-ranker (pyproject group "embed")
+torch                      # 버전 고정 안 함: 이미 깔린 torch(CUDA 빌드)를 그대로 둔다 (uv.lock은 2.15.0)
+sentence-transformers==6.2.0
+transformers==5.22.1
+
+# Data (PostgreSQL, Redis)
+sqlalchemy==2.1.8
+psycopg[binary]==3.3.7
+redis==8.1.0
+
+# Observability
+opentelemetry-sdk==1.45.2
+opentelemetry-exporter-otlp-proto-grpc==1.45.2
+
+# Tests (pyproject group "dev")
+pytest==9.2.0
+httpx==0.28.1
+
+# 선택: 답변 품질 평가 (pyproject group "ragas")
+# ragas==0.4.3

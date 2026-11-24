@@ -9,6 +9,8 @@
 - artifact: SearchOutput 객체. 노드가 꺼내 AgentState["search"]에 둔다.
 response_format="content_and_artifact"라서 ToolCall 형태로 부르면 ToolMessage(content, artifact)가 돌아온다.
 ReAct의 ToolNode도 같은 방식으로 부르므로, T3-07에서 이 툴을 그대로 쓴다.
+T3-51: 2차 프롬프트가 v4m이면 검색 직후 2차의 멀티표 판단(together)을 rerank2 span의 stage2_together로 붙인다
+(retrieval/together.py). v4에서는 span이 그대로다.
 """
 
 from __future__ import annotations
@@ -18,6 +20,7 @@ from typing import Any
 from langchain_core.tools import BaseTool, tool
 
 from kosis_agent.observability.tracing import STAGE2_MODEL
+from kosis_agent.retrieval.together import take_together, with_together
 from kosis_agent.runtime import stream_writer, without_checkpointer
 from kosis_rag.schemas.io import SearchInput, SearchOutput
 
@@ -35,6 +38,7 @@ def make_search_tables_tool(search: Any) -> BaseTool:
     def search_tables(question: str) -> tuple[dict, SearchOutput]:
         """KOSIS 통계표를 찾는다. route(found | refuse), 고른 표(picked: key·표 이름·기간·출처), 후보(candidates)를 돌려준다."""
         writer = stream_writer()
+        take_together(search)  # 이전 검색의 판단이 남지 않게 비운다
         out: SearchOutput | None = None
         with without_checkpointer():  # 실전 2 SearchState를 대화 체크포인트에 쌓지 않는다 (runtime.py 참고)
             for name, value in search.stream(SearchInput(question=question)):
@@ -44,6 +48,8 @@ def make_search_tables_tool(search: Any) -> BaseTool:
                     writer((name, value))
         if out is None:  # 실전 2 계약상 일어나지 않지만, None을 그대로 넘기면 노드에서 알아보기 어려운 오류가 난다
             raise RuntimeError("search module stream ended without an output")
+        if together := take_together(search):
+            out = with_together(out, together)
         return out.model_dump(mode="json"), out
 
     # T3-31: rerank2 trace 항목에는 stage 2 이름(clova 등)만 있어서, chat span의 모델 이름을 툴 metadata로 넘긴다
