@@ -44,7 +44,7 @@ from kosis_agent.graph.main_graph import build_graph, call_tool
 from kosis_agent.graph.state import ChatResult, chat_result, new_checkpointer
 from kosis_agent.observability.tracing import LiveSpans, record_error, start_turn, trace_id
 from kosis_agent.retrieval.search import make_search_tables_tool
-from kosis_agent.services.chart import make_chart_tool, to_vega_lite
+from kosis_agent.services.chart import make_chart_tool
 from kosis_agent.services.statistics import make_summarize_stat_tool
 from kosis_rag.schemas.io import SearchOutput
 from kosis_store.auth.schemas import MeResponse, MeUpdate
@@ -758,16 +758,16 @@ def summarize_stat(req: StatRequest, tools=Depends(get_tools),
     `answer.outcome = refused` (out_of_scope)."""
     out = _run_tool(tracer, "summarize_stat", tools, {"question": req.question, "table_key": req.table_key})
     chart = out.chart.model_dump(mode="json") if out.chart is not None else None
-    return StatResponse(answer=out.answer, chart=chart, vega_lite=to_vega_lite(out.chart))
+    return StatResponse(answer=out.answer, chart=chart)
 
 
-@app.post("/dev/tools/make_chart", tags=["dev"], summary="Vega-Lite 차트", response_model=ChartResponse,
+@app.post("/dev/tools/make_chart", tags=["dev"], summary="차트 다시 그리기", response_model=ChartResponse,
           responses=UNAVAILABLE)
 @app.post("/tools/make_chart", tags=["dev"], summary="옛 주소 → /dev/tools/make_chart", response_model=ChartResponse,
           responses=UNAVAILABLE, deprecated=True)
 def make_chart(req: ChartRequest, tools=Depends(get_tools),
                tracer: Tracer = Depends(telemetry.get_tracer)) -> ChartResponse:
-    """chart 노드가 부르는 `make_chart` 툴. 요청한 종류로 그릴 수 없으면 원래 종류로 그리고 `note`에 이유를 적는다."""
+    """chart 노드가 부르는 `make_chart` 툴. 요청한 종류로 그릴 수 없으면 다른 종류로 그리고 `note`에 이유를 적는다."""
     return ChartResponse(**_run_tool(tracer, "make_chart", tools, req.model_dump()))
 
 
