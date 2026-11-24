@@ -67,8 +67,14 @@ export default function ConversationsPage() {
           </Card>
         ) : (
           <Card className="px-5 py-12 text-center text-sm text-sub">
-            {list.items.length ? "일치하는 대화가 없어요." : "아직 저장된 대화가 없어요. 새 대화에서 질문해 보세요."}
+            {list.items.length ? (list.more ? "지금까지 불러온 대화에는 일치하는 것이 없어요." : "일치하는 대화가 없어요.") : "아직 저장된 대화가 없어요. 새 대화에서 질문해 보세요."}
           </Card>
+        )}
+        {list.more && (
+          <div className="flex flex-col items-center gap-2 pt-1">
+            {list.moreFailed && <p role="alert" className="text-[13px] text-red-600">더 불러오지 못했습니다. 다시 시도해 주세요.</p>}
+            <Button variant="secondary" disabled={list.loadingMore} onClick={list.loadMore}>{list.loadingMore ? "불러오는 중…" : "이전 대화 더 보기"}</Button>
+          </div>
         )}
         {!list.member && !list.loading && (
           <div className="flex flex-col items-center gap-3 pt-2 text-center text-[13px] text-sub">

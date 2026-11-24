@@ -1,6 +1,6 @@
 "use client";
 
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { MemberChat, MemberChatList } from "@/lib/auth/schemas";
 import { useAuth } from "@/lib/auth/use-me";
@@ -22,9 +22,12 @@ async function json<T>(res: Response, parse: (v: unknown) => T): Promise<T> {
 export type ChatList = {
   member: boolean;
   items: ConversationItem[];
-  more: boolean; // the server has more than this page
+  more: boolean; // the server has more than the pages read so far
+  loadMore: () => void;
+  loadingMore: boolean;
+  moreFailed: boolean;
   loading: boolean;
-  error: string | null;
+  error: string | null; // nothing could be read
   browser: Conversation[]; // guest: the full saved conversations (the search page reads their text)
 };
 
@@ -33,20 +36,31 @@ export function useChatList(): ChatList {
   const auth = useAuth();
   const member = auth.status === "member";
   const browser = useConversations();
-  const server = useQuery({
+  const server = useInfiniteQuery({
     queryKey: CHATS_KEY,
     enabled: member,
-    queryFn: async () => json(await fetch("/api/chats", { cache: "no-store" }), (v) => MemberChatList.parse(v)),
+    initialPageParam: null as string | null,
+    queryFn: async ({ pageParam }) => json(
+      await fetch(`/api/chats${pageParam ? `?cursor=${encodeURIComponent(pageParam)}` : ""}`, { cache: "no-store" }),
+      (v) => MemberChatList.parse(v),
+    ),
+    getNextPageParam: (last) => last.next_cursor || null,
   });
   if (!member) {
-    return { member: false, items: itemsFromBrowser(browser), more: false, loading: auth.status === "loading", error: null, browser };
+    return {
+      member: false, items: itemsFromBrowser(browser), more: false, loadMore: () => {}, loadingMore: false, moreFailed: false,
+      loading: auth.status === "loading", error: null, browser,
+    };
   }
   return {
     member: true,
-    items: server.data ? itemsFromServer(server.data.items) : [],
-    more: !!server.data?.next_cursor,
+    items: itemsFromServer(server.data?.pages.flatMap((p) => p.items) ?? []),
+    more: server.hasNextPage,
+    loadMore: () => { if (!server.isFetching) void server.fetchNextPage(); },
+    loadingMore: server.isFetchingNextPage,
+    moreFailed: server.isFetchNextPageError,
     loading: server.isPending,
-    error: server.error ? server.error.message : null,
+    error: server.error && !server.data ? server.error.message : null,
     browser: [],
   };
 }
@@ -66,6 +80,7 @@ export function useSavedConversation(id: string): SavedConversation {
     queryKey: [...CHATS_KEY, id],
     enabled: member,
     staleTime: Infinity, // the open chat keeps its own messages from here on
+    gcTime: 0, // opened again: read again, the copy misses the turns asked since
     queryFn: async () => json(await fetch(`/api/chats/${encodeURIComponent(id)}`, { cache: "no-store" }), (v) => MemberChat.parse(v)),
   });
   if (auth.status === "loading") return { status: "loading" };
