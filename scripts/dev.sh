@@ -37,10 +37,29 @@ fi
 docker compose --profile obs up -d --wait postgres jaeger
 
 export OTEL_EXPORTER_OTLP_ENDPOINT="${OTEL_EXPORTER_OTLP_ENDPOINT:-http://localhost:4317}"
-export PYTHONPATH=".:src:vendor/phase2/src:vendor/phase1:vendor/phase1/src"
+# Windows Python (Git Bash) splits PYTHONPATH on ';', not ':' (MSYS leaves relative path lists unconverted)
+sep=":"
+case "$(uname -s)" in MINGW* | MSYS* | CYGWIN*) sep=";" ;; esac
+export PYTHONPATH=".${sep}src${sep}vendor/phase2/src${sep}vendor/phase1${sep}vendor/phase1/src"
 echo "Jaeger   http://localhost:16686  (service: kosis-agent; Tags deployment.environment.name=service | eval)"
 # Every group a run needs, in one sync: `uv run --group X` removes the groups it is not given (T3-43: ragas was dropped)
 groups=(--group embed --group ragas)
+# An activated conda env that already has the packages runs as is (T3-51): its torch may be a CUDA build, while the
+# uv .venv takes PyPI's CPU torch on Windows. Otherwise uv as before.
+py=(uv run "${groups[@]}" python)
+needs="langgraph, sentence_transformers"
+[[ "$mode" == suite || "$mode" == pipeline || "$mode" == online ]] && needs="$needs, ragas"  # the Ragas judge layer
+if [[ -n "${CONDA_PREFIX:-}" ]]; then
+  prefix="$CONDA_PREFIX"
+  command -v cygpath >/dev/null 2>&1 && prefix="$(cygpath -u "$CONDA_PREFIX")"
+  for candidate in "$prefix/python.exe" "$prefix/bin/python"; do
+    if [[ -x "$candidate" ]] && "$candidate" -c "import $needs" >/dev/null 2>&1; then
+      py=("$candidate")
+      break
+    fi
+  done
+fi
+echo "python   ${py[*]}  (cuda: $("${py[@]}" -c 'import torch; print(torch.cuda.is_available())' 2>/dev/null || echo unknown))"
 
 # run <module> <log name> <args...>: unbuffered, to the terminal and a log file; returns the module's exit code
 run() {
@@ -51,7 +70,8 @@ run() {
   log="evals/reports/logs/$(date +%Y%m%d-%H%M%S)-${name}.log"
   echo "log      $log"
   set +e
-  PYTHONUNBUFFERED=1 uv run "${groups[@]}" python -m "$module" "$@" 2>&1 | tee "$log"
+  # UTF-8 on the pipe: Windows Python writes a pipe in the ANSI code page (cp949) and dies on '—' at the final print
+  PYTHONUNBUFFERED=1 PYTHONIOENCODING=utf-8 "${py[@]}" -m "$module" "$@" 2>&1 | tee "$log"
   local code="${PIPESTATUS[0]}"
   set -e
   return "$code"
@@ -78,4 +98,4 @@ reload=()
 [[ "${RELOAD:-0}" == 1 ]] && reload=(--reload --reload-dir backend --reload-dir src)
 
 echo "API      http://localhost:${port}/docs"
-exec uv run "${groups[@]}" uvicorn backend.app.main:app --port "$port" ${reload[@]+"${reload[@]}"}  # empty-array safe on macOS bash 3.2
+exec "${py[@]}" -m uvicorn backend.app.main:app --port "$port" ${reload[@]+"${reload[@]}"}  # empty-array safe on macOS bash 3.2
