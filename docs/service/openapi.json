@@ -65,22 +65,6 @@
         "operationId": "chat_stream_chat_stream_post",
         "parameters": [
           {
-            "name": "x-session-id",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "X-Session-Id"
-            }
-          },
-          {
             "name": "x-internal",
             "in": "header",
             "required": false,
@@ -110,6 +94,22 @@
                 }
               ],
               "title": "X-Kosis-Internal"
+            }
+          },
+          {
+            "name": "x-session-id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Session-Id"
             }
           }
         ],
@@ -151,6 +151,16 @@
           },
           "503": {
             "description": "에이전트를 열 수 없음 (데이터·벡터 DB·키 확인)"
+          },
+          "409": {
+            "description": "회원 대화의 앞 질문에 답하는 중",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           },
           "422": {
             "description": "Validation Error",
@@ -258,7 +268,7 @@
           "chat"
         ],
         "summary": "대화 삭제",
-        "description": "docs/service/api.md 4 (비회원). 이 세션이 만든 대화의 저장된 이전 턴과 세션 행을 지운다. 브라우저는 자기 목록에서\n항목을 지운다. 운영 로그(질문 원문·피드백)는 보관 기간까지 남는다. 회원 대화는 로그인 태스크에서 같은 주소로 붙인다.",
+        "description": "docs/service/api.md 4. 로그인했으면 내 회원 대화(저장된 턴 포함), 아니면 이 세션이 만든 비회원 대화를 지운다.\n브라우저는 자기 목록에서 항목을 지운다. 운영 로그(질문 원문·피드백)는 보관 기간까지 남는다.",
         "operationId": "delete_chat_chat__thread_id__delete",
         "parameters": [
           {
@@ -301,6 +311,87 @@
               }
             }
           },
+          "503": {
+            "description": "지우지 못함. 다시 시도",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "chat"
+        ],
+        "summary": "내 대화 다시 열기 (회원)",
+        "description": "저장된 질문과 그때의 `result`(답·차트·출처)를 순서대로.",
+        "operationId": "read_chat_chat__thread_id__get",
+        "parameters": [
+          {
+            "name": "thread_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Thread Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConversationDetail"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "로그인이 필요함",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "로그인 확인 불가",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "없거나 남의 대화",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "422": {
             "description": "Validation Error",
             "content": {
@@ -315,18 +406,17 @@
       }
     },
     "/chat": {
-      "post": {
+      "get": {
         "tags": [
-          "dev"
+          "chat"
         ],
-        "summary": "옛 주소 → /dev/chat",
-        "description": "`/chat/stream`과 같은 그래프·같은 답·같은 대화 규칙. 스트림 없이 끝난 뒤 `ChatResult`를 돌려준다.",
-        "operationId": "chat_chat_post",
-        "deprecated": true,
+        "summary": "내 대화 목록 (회원)",
+        "description": "최근에 물은 대화부터. `next_cursor`가 있으면 `?cursor=`로 다음 쪽을 부른다.",
+        "operationId": "list_chats_chat_get",
         "parameters": [
           {
-            "name": "x-session-id",
-            "in": "header",
+            "name": "cursor",
+            "in": "query",
             "required": false,
             "schema": {
               "anyOf": [
@@ -337,9 +427,62 @@
                   "type": "null"
                 }
               ],
-              "title": "X-Session-Id"
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConversationList"
+                }
+              }
             }
           },
+          "401": {
+            "description": "로그인이 필요함",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "로그인 확인 불가",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "잘못된 cursor",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "dev"
+        ],
+        "summary": "옛 주소 → /dev/chat",
+        "description": "`/chat/stream`과 같은 그래프·같은 답·같은 대화 규칙. 스트림 없이 끝난 뒤 `ChatResult`를 돌려준다.",
+        "operationId": "chat_chat_post",
+        "deprecated": true,
+        "parameters": [
           {
             "name": "x-internal",
             "in": "header",
@@ -371,6 +514,22 @@
               ],
               "title": "X-Kosis-Internal"
             }
+          },
+          {
+            "name": "x-session-id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Session-Id"
+            }
           }
         ],
         "requestBody": {
@@ -397,8 +556,295 @@
           "503": {
             "description": "에이전트를 열 수 없음 (데이터·벡터 DB·키 확인)"
           },
+          "409": {
+            "description": "회원 대화의 앞 질문에 답하는 중",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "실행 중 오류 (trace에 기록됨)"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/kakao/login": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "카카오 로그인 시작",
+        "description": "카카오 동의 화면으로 보낸다. `next` = 로그인 뒤 돌아갈 우리 화면 경로(바깥 주소는 무시하고 `/`).",
+        "operationId": "kakao_login_auth_kakao_login_get",
+        "parameters": [
+          {
+            "name": "next",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Next"
+            }
+          }
+        ],
+        "responses": {
+          "302": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/kakao/callback": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "카카오에서 돌아옴",
+        "description": "로그인하고 원래 화면으로 보낸다. 동의 취소·카카오 오류·위조된 요청이면 `/login?error=kakao`(로그인 실패 안내)로 보낸다.",
+        "operationId": "kakao_callback_auth_kakao_callback_get",
+        "parameters": [
+          {
+            "name": "code",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Code"
+            }
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "State"
+            }
+          },
+          {
+            "name": "error",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Error"
+            }
+          }
+        ],
+        "responses": {
+          "302": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/logout": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "로그아웃 (이 기기만)",
+        "description": "이 브라우저의 로그인만 끝낸다. 이미 끝났어도 204.",
+        "operationId": "logout_auth_logout_post",
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "503": {
+            "description": "쿠키는 지웠지만 서버 세션을 지우지 못함",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/me": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "내 정보",
+        "operationId": "me_auth_me_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MeResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "로그인이 필요함",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "로그인 확인 불가",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "회원 탈퇴",
+        "description": "회원 정보, 모든 기기의 로그인, 저장된 대화, 피드백을 바로 지운다. 운영 로그는 계정과 이어지지 않은 채 보관 기간까지 남는다.",
+        "operationId": "withdraw_auth_me_delete",
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "로그인이 필요함",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "로그인 확인 불가",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "내 설정 바꾸기",
+        "description": "보낸 항목만 바꾼다. `save_history`를 끄면 새 대화를 저장하지 않는다(이미 저장된 대화는 이어서 저장).\n`retention_days`는 마지막 질문부터 세며 매일 정리 때 적용한다.",
+        "operationId": "update_me_auth_me_patch",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MeUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MeResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "로그인이 필요함",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "로그인 확인 불가",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           },
           "422": {
             "description": "Validation Error",
@@ -423,22 +869,6 @@
         "operationId": "chat_dev_chat_post",
         "parameters": [
           {
-            "name": "x-session-id",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "X-Session-Id"
-            }
-          },
-          {
             "name": "x-internal",
             "in": "header",
             "required": false,
@@ -469,6 +899,22 @@
               ],
               "title": "X-Kosis-Internal"
             }
+          },
+          {
+            "name": "x-session-id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Session-Id"
+            }
           }
         ],
         "requestBody": {
@@ -494,6 +940,16 @@
           },
           "503": {
             "description": "에이전트를 열 수 없음 (데이터·벡터 DB·키 확인)"
+          },
+          "409": {
+            "description": "회원 대화의 앞 질문에 답하는 중",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           },
           "500": {
             "description": "실행 중 오류 (trace에 기록됨)"
@@ -1563,6 +2019,132 @@
         ],
         "title": "CombineStep"
       },
+      "ConversationDetail": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "turns": {
+            "items": {
+              "$ref": "#/components/schemas/ConversationTurn"
+            },
+            "type": "array",
+            "title": "Turns"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "title",
+          "turns"
+        ],
+        "title": "ConversationDetail"
+      },
+      "ConversationItem": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title",
+            "description": "첫 질문 앞부분"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At",
+            "description": "마지막으로 물은 시각 (최근 순 정렬 기준)"
+          },
+          "questions": {
+            "type": "integer",
+            "title": "Questions",
+            "description": "질문 수"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "title",
+          "created_at",
+          "updated_at",
+          "questions"
+        ],
+        "title": "ConversationItem"
+      },
+      "ConversationList": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ConversationItem"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor",
+            "description": "다음 쪽이 있으면 `cursor`로 보낼 값"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "title": "ConversationList"
+      },
+      "ConversationTurn": {
+        "properties": {
+          "turn": {
+            "type": "integer",
+            "title": "Turn"
+          },
+          "question": {
+            "type": "string",
+            "title": "Question"
+          },
+          "result": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Result",
+            "description": "그때의 `ChatResult` (답·차트·출처)"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "turn",
+          "question",
+          "result",
+          "created_at"
+        ],
+        "title": "ConversationTurn"
+      },
       "ErrorDetail": {
         "properties": {
           "code": {
@@ -1989,6 +2571,116 @@
         ],
         "title": "MapStep",
         "description": "The same sub-plan once per code of one category; body selects with the placeholder code '*' on that axis."
+      },
+      "MeResponse": {
+        "properties": {
+          "user_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "User Id"
+          },
+          "nickname": {
+            "type": "string",
+            "title": "Nickname",
+            "description": "카카오 닉네임"
+          },
+          "display_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display Name",
+            "description": "화면에 보일 이름. null이면 카카오 닉네임"
+          },
+          "color": {
+            "type": "string",
+            "enum": [
+              "blue",
+              "green",
+              "amber",
+              "rose",
+              "slate"
+            ],
+            "title": "Color",
+            "description": "프로필 색"
+          },
+          "save_history": {
+            "type": "boolean",
+            "title": "Save History",
+            "description": "새 대화를 계정에 저장할지"
+          },
+          "retention_days": {
+            "type": "integer",
+            "enum": [
+              90,
+              30
+            ],
+            "title": "Retention Days",
+            "description": "마지막 질문부터 대화를 보관하는 날 수"
+          }
+        },
+        "type": "object",
+        "required": [
+          "user_id",
+          "nickname",
+          "display_name",
+          "color",
+          "save_history",
+          "retention_days"
+        ],
+        "title": "MeResponse"
+      },
+      "MeUpdate": {
+        "properties": {
+          "display_name": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 20,
+                "minLength": 1,
+                "pattern": "^[^\\x00-\\x1f\\x7f]+$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display Name"
+          },
+          "color": {
+            "type": "string",
+            "enum": [
+              "blue",
+              "green",
+              "amber",
+              "rose",
+              "slate"
+            ],
+            "title": "Color",
+            "default": "blue"
+          },
+          "save_history": {
+            "type": "boolean",
+            "title": "Save History",
+            "default": true
+          },
+          "retention_days": {
+            "type": "integer",
+            "enum": [
+              90,
+              30
+            ],
+            "title": "Retention Days",
+            "default": 90
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "MeUpdate",
+        "description": "PATCH /auth/me: only the fields sent are changed. Only display_name may be null (back to the Kakao nickname)."
       },
       "PeriodSpec": {
         "properties": {
@@ -3196,6 +3888,10 @@
     {
       "name": "chat",
       "description": "에이전트 그래프 전체: context → search → statistics → chart → finalize. 같은 `thread_id`를 보내면 이전 턴을 이어서 답한다."
+    },
+    {
+      "name": "auth",
+      "description": "카카오 로그인 · 로그아웃 · 탈퇴. 로그인 상태는 httpOnly 쿠키."
     },
     {
       "name": "feedback",

@@ -7,14 +7,14 @@
 
 | 테이블 | 한 행 | 주요 열 |
 |---|---|---|
-| `conversations` | 대화 하나 | `id`(임의 UUID), `created_at` |
+| `conversations` | 대화 하나 | `id`(임의 UUID), `user_id`(회원), `title`(첫 질문 앞부분), `created_at`, `updated_at`(마지막으로 물은 시각) |
 | `messages` | 한 턴의 질문 또는 답 | `conversation_id`(대화 삭제 시 함께 삭제), `turn`, `role`(user·assistant), `content`, `result`(`SearchResult` JSON), `created_at`. `(conversation_id, turn, role)`은 하나만 |
 | `eval_runs` | 평가 실행 1회 | `evals/reports/ops_history.jsonl` 한 줄의 열 그대로(`run_id`, `layer`, `stage`, `target`, 지연 p50·p95, 토큰, 비용, 실패율) |
 
 ## 개인정보·보안
 
-- `messages.content`·`result`에는 **사용자 질문 원문이 그대로 저장된다.** 사용자 식별자는 저장하지 않고, 대화는 임의 UUID로만 묶는다.
-- 보관 기간(계획서 초안 30일, 팀 확정 전)이 지나면 `conversations.created_at` 기준으로 대화를 지운다. 메시지는 함께 지워진다(`ON DELETE CASCADE`). 삭제 작업은 아직 없다.
+- `messages.content`·`result`에는 **사용자 질문 원문이 그대로 저장된다.** 회원 대화(T3-54)이며 `users`(카카오 회원번호·닉네임)와 `user_id`로 이어진다. 비회원 대화는 여기에 저장하지 않는다. 로그인 쿠키는 `login_sessions`에 해시만 둔다.
+- 회원 대화는 마지막으로 물은 뒤 90일이 지나면 매일 정리 배치(`python -m kosis_store.cleanup`)가 메시지·체크포인트와 함께 지운다. 사용자가 지우거나 탈퇴하면 바로 지운다.
 - `eval_runs`에는 집계만 둔다. 골든 질문 문장·정답·문항 ID는 넣지 않는다(보안 서약).
 - compose `postgres`는 `127.0.0.1:5432`에만 열린다. 기본 계정 `kosis/kosis`는 로컬 개발용이다. 배포(M6)에서는 시크릿으로 주입한다.
 
