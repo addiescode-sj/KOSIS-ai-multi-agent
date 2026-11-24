@@ -1,18 +1,25 @@
 "use client";
 
-import { ChartNoAxesColumn, History, MessageSquarePlus, Search } from "lucide-react";
+import { ChartNoAxesColumn, History, MessageSquarePlus, Search, Settings } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import type { ReactNode } from "react";
 import { cn } from "cn";
+
+import { AccountCard } from "@/components/account/account-card";
+import { AccountMenu } from "@/components/account/account-menu";
+import { AuthNotice } from "@/components/account/auth-notice";
+import { GuestLoginCard } from "@/components/account/guest-login-card";
+import { KakaoLoginButton } from "@/components/account/kakao-login-button";
+import { useAuth } from "@/lib/auth/use-me";
 
 const NAV = [
   { href: "/", label: "새 대화", icon: MessageSquarePlus, active: (p: string) => p === "/" || p.startsWith("/chat/") },
   { href: "/chat", label: "대화 목록", icon: History, active: (p: string) => p === "/chat" },
 ];
 
-// Sidebar + sticky header of every customer screen (prototype Layout). Login, notifications, settings and help
-// have no backend yet and are left out (T3-11 option A).
+// Sidebar + sticky header of every customer screen (prototype Layout): a member sees the account card and menu,
+// a guest the Kakao login buttons (T3-11 Change 4). Notifications and help have no screen and are left out.
 export function AppShell({ title, sub, actions, query, children }: {
   title: string;
   sub?: string;
@@ -22,6 +29,8 @@ export function AppShell({ title, sub, actions, query, children }: {
 }) {
   const pathname = usePathname();
   const router = useRouter();
+  const auth = useAuth();
+  const member = auth.status === "member";
   return (
     <div className="flex min-h-dvh">
       <aside className="sticky top-0 hidden h-dvh w-64 shrink-0 flex-col border-r border-line bg-white md:flex">
@@ -51,11 +60,19 @@ export function AppShell({ title, sub, actions, query, children }: {
             </Item>
             );
           })}
+          <p className="px-3 pt-6 pb-2 text-[11px] font-semibold tracking-wider text-mute uppercase">기타</p>
+          <Link
+            href={member ? "/settings" : "/login"}
+            className={cn(
+              "flex h-10 items-center gap-3 rounded-lg px-3 text-[14px] transition-colors",
+              pathname === "/settings" ? "bg-brand-50 font-semibold text-brand-700" : "text-sub hover:bg-gray-50 hover:text-ink",
+            )}
+          >
+            <Settings size={18} />설정
+          </Link>
         </nav>
         <div className="border-t border-line p-4">
-          <p className="rounded-xl bg-canvas p-3.5 text-[13px] leading-relaxed text-sub">
-            대화는 이 브라우저에만 저장됩니다. 다른 기기에서는 보이지 않아요.
-          </p>
+          {auth.status === "member" ? <AccountCard /> : auth.status === "error" ? <AuthNotice message={auth.message} /> : auth.status === "guest" ? <GuestLoginCard /> : null}
         </div>
       </aside>
       <div className="flex min-w-0 flex-1 flex-col">
@@ -84,6 +101,7 @@ export function AppShell({ title, sub, actions, query, children }: {
               className="w-full bg-transparent text-ink outline-none placeholder:text-mute"
             />
           </form>
+          {member ? <AccountMenu /> : auth.status === "guest" && <KakaoLoginButton size="sm">로그인</KakaoLoginButton>}
         </header>
         <main className="flex-1 p-4 md:p-8">{children}</main>
       </div>

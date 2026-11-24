@@ -1,5 +1,6 @@
 import { createUIMessageStream, createUIMessageStreamResponse } from "ai";
 
+import { backendUrl, identity } from "@/lib/auth/backend.server";
 import { ChatResult } from "@/lib/chat/schemas";
 import { textOf } from "@/lib/chat/text";
 import { parseSSE } from "@/lib/sse";
@@ -19,8 +20,7 @@ export async function POST(request: Request) {
   const last = messages.findLast((m) => m.role === "user");
   const question = last ? textOf(last).trim() : "";
   if (!question) return Response.json({ error: "empty question" }, { status: 400 });
-  // Read per request: a module-level constant would be fixed at build time in the standalone image
-  const backend = process.env.BACKEND_URL ?? "http://localhost:8000";
+  const backend = backendUrl();
 
   const stream = createUIMessageStream<ChatMessage>({
     execute: async ({ writer }) => {
@@ -35,7 +35,8 @@ export async function POST(request: Request) {
       }
       const res = await fetch(`${backend}/chat/stream`, {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        // the login cookie (member: the turn is saved to the account) or X-Session-Id (guest), contract 1장
+        headers: { "content-type": "application/json", ...identity(request) },
         body: JSON.stringify({ question, thread_id: threadId ?? null }),
         signal: request.signal, // the user's stop reaches the backend
       });

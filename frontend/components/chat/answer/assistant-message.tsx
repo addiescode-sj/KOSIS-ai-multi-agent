@@ -14,11 +14,13 @@ export function AssistantMessage({ message, running, onAsk }: {
 }) {
   let result: ChatResult | undefined;
   let draft = "";
+  let progressed = false;
   const notices: string[] = [];
   for (const p of message.parts) {
     if (p.type === "data-result") result = p.data;
     else if (p.type === "data-draft") draft = p.data.text;
     else if (p.type === "data-notice") notices.push(p.data.text);
+    else progressed ||= p.type === "data-node" || p.type === "data-stat";
   }
   return (
     <div className="flex flex-col gap-3">
@@ -28,7 +30,11 @@ export function AssistantMessage({ message, running, onAsk }: {
           {n}
         </p>
       ))}
-      {result ? <ResultCard result={result} onAsk={onAsk} /> : <Generating message={message} draft={draft} running={running} />}
+      {result ? (
+        <ResultCard result={result} onAsk={onAsk} />
+      ) : running || draft || progressed || notices.length === 0 ? (
+        <Generating message={message} draft={draft} running={running} />
+      ) : null /* a saved turn that could not be restored: the notice is the whole answer */}
     </div>
   );
 }
