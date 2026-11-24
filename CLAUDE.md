@@ -48,13 +48,14 @@ TASK.md를 고치면 `.claude/hooks/linear_sync.py`가 `T3-xx` 제목으로 Line
 ## 3. 디렉터리
 
 ```
-backend/app/       FastAPI (main.py: /chat/stream SSE, build_agent() = 서비스·agent 평가 진입점) · config.py(셸 환경 → 설정 객체). 로직은 src/
+backend/app/       FastAPI (main.py: /chat/stream SSE, build_agent() = 서비스·agent 평가 진입점) · server.py(서버 실행·종료 처리: 미처리 예외·SIGTERM 때 DB 연결 정리) · config.py(셸 환경 → 설정 객체). 로직은 src/
 src/kosis_agent/   에이전트 (docs/research/KOSIS-RAG-Retrieval-Agent-Architecture.md 6장 구조, T3-23)
   graph/           실행 순서·분기: main_graph.py(워크플로 조립) · state.py(AgentState · ChatResult · checkpointer) · context.py(지시어·이월·차트 요청 해석: 규칙 우선, 판단 못 한 턴만 LLM, T3-27)
   retrieval/       search.py(search_tables 툴 = 실전 2 SearchModule) · README.md(검색 알고리즘이 실전 2 어디 있는지 지도)
   services/        statistics.py(summarize_stat 툴 = 실전 1) · chart.py(ChartSpec → Vega-Lite, make_chart 툴) · parquet_repository.py(T3-17)
   observability/   tracing.py(노드·툴·LLM OTel span 콜백, 서비스·평가 공용)
   runtime.py       툴이 노드 안에서 돌 때의 규칙(stream writer, 안쪽 그래프 checkpointer 분리)
+src/kosis_store/   저장 층(테이블·로그·정리 배치)과 API 요청·응답 스키마(도메인별 chat/ · feedback/ · events/ · tools/의 schemas.py). 스키마는 API만 import한다(migrate 이미지에는 에이전트 코드가 없음)
 evals/             계층별 평가 모듈 (실전 2에서 복사해 이어감, T3-00): tasks/(계층마다 실행·리포트, T3-29) · datasets/(gitignored) · evaluators/(agent/ = 툴·상태·수치·답변 품질) · runners/ · reports/. 에이전트 지표는 T3-06에서 여기에 추가
 frontend/          Next.js 16 (App Router) + TypeScript + Tailwind + shadcn/ui + Vercel AI SDK. 실전 2 UI에서 시작 (T3-11)
 vendor/phase1/     실전 1 submodule — kosis_ai(src/), kosis_chat/, eval/, configs/model.yaml. 직접 수정 금지

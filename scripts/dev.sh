@@ -74,8 +74,11 @@ esac
 
 port="${PORT:-8000}"
 # --reload watches the whole repo by default (data/ symlinks, node_modules): keep it to the code folders
-reload=()
-[[ "${RELOAD:-0}" == 1 ]] && reload=(--reload --reload-dir backend --reload-dir src)
+if [[ "${RELOAD:-0}" == 1 ]]; then
+  serve=(uvicorn backend.app.main:app --reload --reload-dir backend --reload-dir src)
+else
+  serve=(python -m backend.app.server)  # shuts down cleanly and closes the database (backend/app/server.py)
+fi
 
 echo "API      http://localhost:${port}/docs"
-exec uv run "${groups[@]}" uvicorn backend.app.main:app --port "$port" ${reload[@]+"${reload[@]}"}  # empty-array safe on macOS bash 3.2
+exec uv run "${groups[@]}" "${serve[@]}" --port "$port"
