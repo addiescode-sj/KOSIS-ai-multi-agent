@@ -72,7 +72,7 @@ export function AppShell({ title, sub, actions, query, children }: {
           </Link>
         </nav>
         <div className="border-t border-line p-4">
-          {auth.status === "member" ? <AccountCard /> : auth.status === "error" ? <AuthNotice message={auth.message} /> : auth.status === "guest" ? <GuestLoginCard /> : null}
+          {auth.status === "member" ? <AccountCard /> : auth.status === "error" ? <AuthNotice message={auth.message} /> : <GuestLoginCard />}
         </div>
       </aside>
       <div className="flex min-w-0 flex-1 flex-col">

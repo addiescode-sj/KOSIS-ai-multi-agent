@@ -1,7 +1,7 @@
 "use client";
 
 import { Check, CircleCheck, RotateCcw } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import { cn } from "cn";
 
 import { Avatar } from "@/components/account/avatar";
@@ -21,24 +21,19 @@ export function ProfileSection({ me }: { me: Me }) {
   const savedName = nameOf(me);
   const [name, setName] = useState(savedName);
   const [color, setColor] = useState(me.color);
-  const [saved, setSaved] = useState(false);
-  useEffect(() => {
-    if (!saved) return;
-    const t = setTimeout(() => setSaved(false), 2500);
-    return () => clearTimeout(t);
-  }, [saved]);
+  // Every edit clears the last save's outcome ("저장했습니다" or the error): the notice belongs to that save only.
+  const { reset } = update;
+  const editName = useCallback((v: string) => { reset(); setName(v); }, [reset]);
+  const editColor = useCallback((c: AvatarColor) => { reset(); setColor(c); }, [reset]);
+  const revert = useCallback(() => { reset(); setName(savedName); setColor(me.color); }, [reset, savedName, me.color]);
 
   const trimmed = name.trim();
   const dirty = trimmed !== savedName || color !== me.color;
   const invalid = !validName(name);
+  const saved = update.isSuccess && !dirty;
 
   function save() {
-    update.mutate({ display_name: trimmed === nickname ? null : trimmed, color }, {
-      onSuccess: () => {
-        setName(trimmed);
-        setSaved(true);
-      },
-    });
+    update.mutate({ display_name: trimmed === nickname ? null : trimmed, color }, { onSuccess: () => setName(trimmed) });
   }
 
   return (
@@ -58,7 +53,7 @@ export function ProfileSection({ me }: { me: Me }) {
             <input
               value={name}
               maxLength={NAME_MAX}
-              onChange={(e) => setName(e.target.value)}
+              onChange={(e) => editName(e.target.value)}
               aria-invalid={invalid}
               className={cn(
                 "h-10 w-full rounded-lg border bg-white px-3 text-sm outline-none focus:ring-4",
@@ -68,7 +63,7 @@ export function ProfileSection({ me }: { me: Me }) {
             {invalid ? (
               <span className="mt-1.5 block text-xs text-red-600">표시 이름을 입력해 주세요.</span>
             ) : (
-              <button type="button" onClick={() => setName(nickname)} className="mt-1.5 inline-flex cursor-pointer items-center gap-1 text-xs text-sub hover:text-brand-600">
+              <button type="button" onClick={() => editName(nickname)} className="mt-1.5 inline-flex cursor-pointer items-center gap-1 text-xs text-sub hover:text-brand-600">
                 <RotateCcw size={12} />카카오 닉네임({nickname})으로 되돌리기
               </button>
             )}
@@ -83,7 +78,7 @@ export function ProfileSection({ me }: { me: Me }) {
                   role="radio"
                   aria-checked={color === k}
                   aria-label={`${COLOR_NAMES[k]} 색상`}
-                  onClick={() => setColor(k)}
+                  onClick={() => editColor(k)}
                   className={cn("flex size-8 cursor-pointer items-center justify-center rounded-full ring-offset-2", AVATAR_COLORS[k], color === k && "ring-2 ring-brand-600")}
                 >
                   {color === k && <Check size={15} strokeWidth={3} />}
@@ -98,7 +93,7 @@ export function ProfileSection({ me }: { me: Me }) {
         {saved && (
           <span role="status" className="mr-auto inline-flex items-center gap-1.5 text-[13px] text-emerald-700"><CircleCheck size={15} />저장했습니다</span>
         )}
-        <Button variant="secondary" disabled={!dirty} onClick={() => { setName(savedName); setColor(me.color); }}>취소</Button>
+        <Button variant="secondary" disabled={!dirty} onClick={revert}>취소</Button>
         <Button disabled={!dirty || invalid || update.isPending} onClick={save}>변경 사항 저장</Button>
       </div>
     </Section>

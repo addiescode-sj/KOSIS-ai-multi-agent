@@ -4,9 +4,7 @@ import type { Me } from "../lib/auth/schemas.ts";
 //   member  — logged in with Kakao; conversations live on the server (GET /chat)
 //   guest   — not logged in (401), or the backend has no /auth yet (404) or cannot be reached: chat still works
 //   error   — /auth/me failed on the server side (5xx, bad body): shown as a notice, never silently as a guest
-//   loading — not known yet
 export type AuthState =
-  | { status: "loading" }
   | { status: "member"; me: Me }
   | { status: "guest" }
   | { status: "error"; message: string };

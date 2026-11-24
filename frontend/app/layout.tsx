@@ -1,5 +1,8 @@
 import type { Metadata } from "next";
+import { Suspense } from "react";
 import "./globals.css";
+
+import { AuthHydration } from "@/components/account/auth-hydration";
 
 import { Providers } from "./providers";
 
@@ -19,7 +22,12 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
         />
       </head>
       <body className="min-h-full">
-        <Providers>{children}</Providers>
+        <Providers>
+          {/* the login is read per request (cookies), so every page streams behind this boundary */}
+          <Suspense>
+            <AuthHydration>{children}</AuthHydration>
+          </Suspense>
+        </Providers>
       </body>
     </html>
   );

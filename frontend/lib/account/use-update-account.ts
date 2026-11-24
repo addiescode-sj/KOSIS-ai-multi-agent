@@ -3,7 +3,7 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 import { authFrom } from "@/lib/auth/me";
-import { ME_KEY } from "@/lib/auth/use-me";
+import { queryKeys } from "@/lib/query/keys";
 import type { AccountUpdate } from "@/types/account";
 
 // PATCH /auth/me; its answer is the new account, shown on every screen
@@ -18,6 +18,6 @@ export function useUpdateAccount() {
       if (auth?.status !== "member") throw new Error(`저장하지 못했습니다${res ? ` (${res.status})` : ""}. 잠시 뒤 다시 시도해 주세요.`);
       return auth;
     },
-    onSuccess: (auth) => client.setQueryData(ME_KEY, auth),
+    onSuccess: (auth) => client.setQueryData(queryKeys.me, auth),
   });
 }

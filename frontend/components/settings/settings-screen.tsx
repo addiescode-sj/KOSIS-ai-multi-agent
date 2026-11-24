@@ -40,16 +40,10 @@ export function SettingsScreen() {
     return (
       <AppShell title="개인정보 수정">
         <Card className="mx-auto max-w-md p-8 text-center">
-          {auth.status === "loading" ? (
-            <p className="text-sm text-sub">로그인 정보를 확인하는 중입니다…</p>
-          ) : (
-            <>
-              {auth.status === "error" && <div className="mb-5 text-left"><AuthNotice message={auth.message} /></div>}
-              <h2 className="text-lg font-semibold">로그인이 필요합니다</h2>
-              <p className="mt-1.5 text-sm text-sub">개인정보와 이용 설정은 카카오로 로그인한 회원만 관리할 수 있어요.</p>
-              <KakaoLoginButton size="lg" className="mt-6" />
-            </>
-          )}
+          {auth.status === "error" && <div className="mb-5 text-left"><AuthNotice message={auth.message} /></div>}
+          <h2 className="text-lg font-semibold">로그인이 필요합니다</h2>
+          <p className="mt-1.5 text-sm text-sub">개인정보와 이용 설정은 카카오로 로그인한 회원만 관리할 수 있어요.</p>
+          <KakaoLoginButton size="lg" className="mt-6" />
         </Card>
       </AppShell>
     );

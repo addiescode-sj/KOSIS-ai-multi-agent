@@ -14,7 +14,7 @@ import { conversations, titleOf } from "@/lib/chat/conversations";
 import { EXAMPLES } from "@/lib/chat/examples";
 import { sessionHeaders } from "@/lib/chat/session";
 import { textOf } from "@/lib/chat/text";
-import { CHATS_KEY } from "@/lib/chat/use-chat-list";
+import { queryKeys } from "@/lib/query/keys";
 import type { ChatMessage } from "@/types/chat";
 import type { Conversation } from "@/types/conversation";
 
@@ -65,7 +65,7 @@ export function Chat({ id, initial, prefill }: { id: string; initial: Conversati
   useEffect(() => {
     if (busy || messages.length === 0) return; // save when a reply ends (done, stopped or failed)
     if (member) {
-      void client.invalidateQueries({ queryKey: CHATS_KEY, exact: true }); // the backend saved the turn
+      void client.invalidateQueries({ queryKey: queryKeys.chatList }); // the backend saved the turn
       return;
     }
     conversations.save({ id, title: titleOf(messages), threadId: threadId.current, updatedAt: Date.now(), messages });
