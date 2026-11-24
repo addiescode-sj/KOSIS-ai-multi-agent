@@ -69,6 +69,10 @@ class RequestLog(LogBase):
         Index("ix_request_logs_conversation_turn", "conversation_id", "turn_index"),  # not unique: a turn can be retried
         CheckConstraint(_in("rewrite_kind", REWRITE_KINDS), name="ck_request_logs_rewrite_kind"),
         CheckConstraint(_in("interpreted_by", INTERPRETERS), name="ck_request_logs_interpreted_by"),
+        # T3-52 data review (kosis_store.log_metrics.review_turns): one outcome over a period, one user over a period.
+        # The (session_id, created_at) index also serves session_id alone, so it replaced the single-column one.
+        Index("ix_request_logs_outcome_created", "outcome", "created_at"),
+        Index("ix_request_logs_session_created", "session_id", "created_at"),
     )
 
     request_id: Mapped[str] = mapped_column(String(32), primary_key=True)  # OTel trace id of the turn (Jaeger search)
@@ -77,7 +81,7 @@ class RequestLog(LogBase):
     conversation_id: Mapped[str] = mapped_column(String(64))
     turn_index: Mapped[int] = mapped_column(Integer)  # kosis.turn.index: 0 for the first question, as in the trace
     prev_request_id: Mapped[str | None] = mapped_column(String(32))  # the request before this one in the conversation
-    session_id: Mapped[uuid.UUID | None] = mapped_column(index=True)  # random browser session id, not a person
+    session_id: Mapped[uuid.UUID | None] = mapped_column()  # random browser session id, not a person
     is_member: Mapped[bool] = mapped_column(Boolean, default=False)
     is_internal: Mapped[bool] = mapped_column(Boolean, default=False)  # team or eval harness traffic
     input_method: Mapped[str] = mapped_column(String(16), default="direct")
@@ -191,6 +195,8 @@ class UiEvent(Base):
     reason: Mapped[str | None] = mapped_column(Text)  # feedback only: masked, NULL after the retention period
     is_internal: Mapped[bool] = mapped_column(Boolean, default=False)
     log_version: Mapped[int] = mapped_column(Integer, default=LOG_VERSION)
+
+
 
 
 class IngestReject(Base):

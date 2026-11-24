@@ -129,7 +129,7 @@ CREATE TABLE request_logs (
 CREATE INDEX ix_request_logs_conversation_turn ON request_logs (conversation_id, turn_index);
 CREATE INDEX ix_request_logs_created_at ON request_logs (created_at);
 CREATE INDEX ix_request_logs_picked_key ON request_logs (picked_key);
-CREATE INDEX ix_request_logs_session_id ON request_logs (session_id);
+CREATE INDEX ix_request_logs_session_id ON request_logs (session_id);  -- T3-52: (session_id, created_at)로 바뀜, 16장
 ```
 </details>
 
@@ -557,4 +557,42 @@ sum by (gen_ai_request_model) (increase(kosis_llm_finishes_total{$env, gen_ai_re
 
 - 하위 질문이 모두 같은 표를 찾아 한 질문 경로로 합쳐진 멀티쿼리는 `sub_results`가 없어 `new`로 남는다. 알려면 그래프가 `sub_questions`를 `ChatResult`에 내보내야 한다(에이전트 코드, 담당 밖).
 - 검색 툴에 넘긴 문장은 따로 남기지 않는다. 새 질문은 원문으로, 이월 턴의 다시 검색은 `resolved` 문장으로 검색하므로 위 두 칸으로 알 수 있다.
+
+## 16. 데이터 검수 조회와 인덱스 (T3-52)
+
+데이터 검수용 조회 함수와 그에 맞춘 인덱스다. 계획·측정은 `plans/T3-52.md`(옵션 A, 11/24). 참고 자료(데이터 모델링 3단계, 인덱스 생성, 정규화·비정규화)에 따라 **물리 단계(접근 방법)만** 바꿨다. 테이블·칸·정규화는 그대로다.
+
+### 16.1 조회 (`kosis_store.log_metrics`)
+| 함수 | 꺼내는 것 | 순서 |
+|---|---|---|
+| `review_turns(session, 필터, outcome=…)` | 기간 안의 한 결과(`answered`·`refused`·`clarify`·`failed`·`error`·`aborted` 중 하나) 질문 | 최신순 |
+| `review_turns(session, 필터, session_id=…)` | 한 사용자(브라우저 세션)의 기간 안 질문 흐름 | 시간순 |
+| `review_turns(session, 필터)` | 기간 안 모든 질문 | 최신순 |
+| `review_count(...)` | 위 목록의 전체 건수 (따로 세어 목록은 한 쪽만 읽고 멈춤) | — |
+| `review_sql(...)` | 실행할 SQL과 인자 (EXPLAIN 확인용) | — |
+
+- 행마다 칸: 날짜, 대화·턴, 세션, 회원 여부, 결과, 사유, 실패 단계, 표·조사, 가린 질문(90일 뒤 비어 있음), 해석 종류, **마지막 피드백 값·선택지**(14.2 규칙과 같은 순서로 한 건).
+- 공통 필터(기간·회원/비회원·내부 트래픽)는 14.1과 같다. `failed`와 `error`는 따로 저장되므로 따로 본다.
+- `request_logs`를 직접 읽는다(공통 `turns` CTE를 거치지 않음). 그래야 결과·세션 조건이 인덱스까지 내려간다.
+
+### 16.2 인덱스 (마이그레이션 `0005_review_indexes`)
+| 인덱스 | 쓰이는 곳 |
+|---|---|
+| `ix_request_logs_outcome_created (outcome, created_at)` | 드문 결과의 목록(예: 오류), 결과별 건수 |
+| `ix_request_logs_session_created (session_id, created_at)` | 한 사용자의 흐름. 앞칸이 `session_id` 단독 조회도 받으므로 기존 `ix_request_logs_session_id`를 대체 |
+
+- 마지막 피드백은 기존 `ix_ui_events_request_id`로 질문마다 한 건 찾는다.
+- **피드백 전용 인덱스는 넣지 않았다.** `(request_id, client_ts DESC, …) WHERE event_type='feedback'`을 시험했더니 메트릭 화면의 👎 목록·👍 비율(14.2, 모든 피드백을 `DISTINCT ON`으로 읽음)이 약 2배 느려졌다(76 → 163 ms).
+
+### 16.3 측정 (지어낸 데이터: 질문 20만·이벤트 100만·90일)
+| 쿼리 | 전 | 후 |
+|---|---|---|
+| 오류 목록 90일, 1쪽 | 0.67 ms | 0.25 ms |
+| 거절 건수 90일 | 11.0 ms | 3.1 ms |
+| 거절 목록 90일, 1쪽 | 0.28 ms | 0.28 ms (기존 `created_at` 인덱스가 이미 쌈) |
+| 한 사용자 90일 | 0.24 ms | 0.20 ms |
+| 👎 답 목록 7일 (14장, 바꾸지 않음) | 75.8 ms | 76.3 ms |
+
+- 플래너가 상황마다 더 싼 인덱스를 고른다. 흔한 결과를 한 쪽만 꺼낼 때는 `created_at` 인덱스를 최신순으로 읽는 편이 이미 싸서 새 인덱스를 쓰지 않는다.
+- 지금 실제 로그는 거의 없어 차이가 없다. 로그가 쌓이면 실제 데이터로 다시 재고, 피드백 조회가 느려지면 질문 행에 마지막 피드백 값을 붙이는 안(`plans/T3-52.md` 옵션 C)을 검토한다.
 

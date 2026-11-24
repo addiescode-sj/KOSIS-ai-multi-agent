@@ -69,9 +69,37 @@ class AgentState(MessagesState):
 CHECKPOINT_TYPES = (SearchOutput, StatOutput, ChartSpec)
 
 
+def _serde() -> JsonPlusSerializer:
+    return JsonPlusSerializer(allowed_msgpack_modules=list(CHECKPOINT_TYPES))
+
+
 def new_checkpointer() -> InMemorySaver:
-    """대화를 thread_id별로 잇는 메모리 checkpointer. 위 CHECKPOINT_TYPES만 다시 읽도록 허용한다."""
-    return InMemorySaver(serde=JsonPlusSerializer(allowed_msgpack_modules=list(CHECKPOINT_TYPES)))
+    """대화를 thread_id별로 잇는 메모리 checkpointer. 위 CHECKPOINT_TYPES만 다시 읽도록 허용한다.
+    평가(build_agent)와 테스트가 쓴다. 서비스는 postgres_checkpointer를 쓴다(T3-51)."""
+    return InMemorySaver(serde=_serde())
+
+
+def postgres_checkpointer(url: str):
+    """서비스용 checkpointer (T3-51): 대화 상태를 PostgreSQL에 저장해 서버를 다시 켜거나 다른 노드로 가도 이어 묻는다.
+
+    url은 SQLAlchemy 형식(`postgresql+psycopg://…`)도 받는다. 요청 처리기가 동기 함수라 동기 PostgresSaver와
+    psycopg 연결 풀을 쓴다. checkpoint 테이블(checkpoints·checkpoint_blobs·checkpoint_writes·checkpoint_migrations)은
+    LangGraph가 setup()으로 만들고 관리한다(Alembic 밖, migrations/env.py가 autogenerate에서 제외).
+    직렬화 허용 목록은 메모리 checkpointer와 같다(CHECKPOINT_TYPES)."""
+    from langgraph.checkpoint.postgres import PostgresSaver
+    from psycopg.rows import dict_row
+    from psycopg_pool import ConnectionPool
+
+    conninfo = url.replace("postgresql+psycopg://", "postgresql://", 1)
+    pool = ConnectionPool(conninfo, max_size=10, open=True,
+                          kwargs={"autocommit": True, "prepare_threshold": 0, "row_factory": dict_row})
+    try:
+        saver = PostgresSaver(pool, serde=_serde())
+        saver.setup()
+    except BaseException:  # 열지 못하면 재연결을 계속 시도하는 풀을 남기지 않는다
+        pool.close()
+        raise
+    return saver
 
 
 class ChatResult(BaseModel):
@@ -104,6 +132,9 @@ class ChatResult(BaseModel):
     chart_note: str | None = None  # 요청대로 못 그렸을 때의 안내
     sub_results: list[dict] | None = None  # 멀티쿼리 턴의 하위 답 (T3-28, graph AgentState.sub_results)
     combined: dict | None = None  # 하위 답 두 개를 코드가 합친 결과 (combine_values)
+    # 이 질문의 요청 ID = OTel trace ID = meta.trace_id (T3-51, docs/service/api.md 2). 피드백을 이 값으로 보낸다.
+    # 그래프가 아니라 요청 처리기(backend/app/main.py)가 채운다. 그래프만 돌린 평가에서는 None.
+    request_id: str | None = None
 
 
 def chat_result(state: dict) -> ChatResult:

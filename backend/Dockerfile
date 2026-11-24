@@ -24,4 +24,4 @@ COPY src src
 COPY backend backend
 ENV PYTHONPATH=/app:/app/src:/app/vendor/phase2/src:/app/vendor/phase1:/app/vendor/phase1/src
 EXPOSE 8000
-CMD ["uv", "run", "--no-sync", "uvicorn", "backend.app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uv", "run", "--no-sync", "python", "-m", "backend.app.server", "--host", "0.0.0.0", "--port", "8000"]
