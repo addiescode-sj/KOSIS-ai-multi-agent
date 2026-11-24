@@ -26,14 +26,38 @@ from fastapi.responses import RedirectResponse, Response
 
 from kosis_store.service_store import LOGIN_TTL
 
-AUTHORIZE_URL = "https://kauth.kakao.com/oauth/authorize"
-TOKEN_URL = "https://kauth.kakao.com/oauth/token"
-ME_URL = "https://kapi.kakao.com/v2/user/me"
-LOCAL_REDIRECT = "http://localhost:3000/auth/kakao/callback"
+# Settings (.env.example) and their defaults, read when used: .env is loaded after this module is imported.
+DEFAULTS = {
+    "KAKAO_AUTHORIZE_URL": "https://kauth.kakao.com/oauth/authorize",
+    "KAKAO_TOKEN_URL": "https://kauth.kakao.com/oauth/token",
+    "KAKAO_ME_URL": "https://kapi.kakao.com/v2/user/me",
+    "KAKAO_REDIRECT_URI": "http://localhost:3000/auth/kakao/callback",
+    "KAKAO_TIMEOUT_SECONDS": "5",  # each call to Kakao
+    "KAKAO_STATE_TTL_SECONDS": "600",  # to finish Kakao's screens
+}
 STATE_COOKIE = "kosis_login_state"
-STATE_TTL = 600  # seconds to finish Kakao's screens
-TIMEOUT = httpx.Timeout(5.0)
-NICKNAME_MAX = 50
+NICKNAME_MAX = 50  # users.nickname holds 100
+
+
+def setting(name: str) -> str:
+    return os.environ.get(name, "").strip() or DEFAULTS[name]
+
+
+def seconds(name: str) -> int:
+    """A setting that must be a whole number of seconds, 1 or more."""
+    try:
+        value = int(setting(name))
+    except ValueError:
+        value = 0
+    if value < 1:
+        raise ValueError(f"{name} must be a whole number of seconds, 1 or more: {setting(name)!r}")
+    return value
+
+
+def check_settings() -> None:
+    """Called at startup, so a wrong value stops the server instead of every login."""
+    seconds("KAKAO_TIMEOUT_SECONDS")
+    seconds("KAKAO_STATE_TTL_SECONDS")
 
 
 class KakaoError(Exception):
@@ -47,7 +71,7 @@ class KakaoUser:
 
 
 def redirect_uri() -> str:
-    return os.environ.get("KAKAO_REDIRECT_URI", "").strip() or LOCAL_REDIRECT
+    return setting("KAKAO_REDIRECT_URI")
 
 
 def secure() -> bool:
@@ -76,19 +100,19 @@ class Kakao:
         return bool(self.client_id and self.client_secret)
 
     def authorize_url(self, state: str) -> str:
-        return AUTHORIZE_URL + "?" + urlencode({
+        return setting("KAKAO_AUTHORIZE_URL") + "?" + urlencode({
             "response_type": "code", "client_id": self.client_id, "redirect_uri": redirect_uri(),
             "scope": "profile_nickname", "state": state})
 
     def user(self, code: str) -> KakaoUser:
         try:
-            client = self._client or httpx.Client(timeout=TIMEOUT)
+            client = self._client or httpx.Client(timeout=seconds("KAKAO_TIMEOUT_SECONDS"))
             try:
-                res = client.post(TOKEN_URL, data={
+                res = client.post(setting("KAKAO_TOKEN_URL"), data={
                     "grant_type": "authorization_code", "client_id": self.client_id,
                     "client_secret": self.client_secret, "redirect_uri": redirect_uri(), "code": code})
                 res.raise_for_status()
-                me = client.get(ME_URL, headers={"Authorization": f"Bearer {res.json()['access_token']}"})
+                me = client.get(setting("KAKAO_ME_URL"), headers={"Authorization": f"Bearer {res.json()['access_token']}"})
                 me.raise_for_status()
                 body = me.json()
             finally:
@@ -138,7 +162,8 @@ def redirect(location: str) -> RedirectResponse:
 
 def set_state(res: Response, state: str, back: str) -> None:
     value = base64.urlsafe_b64encode(json.dumps([state, back]).encode()).decode()
-    res.set_cookie(STATE_COOKIE, value, max_age=STATE_TTL, path="/auth", httponly=True, samesite="lax", secure=secure())
+    res.set_cookie(STATE_COOKIE, value, max_age=seconds("KAKAO_STATE_TTL_SECONDS"), path="/auth", httponly=True,
+                   samesite="lax", secure=secure())
 
 
 def clear_state(res: Response) -> None:

@@ -78,6 +78,7 @@ LEGACY_DEV_PATHS = re.compile(r"^/(tools/.+|threads/.+)$")
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    auth.check_settings()
     auth.install_log_filter()
     telemetry.start()
     try:

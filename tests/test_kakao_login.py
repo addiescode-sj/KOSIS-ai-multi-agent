@@ -80,7 +80,8 @@ class Members(Service):
 def svc(monkeypatch):
     monkeypatch.setenv("KAKAO_CLIENT_ID", "cid")
     monkeypatch.setenv("KAKAO_CLIENT_SECRET", "csecret")
-    monkeypatch.delenv("KAKAO_REDIRECT_URI", raising=False)
+    for name in auth.DEFAULTS:
+        monkeypatch.delenv(name, raising=False)
     s = Members()
     yield s
     app.dependency_overrides.clear()
@@ -180,6 +181,28 @@ def test_login_without_keys_returns_to_the_page(svc, monkeypatch):
     monkeypatch.delenv("KAKAO_CLIENT_SECRET")
     app.dependency_overrides.pop(auth.get_kakao)
     assert svc.browser().get("/auth/kakao/login").headers["location"] == "/login?error=kakao"
+
+
+def test_kakao_addresses_and_limits_come_from_the_environment(svc, monkeypatch):
+    monkeypatch.setenv("KAKAO_AUTHORIZE_URL", "https://fake.example/authorize")
+    monkeypatch.setenv("KAKAO_TOKEN_URL", "https://fake.example/oauth/token")
+    monkeypatch.setenv("KAKAO_ME_URL", "https://fake.example/me")
+    monkeypatch.setenv("KAKAO_STATE_TTL_SECONDS", "60")
+    monkeypatch.setenv("KAKAO_TIMEOUT_SECONDS", " ")  # empty = the default
+    start = svc.browser().get("/auth/kakao/login")
+    assert start.headers["location"].startswith("https://fake.example/authorize?")
+    assert "max-age=60;" in start.headers["set-cookie"].lower()
+    svc.login()
+    assert [str(c.url) for c in svc.kakao.calls] == ["https://fake.example/oauth/token", "https://fake.example/me"]
+    assert auth.seconds("KAKAO_TIMEOUT_SECONDS") == 5
+
+
+@pytest.mark.parametrize("name", ["KAKAO_TIMEOUT_SECONDS", "KAKAO_STATE_TTL_SECONDS"])
+@pytest.mark.parametrize("bad", ["abc", "0", "-1", "1.5"])
+def test_a_wrong_limit_stops_the_startup_and_is_named(monkeypatch, name, bad):
+    monkeypatch.setenv(name, bad)
+    with pytest.raises(ValueError, match=name), TestClient(app):
+        pass
 
 
 def test_login_ends_after_14_days(svc):
