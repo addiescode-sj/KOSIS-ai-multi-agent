@@ -2,7 +2,7 @@
 
 오프라인 테스트다. 실전 1·2는 tests/test_workflow.py의 가짜를, Qwen 판단은 정해 둔 답을 돌려주는 FakeJudge를 쓴다.
 확인하는 것:
-- 템플릿 즉시 답변: 툴을 하나도 부르지 않고 끝난다
+- understand는 매 턴 Qwen이 먼저 판단한다(규칙 판단 없음). 템플릿 즉시 답변이면 툴을 하나도 부르지 않는다
 - 되묻기 → 다음 턴 답으로 재작성 → 재작성 문장으로 검색
 - 재작성 충분성: 불충분이면 1회만 더 쓰고, 그래도 불충분이면 되묻기로 끝난다
 - 재작성 문장이 원문에 없는 숫자를 쓰면 버린다(grounded)
@@ -12,8 +12,7 @@
 
 from kosis_agent.graph.main_graph import build_graph
 from kosis_agent.graph.multiquery import split_by_rules
-from kosis_agent.graph.react import (RewriteStep, SplitStep, SufficiencyStep, UnderstandStep, grounded,
-                                     rule_understand)
+from kosis_agent.graph.react import RewriteStep, SplitStep, SufficiencyStep, UnderstandStep, grounded
 from kosis_agent.graph.state import chat_result, new_checkpointer
 from kosis_chat.schemas.io import StatOutput
 from kosis_rag.parse.node import parse_query
@@ -85,20 +84,37 @@ def ask(g, question, thread="t"):
 
 # ---------------------------------------------------------------- understand
 def test_a_greeting_ends_with_the_template_and_no_tool_call():
+    judge = FakeJudge(understand=UnderstandStep(thought="인사", action="template", kind="greeting"))
     search, stat = Search(["101_A"]), Stat({})
-    out = graph(search, stat).invoke({"messages": [("user", "안녕! 넌 뭘 할 수 있어?")]})
+    out = graph(search, stat, judge).invoke({"messages": [("user", "안녕! 넌 뭘 할 수 있어?")]})
     r = chat_result(out)
     assert search.questions == [] and stat.calls == []
     assert r.outcome == "refused" and r.route == "skip" and r.intent == "template" and "KOSIS" in r.answer
-    assert out["refusal_reason"] == "out_of_scope" and out["trace"][0]["by"] == "rule"
+    assert out["refusal_reason"] == "out_of_scope" and out["trace"][0]["by"] == "llm"
 
 
-def test_rules_send_a_statistics_question_to_search_without_the_llm():
-    judge = FakeJudge(understand=AssertionError("rules should decide"))
+def test_the_judge_decides_every_turn_even_a_clear_statistics_question():
+    judge = FakeJudge(understand=UnderstandStep(thought="지표·지역·기간 있음", action="search"))
     search, stat = Search(["101_A"]), Stat({"101_A": answered("101_A")})
     out = graph(search, stat, judge).invoke({"messages": [("user", "2024년 서울 출생아 수")]})
-    assert judge.calls == [] and search.questions == ["2024년 서울 출생아 수"]  # 새 질문은 원문으로 검색
+    assert judge.calls == ["understand"] and search.questions == ["2024년 서울 출생아 수"]  # 새 질문은 원문으로 검색
     assert out["outcome"] == "answered" and [s["step"] for s in out["trace"]] == ["understand", "verify", "answer", "review"]
+
+
+def test_without_a_judge_a_greeting_goes_to_search_like_before_react():
+    search = Search(["101_A"])
+    out = graph(search, Stat({"101_A": answered("101_A")})).invoke({"messages": [("user", "안녕하세요")]})
+    assert search.questions == ["안녕하세요"] and out["trace"][0]["by"] == "none"
+
+
+def test_a_follow_up_turn_is_judged_then_reuses_the_previous_table():
+    judge = FakeJudge(understand=UnderstandStep(thought="이어 묻기", action="search"))
+    search, stat = Search(["101_A"]), Stat({"101_A": answered("101_A")})
+    g = graph(search, stat, judge, checkpointer=new_checkpointer())
+    ask(g, "2024년 서울 출생아 수")
+    second = ask(g, "그 표에서 부산은?")
+    assert judge.calls == ["understand", "understand"] and search.questions == ["2024년 서울 출생아 수"]
+    assert [s["step"] for s in second["trace"]][:2] == ["understand", "context"] and second["reused_table"]
 
 
 def test_clarify_then_the_reply_is_rewritten_and_searched():
@@ -170,7 +186,7 @@ def test_the_judge_merges_an_over_split_comparison():
     judge = FakeJudge(split=SplitStep(thought="같은 지표 비교", action="merge"))
     search, stat = Search(["101_A"]), Stat({"101_A": answered("101_A")})
     out = graph(search, stat, judge).invoke({"messages": [("user", question)]})
-    assert judge.calls == ["split"] and out["sub_questions"] == [] and search.questions == [question]
+    assert judge.calls == ["understand", "split"] and out["sub_questions"] == [] and search.questions == [question]
     kept = Search(["101_A"])  # keep이면 하위 질문마다 검색한다(같은 표면 multi가 원문 한 번으로 되돌림, T3-28)
     graph(kept, Stat({"101_A": answered("101_A")}), FakeJudge(split=SplitStep(thought="다른 지표", action="keep"))).invoke(
         {"messages": [("user", question)]})
@@ -196,12 +212,6 @@ def test_a_judge_failure_falls_back_to_search():
     search = Search(["101_A"])
     out = graph(search, Stat({"101_A": answered("101_A")}), judge).invoke({"messages": [("user", "요즘 어때?")]})
     assert search.questions == ["요즘 어때?"] and out["intent"] == "search"
-
-
-def test_rule_understand():
-    assert rule_understand("안녕하세요", parse_query(" ")).action == "template"
-    assert rule_understand("2024년 서울 출생아 수", parse_query("2024년 서울 출생아 수")).action == "search"
-    assert rule_understand("요즘 어때?", parse_query("요즘 어때?")) is None
 
 
 def test_a_null_or_unknown_missing_slot_keeps_the_judgment():

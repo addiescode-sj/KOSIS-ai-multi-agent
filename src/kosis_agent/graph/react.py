@@ -10,20 +10,19 @@
 - Observation  : search_tables·summarize_stat 툴의 실제 결과. LLM이 만들지 않는다.
 - Final Answer : 실전 1 답 문장(StatAnswer.text) 또는 코드 고정 템플릿. LLM이 답 문장을 쓰지 않는다.
 
-LLM은 규칙이 판단하지 못한 경우에만 부른다(규칙 우선, T3-27과 같은 원칙). LLM이 없거나(키·서버 없음) 형식이 틀리면
-규칙 결과로 돌아간다. 모델은 2차 리랭커와 같은 OpenAI 호환 서버의 Qwen이 기본이다(backend/app/config.py agent_llm).
+understand는 매 턴 LLM이 먼저 판단한다(2026-11-24, 규칙 판단 제거). LLM이 없거나(키·서버 없음) 형식이 틀리면
+검색으로 간다(ReAct 전 동작). 모델은 2차 리랭커와 같은 OpenAI 호환 서버의 Qwen이 기본이다(backend/app/config.py agent_llm).
 """
 
 from __future__ import annotations
 
 import json
-import re
 from collections.abc import Callable
 from typing import Literal
 
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
-from kosis_agent.graph.context import CHART_WORDS, REGION_ALIASES, _new_words, _numbers, leftover
+from kosis_agent.graph.context import REGION_ALIASES, _new_words, _numbers
 from kosis_rag.parse.schemas import ParsedQuery
 
 Steps = Literal["off", "a", "b"]  # off: LLM 판단 없음 · a: 이해 + 검색 거절 후 재작성 · b: a + 충분성 판단 + 분해 검토
@@ -48,11 +47,6 @@ def clarify_text(missing: list[str]) -> str:
     """되묻기 문장. 빠진 슬롯 이름만 코드가 끼운다."""
     slots = "·".join(dict.fromkeys(missing)) or "지표·지역·기간"
     return f"어떤 통계를 찾으시나요? {slots}을(를) 조금 더 구체적으로 알려 주시면 찾아볼게요."
-
-
-# 인사·기능 문의 (내용 낱말이 없을 때만 템플릿. "도움"이 든 통계 질문은 지표 낱말이 있어 여기에 걸리지 않는다)
-GREETING = re.compile(r"^\s*(안녕|하이|헬로|hello|hi\b|고마워|고맙|감사|반가|누구(야|세요|니)|넌\s*뭐|너는\s*뭐|"
-                      r"뭘\s*할\s*수|무엇을\s*할\s*수|뭐\s*할\s*수|사용법|도움말)", re.IGNORECASE)
 
 
 # ---------------------------------------------------------------- LLM 출력 계약
@@ -123,7 +117,8 @@ class Judge:
         return parse_step(str(reply.content), model)
 
     def understand(self, question: str, previous: str | None) -> UnderstandStep:
-        task = "사용자 질문을 보고 다음 행동을 하나 고른다. 애매하면 search를 고른다(검색 단계가 범위 밖 질문을 거절한다)."
+        task = ("사용자 질문을 보고 다음 행동을 하나 고른다. 직전 질문을 이어 묻는 말(\"그 표로 그래프\", \"부산은?\", \"작년은?\")은 search다. "
+                "애매하면 search를 고른다(검색 단계가 범위 밖 질문을 거절한다).")
         human = (f"직전 질문: {previous}\n" if previous else "") + f"이번 질문: {question}"
         return self._ask(UnderstandStep, task, human)
 
@@ -148,23 +143,6 @@ def safe(call: Callable[[], BaseModel]) -> BaseModel | None:
         return call()
     except Exception:  # noqa: BLE001 - 판단 단계 장애는 규칙 경로로 대신한다(턴을 끊지 않음)
         return None
-
-
-# ---------------------------------------------------------------- 규칙 판단
-def rule_understand(question: str, parsed: ParsedQuery) -> UnderstandStep | None:
-    """질의 이해 규칙. 판단하지 못하면 None(→ LLM).
-
-    - 인사·기능 문의이고 지표·조건이 없으면 template(greeting).
-    - 지표 낱말·조건(시도·기간·분류)·차트 말이 있거나, 조건 표현을 지우고도 내용이 6자 이상 남으면 search
-      ("태어난 아이 수"처럼 지표 낱말이 없는 통계 질문이 있어서 남는 내용도 본다. 범위 밖이면 실전 2 gate가 거절한다).
-    - 그 밖(짧고 내용 없는 말: "요즘 어때?")은 판단 보류.
-    """
-    slots = bool(parsed.measures or parsed.regions or parsed.period_start or parsed.period_end or parsed.dimensions)
-    if GREETING.search(question) and not slots:
-        return UnderstandStep(thought="인사·기능 문의", action="template", kind="greeting")
-    if slots or CHART_WORDS.search(question) or len(leftover(question)) >= 6:
-        return UnderstandStep(thought="통계 질문(지표·조건 있음)", action="search")
-    return None
 
 
 def grounded(text: str, sources: str, parse: Callable[[str], ParsedQuery]) -> bool:

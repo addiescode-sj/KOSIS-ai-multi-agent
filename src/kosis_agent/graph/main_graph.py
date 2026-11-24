@@ -18,8 +18,8 @@
     finalize → END   (outcome: answered | refused | clarify | failed)
 
 노드별 역할:
-- understand 이번 턴 상태를 비우고 질의를 이해한다. 규칙 먼저(read_turn 이월·지시어, split_question 분해, 인사·내용 규칙),
-             판단 못 한 턴만 Qwen(Judge.understand). 되묻기 다음 턴이면 rewrite로 보낸다(pending_clarify).
+- understand 이번 턴 상태를 비우고 질의를 이해한다. 매 턴 Qwen이 먼저 판단한다(Judge.understand, 규칙 판단 없음).
+             search·rewrite면 그다음 직전 표 재사용(read_turn 이월·지시어)과 분해(split_question)를 본다. 되묻기 다음 턴이면 rewrite로 보낸다(pending_clarify).
              옵션 B면 규칙이 나눈 멀티쿼리를 Qwen이 한 번 검토한다(Judge.split: 같은 지표 비교면 합침).
 - rewrite    검색에 쓸 한 문장으로 다시 쓴다(Judge.rewrite, 원문·이전 문장 낱말만 → grounded). 옵션 B면 Qwen이 충분성을
              판단해(Judge.sufficiency) 불충분하면 1회 더 쓴다. 판단 LLM이 없으면 되묻기 답을 원 질문 뒤에 붙인 문장을 쓴다.
@@ -49,7 +49,7 @@ from langgraph.graph import END, START, StateGraph
 
 from kosis_agent.graph.context import LLMReader, Mode, chart_request, read_turn
 from kosis_agent.graph.multiquery import SplitReader, split_question
-from kosis_agent.graph.react import (TEMPLATES, Judge, Steps, UnderstandStep, clarify_text, grounded, rule_understand,
+from kosis_agent.graph.react import (TEMPLATES, Judge, Steps, UnderstandStep, clarify_text, grounded,
                                      safe)
 from kosis_agent.graph.state import AgentState
 from kosis_agent.retrieval.search import make_search_tables_tool
@@ -162,6 +162,17 @@ def build_graph(search: Any, stat_llm: StatLLMConfig, *, retry_interval: float =
             source = f"원래 질문: {pending}\n되묻기에 대한 답: {question}"
             return {**fresh, "intent": "rewrite", "rewrite_source": source,
                     "trace": [{"step": "understand", "action": "rewrite", "by": "rule", "thought": "되묻기에 대한 답"}]}
+        # ReAct가 매 턴 먼저 판단한다(규칙 판단 없음). LLM이 없거나 장애면 search(= ReAct 전 동작, 범위 밖은 gate가 거절)
+        got = safe(lambda: judge.understand(question, state.get("active_question"))) if judge else None
+        decided, by = (got, "llm") if got is not None else (UnderstandStep(thought="판단 없음 → 검색", action="search"), "none")
+        trace = [{"step": "understand", "action": decided.action, "by": by, "thought": decided.thought}]
+        if decided.action == "template":
+            kind = decided.kind or "not_statistics"
+            # 거절 이유는 실전 2 gate와 같은 out_of_scope(색인 밖). 종류는 template에 둔다
+            return {**fresh, "intent": "template", "template": kind, "refusal_reason": "out_of_scope", "trace": trace}
+        if decided.action == "clarify":
+            return {**fresh, "intent": "clarify", "missing": list(decided.missing), "trace": trace}
+        # search·rewrite: 직전 표를 다시 쓰는 턴(지시어·이월·차트만, T3-27)인지 본다
         reading = read_turn(question, active_table=state.get("active_table"),
                             active_question=state.get("active_question"), parse=parse, mode=interpreter, llm=llm)
         wants_chart = reading.chart_only or reading.chart_type is not None or chart_request(question)[0]
@@ -170,22 +181,10 @@ def build_graph(search: Any, stat_llm: StatLLMConfig, *, retry_interval: float =
         base = {**fresh, "resolved_question": reading.resolved_question, "interpreted_by": reading.by,
                 "reused_table": reading.use_previous_table, "carried_over": carried, "chart_requested": wants_chart,
                 "chart_type": reading.chart_type, "chart_only": reading.chart_only}
-        if reading.use_previous_table:  # 직전 표를 쓰는 턴(지시어·이월·차트만)은 이해 판단이 이미 끝났다
+        if reading.use_previous_table:
             action = "chart_only" if reading.chart_only else "reuse"
-            return {**base, "intent": "search", "trace": [{"step": "understand", "action": action, "by": reading.by,
-                                                           "thought": "직전 표를 다시 씀"}]}
-        decided = rule_understand(question, parse(question))
-        by = "rule"
-        if decided is None:
-            got = safe(lambda: judge.understand(question, state.get("active_question"))) if judge else None
-            decided, by = (got, "llm") if got is not None else (UnderstandStep(thought="판단 보류 → 검색", action="search"), "none")
-        trace = [{"step": "understand", "action": decided.action, "by": by, "thought": decided.thought}]
-        if decided.action == "template":
-            kind = decided.kind or "not_statistics"
-            # 거절 이유는 실전 2 gate와 같은 out_of_scope(색인 밖). 종류는 template에 둔다
-            return {**base, "intent": "template", "template": kind, "refusal_reason": "out_of_scope", "trace": trace}
-        if decided.action == "clarify":
-            return {**base, "intent": "clarify", "missing": list(decided.missing), "trace": trace}
+            trace.append({"step": "context", "action": action, "by": reading.by, "thought": "직전 표를 다시 씀"})
+            return {**base, "intent": "search", "trace": trace}
         if decided.action == "rewrite":
             return {**base, "intent": "rewrite", "rewrite_source": f"질문: {question}", "trace": trace}
         split = split_question(question, parse, splitter)
