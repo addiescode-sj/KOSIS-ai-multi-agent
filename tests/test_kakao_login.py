@@ -397,6 +397,21 @@ def test_feedback_belongs_to_the_member(svc):
     assert svc.login().post("/feedback", json=body, headers=ORIGIN).status_code == 200  # another device
 
 
+def test_a_restored_conversation_carries_my_feedback_per_turn(svc):
+    """T3-55: GET /chat/{id} gives each turn the member's feedback {value, category} on that answer, or null."""
+    http = svc.login()
+    first = svc.ask_as(http)[1]
+    thread, rid = first["meta"]["thread_id"], first["meta"]["trace_id"]
+    svc.ask_as(http, "2031년은?", thread)
+    body = {"request_id": rid, "value": "down", "category": "wrong_number"}
+    assert http.post("/feedback", json=body, headers=ORIGIN).status_code == 200
+    assert http.post("/feedback", json={**body, "value": "up", "category": "right_table"},
+                     headers=ORIGIN).json()["updated"] is True  # pressed again: the last value is restored
+    turns = svc.login().get(f"/chat/{thread}").json()["turns"]  # another device
+    assert [t["feedback"] for t in turns] == [{"value": "up", "category": "right_table"}, None]
+    assert turns[0]["result"]["request_id"] == rid
+
+
 def test_the_list_pages_without_gaps_when_times_are_equal(svc):
     user = svc.store.member(svc.store.login("1", "a", NOW), NOW)
     ids = []

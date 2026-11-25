@@ -22,13 +22,14 @@ from sqlalchemy.orm import Session
 
 from kosis_store.log_metrics import day_range
 from kosis_store.log_models import DailySessionUsage, DailyUsage, RequestLog, UiEvent
+from kosis_store.service_models import Feedback
 
 
 def _counts(turns: list, events: list, votes_of: dict[str, str]) -> dict:
     """Usage counts of some turns, the click events that go with them, and the last feedback value of each answer.
 
-    Feedback follows kosis_store.log_metrics (T3-49): the last feedback of an answer over all time, counted on the
-    question's day and for the question's user, so the total equals the sum over users. Side effects: none.
+    Feedback follows kosis_store.log_metrics: the feedback table's row of an answer (its last value, T3-55), counted on
+    the question's day and for the question's user, so the total equals the sum over users. Side effects: none.
     """
     per_conversation = Counter(t.conversation_id for t in turns)
     clicks = Counter(e.event_type for e in events)
@@ -62,17 +63,13 @@ def usage_of_day(session: Session, day: date) -> tuple[dict, list[dict]]:
         .where(~UiEvent.is_internal, UiEvent.received_at >= bounds["start"], UiEvent.received_at < bounds["end"])
         .where(UiEvent.event_type != "feedback")
     ).all()
-    # the last feedback of each of the day's answers, whenever it came (same order as log_metrics: client_ts,
-    # received_at, event_id)
+    # the feedback of each of the day's answers, whenever it came: one row per answer in the feedback table (POST
+    # /feedback replaces it in place); feedback screen events (old clients) are not counted
     votes_of: dict[str, str] = {}
     ids = [t.request_id for t in turns]
     for i in range(0, len(ids), 1000):
-        for e in session.execute(
-            select(UiEvent.request_id, UiEvent.props)
-            .where(UiEvent.event_type == "feedback", UiEvent.request_id.in_(ids[i:i + 1000]))
-            .order_by(UiEvent.client_ts, UiEvent.received_at, UiEvent.event_id)
-        ).all():
-            votes_of[e.request_id] = (e.props or {}).get("value")
+        votes_of.update(session.execute(
+            select(Feedback.request_id, Feedback.value).where(Feedback.request_id.in_(ids[i:i + 1000]))).tuples().all())
 
     total = {"day": day, **_counts(turns, events, votes_of),
              "sessions": len({t.session_id for t in turns if t.session_id is not None})}

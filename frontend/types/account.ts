@@ -1,4 +1,4 @@
-import type { Me } from "../lib/auth/schemas.ts";
+import type { Me, MeUpdate } from "../lib/auth/schemas.ts";
 
 // Who is using the app, from GET /auth/me (lib/auth/me.ts):
 //   member  — logged in with Kakao; conversations live on the server (GET /chat)
@@ -12,7 +12,7 @@ export type AuthState =
 export type AvatarColor = Me["color"];
 
 // The settings the account keeps (PATCH /auth/me)
-export type AccountUpdate = Partial<Pick<Me, "display_name" | "color" | "save_history" | "retention_days">>;
+export type AccountUpdate = MeUpdate; // z.infer of the PATCH /auth/me body schema
 
 // Notification switches: nothing sends them yet, so they stay in this browser
 export type NotifySettings = { notifyDone: boolean; notifyNotice: boolean };

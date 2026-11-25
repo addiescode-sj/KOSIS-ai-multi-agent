@@ -1,10 +1,11 @@
+import { z } from "zod";
+
 import type { Me } from "../auth/schemas.ts";
+import { createPersisted, persisted, type KV, type PersistedStore } from "../storage/persisted.ts";
 import type { AvatarColor, NotifySettings } from "../../types/account.ts";
 
 // The settings screen. Name, color and history are on the account (GET / PATCH /auth/me); the notification switches
-// have nothing behind them yet and are kept in this browser (the screen says so).
-
-type KV = Pick<Storage, "getItem" | "setItem" | "removeItem">;
+// have nothing behind them yet and are kept in this browser (localStorage through lib/storage; the screen says so).
 
 export const SETTINGS_KEY = "kosis.notify.v1";
 export const NAME_MAX = 20;
@@ -19,45 +20,25 @@ export const RETENTION_DAYS: Me["retention_days"][] = [90, 30];
 // off until the member turns it on: a news mail needs consent
 export const DEFAULT_NOTIFY: NotifySettings = { notifyDone: true, notifyNotice: false };
 
+// Each switch on its own: an unknown or broken one reads as its default, the others stay
+export const NotifySchema = z.looseObject({
+  notifyDone: z.boolean().catch(DEFAULT_NOTIFY.notifyDone).default(DEFAULT_NOTIFY.notifyDone),
+  notifyNotice: z.boolean().catch(DEFAULT_NOTIFY.notifyNotice).default(DEFAULT_NOTIFY.notifyNotice),
+}).transform((v): NotifySettings => ({ notifyDone: v.notifyDone, notifyNotice: v.notifyNotice }));
+
 export function createNotifyStore(storage: () => KV | null) {
-  const listeners = new Set<() => void>();
-  let cacheRaw: string | null | undefined;
-  let cache = DEFAULT_NOTIFY;
-
-  function read(): NotifySettings {
-    const raw = storage()?.getItem(SETTINGS_KEY) ?? null;
-    if (raw !== cacheRaw) {
-      cacheRaw = raw;
-      cache = parse(raw);
-    }
-    return cache;
-  }
-  const notify = () => listeners.forEach((l) => l());
-
-  return {
-    get: read,
-    update(patch: Partial<NotifySettings>) {
-      storage()?.setItem(SETTINGS_KEY, JSON.stringify({ ...read(), ...patch }));
-      notify();
-    },
-    reset() {
-      storage()?.removeItem(SETTINGS_KEY);
-      notify();
-    },
-    subscribe(listener: () => void) {
-      listeners.add(listener);
-      return () => listeners.delete(listener);
-    },
-  };
+  return notifyOn(createPersisted<NotifySettings>(SETTINGS_KEY, NotifySchema, { storage, fallback: DEFAULT_NOTIFY }));
 }
 
-function parse(raw: string | null): NotifySettings {
-  if (!raw) return DEFAULT_NOTIFY;
-  try {
-    return { ...DEFAULT_NOTIFY, ...JSON.parse(raw) };
-  } catch {
-    return DEFAULT_NOTIFY;
-  }
+function notifyOn(store: PersistedStore<NotifySettings>) {
+  return {
+    get: store.get,
+    update(patch: Partial<NotifySettings>) {
+      store.set((prev) => ({ ...prev, ...patch }));
+    },
+    reset: store.reset,
+    subscribe: store.subscribe,
+  };
 }
 
 // The name shown in the app: the chosen display name, else the Kakao nickname
@@ -71,4 +52,5 @@ export function validName(name: string): boolean {
   return n > 0 && n <= NAME_MAX;
 }
 
-export const notifySettings = createNotifyStore(() => (typeof window === "undefined" ? null : window.localStorage));
+// This browser's switches (localStorage: they are not per tab), shared with usePersisted readers of the same key
+export const notifySettings = notifyOn(persisted<NotifySettings>(SETTINGS_KEY, NotifySchema, { area: "local", fallback: DEFAULT_NOTIFY }));

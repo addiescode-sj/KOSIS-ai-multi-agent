@@ -23,3 +23,10 @@ test("a found result stays fresh, a failure is stale at once (retried on the nex
   expect(staleTime({ state: { data: { ok: true, out } } })).toBeGreaterThan(0);
   expect(staleTime({ state: { data: { ok: false, message: "x" } } })).toBe(0);
 });
+
+test("search request: a question of 1..200 characters only", async () => {
+  const { SearchRequest } = await import("./schemas.ts");
+  expect(SearchRequest.parse({ question: " 출생아 수 " })).toEqual({ question: "출생아 수" });
+  for (const bad of [{ question: "" }, { question: "가".repeat(201) }, { q: "x" }, null]) expect(SearchRequest.safeParse(bad).success).toBe(false);
+  expect(SearchOutput.safeParse({ question: "q" }).success).toBe(false);
+});

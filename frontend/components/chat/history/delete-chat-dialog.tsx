@@ -24,7 +24,7 @@ export function DeleteChatDialog({ item, member, activeId, onClose, onDeleted }:
       <Dialog.Content variant="destructive">
         <Dialog.Title>이 대화를 삭제하시겠습니까?</Dialog.Title>
         <Dialog.Description>
-          ‘{item?.title}’ 대화를 {member ? "계정에서" : "이 브라우저에서"} 지웁니다. 삭제하면 되돌릴 수 없습니다.
+          ‘{item?.title}’ 대화를 {member ? "계정에서" : "이 탭에서"} 지웁니다. 삭제하면 되돌릴 수 없습니다.
         </Dialog.Description>
         {del.error && <p role="alert" className="mt-4 rounded-lg bg-red-50 px-3 py-2 text-[13px] text-red-700">{del.error.message}</p>}
         <Dialog.Footer>

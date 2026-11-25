@@ -1,24 +1,23 @@
 "use client";
 
-import { useInfiniteQuery, useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
-import { useEffect } from "react";
+import {
+  useInfiniteQuery, useMutation, useQueryClient, useSuspenseInfiniteQuery, useSuspenseQuery, usePrefetchQuery,
+  type InfiniteData,
+} from "@tanstack/react-query";
 
-import { MemberChatList } from "@/lib/auth/schemas";
 import { useAuth } from "@/lib/auth/use-me";
 import type { ConversationItem } from "@/types/account";
 import type { Conversation } from "@/types/conversation";
 import { queryKeys } from "@/lib/query/keys";
 
 import { conversations } from "./conversations";
-import { chatFrom, type ChatRead } from "./read";
+import { NoContent, request } from "@/lib/backend/request";
+
+import { chatListQuery, chatQuery } from "./queries";
+import type { ChatPage, ChatRead } from "./read";
 import { itemsFromBrowser, itemsFromServer } from "./restore";
 import { sessionHeaders } from "./session";
 import { useConversations } from "./use-conversations";
-
-async function json<T>(res: Response, parse: (v: unknown) => T): Promise<T> {
-  if (!res.ok) throw new Error(`대화 서버 오류 (${res.status})`);
-  return parse(await res.json());
-}
 
 export type ChatList = {
   member: boolean;
@@ -32,77 +31,85 @@ export type ChatList = {
   browser: Conversation[]; // guest: the full saved conversations (the search page reads their text)
 };
 
-// The conversation list of the sidebar and /chat: GET /chat for a member, this browser for a guest.
-export function useChatList(): ChatList {
-  const auth = useAuth();
-  const member = auth.status === "member";
-  const browser = useConversations();
-  const server = useInfiniteQuery({
-    queryKey: queryKeys.chatList,
-    enabled: member,
-    initialPageParam: null as string | null,
-    queryFn: async ({ pageParam }) => json(
-      await fetch(`/api/chats${pageParam ? `?cursor=${encodeURIComponent(pageParam)}` : ""}`, { cache: "no-store" }),
-      (v) => MemberChatList.parse(v),
-    ),
-    getNextPageParam: (last) => last.next_cursor || null,
-  });
-  if (!member) {
-    return {
-      member: false, items: itemsFromBrowser(browser), more: false, loadMore: () => {}, loadingMore: false, moreFailed: false,
-      loading: false, error: null, browser,
-    };
-  }
+type Pages = { data: InfiniteData<ChatPage> | undefined; hasNextPage: boolean; isFetching: boolean; isFetchingNextPage: boolean; isPending: boolean; fetchNextPage: () => Promise<unknown> };
+
+function memberList(q: Pages): ChatList {
+  const pages = q.data?.pages ?? [];
+  const ok = pages.flatMap((p) => (p.ok ? [p] : []));
+  const last = pages.at(-1);
   return {
     member: true,
-    items: itemsFromServer(server.data?.pages.flatMap((p) => p.items) ?? []),
-    more: server.hasNextPage,
-    loadMore: () => { if (!server.isFetching) void server.fetchNextPage(); },
-    loadingMore: server.isFetchingNextPage,
-    moreFailed: server.isFetchNextPageError,
-    loading: server.isPending,
-    error: server.error && !server.data ? server.error.message : null,
+    items: itemsFromServer(ok.flatMap((p) => p.items)),
+    more: q.hasNextPage,
+    loadMore: () => { if (!q.isFetching) void q.fetchNextPage(); },
+    loadingMore: q.isFetchingNextPage,
+    moreFailed: ok.length > 0 && last !== undefined && !last.ok,
+    loading: q.isPending,
+    error: !ok.length && last && !last.ok ? last.message : null,
     browser: [],
   };
 }
 
-// One member conversation for /chat/[id] (GET /chat/{id}). The page prefetches it on the server with the login
-// (SavedChatHydration), so this suspends only until that answer streams in.
-export function useMemberChat(id: string): ChatRead {
-  const client = useQueryClient();
-  const { data } = useSuspenseQuery({
-    queryKey: queryKeys.chat(id),
-    queryFn: async () => {
-      const res = await fetch(`/api/chats/${encodeURIComponent(id)}`, { cache: "no-store" }).catch(() => null);
-      return chatFrom(res && { status: res.status, body: await res.json().catch(() => null) });
-    },
-    staleTime: Infinity, // the open chat keeps its own messages from here on
-  });
-  // Opened again later: read again (the copy misses the turns asked since). Dropped once no screen shows it; the
-  // delay lets a remount (React's dev double effects) attach first.
-  useEffect(() => () => {
-    setTimeout(() => client.removeQueries({ queryKey: queryKeys.chat(id), exact: true, predicate: (q) => q.getObserversCount() === 0 }));
-  }, [client, id]);
-  return data;
+function guestList(browser: Conversation[]): ChatList {
+  return {
+    member: false, items: itemsFromBrowser(browser), more: false, loadMore: () => {}, loadingMore: false, moreFailed: false,
+    loading: false, error: null, browser,
+  };
 }
 
-// Delete one conversation: on the server (member: the conversation, guest: its thread) and from this browser.
+// The conversation list of the sidebar and dialogs: GET /chat for a member, this tab for a guest. Not suspending:
+// it picks up a list the server prefetched (/chat, /settings) and otherwise reads it in the browser.
+export function useChatList(): ChatList {
+  const auth = useAuth();
+  const member = auth.status === "member";
+  const browser = useConversations();
+  const server = useInfiniteQuery({ ...chatListQuery, enabled: member });
+  return member ? memberList(server) : guestList(browser);
+}
+
+// /chat for a member: the server prefetched the first page (ChatListHydration), so this suspends only until it
+// streams in. Use it only under that prefetch: a suspending query on the server cannot reach /api/chats.
+export function useMemberChatList(): ChatList {
+  return memberList(useSuspenseInfiniteQuery(chatListQuery));
+}
+
+export function useGuestChatList(): ChatList {
+  return guestList(useConversations());
+}
+
+// One member conversation for /chat/[id]. The page prefetches it on the server with the login
+// (SavedChatHydration), so this suspends only until that answer streams in.
+export function useMemberChat(id: string): ChatRead {
+  return useSuspenseQuery(chatQuery(id)).data;
+}
+
+// Warm the conversation a list row points to (rendered while the row is hovered or focused): opening it then
+// starts from the cache instead of a request.
+export function useWarmChat(id: string): void {
+  usePrefetchQuery(chatQuery(id));
+}
+
+// Delete one conversation: on the server (member: the conversation, guest: its thread) and from this tab.
 export function useDeleteChat() {
   const client = useQueryClient();
   const auth = useAuth();
   return useMutation({
     mutationFn: async (c: { id: string; threadId: string | null }) => {
       if (auth.status === "member") {
-        const res = await fetch(`/api/chats/${encodeURIComponent(c.id)}`, { method: "DELETE" });
-        if (!res.ok && res.status !== 404) throw new Error(`삭제하지 못했습니다 (${res.status})`);
+        const res = await request(`/api/chats/${encodeURIComponent(c.id)}`, { method: "DELETE", responseSchema: NoContent });
+        // the screens read mutation.error.message: a failed value is raised inside the mutation only
+        if (!res.ok && res.status !== 404) throw new Error(`삭제하지 못했습니다${res.status ? ` (${res.status})` : ""}`);
         return;
       }
       conversations.remove(c.id);
-      // the thread's earlier turns on the server; best effort (a guest list lives in this browser either way)
+      // the thread's earlier turns on the server; best effort (a guest list lives in this tab either way)
       if (c.threadId) {
-        await fetch(`/api/chats/${encodeURIComponent(c.threadId)}`, { method: "DELETE", headers: sessionHeaders() }).catch(() => null);
+        await request(`/api/chats/${encodeURIComponent(c.threadId)}`, { method: "DELETE", headers: sessionHeaders(), responseSchema: NoContent });
       }
     },
-    onSuccess: () => client.invalidateQueries({ queryKey: queryKeys.chatList }),
+    onSuccess: (_, c) => {
+      client.removeQueries({ queryKey: queryKeys.chat(c.id), exact: true });
+      return client.invalidateQueries({ queryKey: queryKeys.chatList });
+    },
   });
 }

@@ -34,3 +34,15 @@ test("the server list carries its question count", () => {
     { id: "c1", title: "t", updatedAt: Date.parse("2026-11-24T01:00:00Z"), questions: 2 },
   ]);
 });
+
+test("a member's 👍/👎 comes back by the answer's request id", () => {
+  const rid = "4bf92f3577b34da6a3ce929d0e0e4736";
+  const c = conversationFrom(MemberChat.parse({
+    id: "c2", title: "t",
+    turns: [
+      { turn: 1, question: "q", result: { ...ANSWERED, request_id: rid }, created_at: "2026-11-24T01:00:00Z", feedback: { value: "up", category: "easy" } },
+      { turn: 2, question: "q2", result: REFUSED, created_at: "2026-11-24T01:01:00Z", feedback: null },
+    ],
+  }));
+  expect(c.feedback).toEqual({ [rid]: { value: "up", category: "easy" } });
+});

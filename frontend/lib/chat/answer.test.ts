@@ -1,7 +1,10 @@
 import { expect, test } from "@jest/globals";
 
 import type { ChatMessage } from "../../types/chat.ts";
-import { answerKind, citation, formatValue, headline, progress, refusalReason, refusalTitle, REFUSALS } from "./answer.ts";
+import {
+  answerKind, citation, copyText, formatValue, headline, progress, refusalReason, refusalTitle, REFUSALS, requestIdOf, threadIdOf,
+  turnState,
+} from "./answer.ts";
 import { ANSWERED, CHART_FAILED, CLARIFY, PARTIAL, REFUSED, SEARCH_REFUSED } from "./fixtures.ts";
 import { ChatResult } from "./schemas.ts";
 
@@ -45,7 +48,7 @@ test("display keeps a derived fact's rounding and a source cell's digits", () =>
 
 test("citation: KOSIS / survey / table with the KOSIS link of the same table", () => {
   expect(citation(parse(ANSWERED))).toEqual({
-    survey: "조사", table: "표 DT_A", url: "https://kosis.kr", text: "KOSIS / 조사 / 표 DT_A",
+    survey: "조사", table: "표 DT_A", url: "https://kosis.kr", text: "KOSIS / 조사 / 표 DT_A", key: "101_DT_A", rank: 1,
   });
   expect(citation(parse(SEARCH_REFUSED))).toBeNull(); // no table behind a search refusal
 });
@@ -72,4 +75,41 @@ test("an unknown backend field passes through, a wrong type is caught", () => {
   expect((parse({ ...ANSWERED, new_field: 1 }) as Record<string, unknown>).new_field).toBe(1);
   expect(() => parse({ ...ANSWERED, outcome: "maybe" })).toThrow();
   expect(() => parse({ ...ANSWERED, picked: "101_DT_A" })).toThrow();
+});
+
+test("citation rank: 1-based among the picked tables, else the candidates, else null", () => {
+  const other = { ...ANSWERED.picked[0], key: "101_DT_B", tbl_id: "DT_B" };
+  const r = parse({ ...ANSWERED, picked: [other, ANSWERED.picked[0]] });
+  expect(citation(r)?.rank).toBe(2);
+  expect(citation(parse({ ...ANSWERED, picked: [other], candidates: [other, other, ANSWERED.picked[0]] }))?.rank).toBe(3);
+  expect(citation(parse({ ...ANSWERED, picked: [], candidates: [] }))?.rank).toBeNull();
+});
+
+test("copy text: the backend answer as is, 출처 added only when the answer lacks it", () => {
+  expect(copyText(parse(ANSWERED))).toBe(ANSWERED.answer); // already ends with its 출처 line
+  expect(copyText(parse({ ...ANSWERED, answer: "100명입니다." }))).toBe("100명입니다.\n\n출처: KOSIS / 조사 / 표 DT_A (https://kosis.kr)");
+  expect(copyText(parse({ ...SEARCH_REFUSED, answer: " 범위 밖 " }))).toBe("범위 밖");
+});
+
+test("request id: the result's own, else the stream meta; thread id from the meta", () => {
+  const withMeta: Pick<ChatMessage, "parts"> = { parts: [{ type: "data-meta", data: { threadId: "t1", requestId: "m".repeat(32) } }] };
+  expect(requestIdOf(withMeta)).toBe("m".repeat(32));
+  expect(threadIdOf(withMeta)).toBe("t1");
+  const done: Pick<ChatMessage, "parts"> = {
+    parts: [...withMeta.parts, { type: "data-result", data: parse({ ...ANSWERED, request_id: "r".repeat(32) }) }],
+  };
+  expect(requestIdOf(done)).toBe("r".repeat(32));
+  expect(requestIdOf({ parts: [] })).toBeNull();
+  expect(threadIdOf({ parts: [] })).toBeNull();
+});
+
+test("turn state: reconnecting until the new attempt's meta, unfinished draft kept as incomplete", () => {
+  const reconnect = (connected: boolean): Pick<ChatMessage, "parts"> => ({
+    parts: [{ type: "data-draft", data: { text: "2024년 " } }, { type: "data-reconnect", data: { attempt: 1, connected } }],
+  });
+  expect(turnState({ parts: [] }, true)).toBe("working");
+  expect(turnState(reconnect(false), true)).toBe("reconnecting");
+  expect(turnState(reconnect(true), true)).toBe("working");
+  expect(turnState(reconnect(false), false)).toBe("incomplete"); // the reconnect failed too: tokens stay, marked
+  expect(turnState({ parts: [] }, false)).toBe("stopped");
 });

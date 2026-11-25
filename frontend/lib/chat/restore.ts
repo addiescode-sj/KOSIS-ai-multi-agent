@@ -9,7 +9,7 @@ export const UNRESTORABLE = "이 답은 저장된 형식이 달라 다시 보여
 
 // A member conversation from GET /chat/{id} as the chat screen's messages: each turn's question, then its saved
 // ChatResult checked again with zod. A result that no longer parses is not redrawn from guesses: the turn shows
-// a fixed notice instead. The thread id is the conversation id (contract 6장).
+// a fixed notice instead. The thread id is the conversation id (contract 6장). Each turn's last 👍/👎 comes along.
 export function conversationFrom(chat: MemberChat): Conversation {
   const turns = [...chat.turns].sort((a, b) => a.turn - b.turn);
   const messages: ChatMessage[] = turns.flatMap((t): ChatMessage[] => {
@@ -23,8 +23,17 @@ export function conversationFrom(chat: MemberChat): Conversation {
       : { id: `${chat.id}-a${t.turn}`, role: "assistant", parts: [{ type: "data-notice", data: { text: UNRESTORABLE } }] };
     return [question, answer];
   });
+  // the 👍/👎 the member gave, by the answer's request id (the same map a guest's conversation keeps)
+  const feedback: NonNullable<Conversation["feedback"]> = {};
+  for (const t of turns) {
+    const requestId = (t.result as { request_id?: unknown } | null)?.request_id;
+    if (t.feedback && typeof requestId === "string") feedback[requestId] = { value: t.feedback.value, category: t.feedback.category };
+  }
   const last = turns.at(-1);
-  return { id: chat.id, title: chat.title, threadId: chat.id, updatedAt: last ? Date.parse(last.created_at) : 0, messages };
+  return {
+    id: chat.id, title: chat.title, threadId: chat.id, updatedAt: last ? Date.parse(last.created_at) : 0, messages,
+    feedback,
+  };
 }
 
 export function itemsFromServer(items: { id: string; title: string; updated_at: string; questions: number }[]): ConversationItem[] {

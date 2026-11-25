@@ -2,7 +2,7 @@ import { expect, test } from "@jest/globals";
 
 import type { ChatMessage } from "../../types/chat.ts";
 import type { Conversation } from "../../types/conversation.ts";
-import { createStore, matchConversations, STORAGE_KEY, titleOf } from "./conversations.ts";
+import { createStore, feedbackOf, matchConversations, STORAGE_KEY, titleOf } from "./conversations.ts";
 import { ANSWERED } from "./fixtures.ts";
 import { ChatResult } from "./schemas.ts";
 
@@ -68,4 +68,45 @@ test("titles and search", () => {
   expect(matchConversations(list, "출생").map((c) => c.id)).toEqual(["a"]);
   expect(matchConversations(list, "100명").map((c) => c.id)).toEqual(["a"]); // the answer text counts
   expect(matchConversations(list, "  ")).toHaveLength(2);
+});
+
+test("migration: a list kept in localStorage before moves into this tab's sessionStorage once", () => {
+  const local = memory();
+  local.setItem(STORAGE_KEY, JSON.stringify([conv("a", 1, [user("q")])]));
+  const removed: string[] = [];
+  const legacy = { ...local, removeItem: (k: string) => { removed.push(k); local.data.delete(k); } };
+  const session = memory();
+  const store = createStore(() => session, () => legacy);
+  expect(store.list().map((c) => c.id)).toEqual(["a"]);
+  expect(session.data.has(STORAGE_KEY)).toBe(true);
+  expect(removed).toEqual([STORAGE_KEY]);
+  // the next tab finds nothing left to move
+  expect(createStore(() => memory(), () => legacy).list()).toEqual([]);
+});
+
+test("one broken conversation is dropped, the others stay", () => {
+  const kv = memory();
+  kv.setItem(STORAGE_KEY, JSON.stringify([conv("a", 1, [user("q")]), { id: "b" }]));
+  expect(createStore(() => kv).list().map((c) => c.id)).toEqual(["a"]);
+});
+
+test("a turn's 👍/👎 is kept with its conversation, survives a save from the chat screen, and can be cleared", () => {
+  const kv = memory();
+  const store = createStore(() => kv);
+  const rid = ChatResult.parse(ANSWERED).request_id ?? "rid-1";
+  const withResult: ChatMessage = {
+    id: "a1", role: "assistant",
+    parts: [{ type: "data-result", data: ChatResult.parse({ ...ANSWERED, request_id: rid }) }],
+  };
+  store.save(conv("a", 1, [user("q"), withResult]));
+  expect(store.setTurnFeedback("t-a", rid, { value: "down", category: "wrong_number" })).toBe(true);
+  expect(feedbackOf(store.get("a"), rid)).toEqual({ value: "down", category: "wrong_number" });
+  store.save(conv("a", 2, [user("q"), withResult, user("q2")])); // the chat screen saves without the map
+  expect(feedbackOf(createStore(() => kv).get("a"), rid)).toEqual({ value: "down", category: "wrong_number" });
+  // found by the request id when the thread id changed (expired guest thread)
+  expect(store.setTurnFeedback("other-thread", rid, { value: "up", category: null })).toBe(true);
+  expect(feedbackOf(store.get("a"), rid)).toEqual({ value: "up", category: null });
+  expect(store.setTurnFeedback(null, rid, null)).toBe(true);
+  expect(feedbackOf(store.get("a"), rid)).toBeNull();
+  expect(store.setTurnFeedback("nope", "unknown", { value: "up", category: null })).toBe(false);
 });
