@@ -17,6 +17,7 @@ backend 이미지에서 torch를 빼고 이 서버를 부르게 하는 배선은
 | `inference/Dockerfile` | 이미지 (빌드 위치 = 레포 루트) |
 | `inference/requirements.txt` | 서버 의존성 (uv.lock 버전과 같음) |
 | `inference/check_parity.py` | 서버 값과 로컬 로딩 값이 같은지 확인 |
+| `inference/check_collection.py` | 색인 컬렉션이 이 임베딩 가중치로 만든 것인지(`VECTOR_COLLECTION` 포함) 확인 |
 | `docker-compose.inference.yml` | `embedder`(8001)·`reranker`(8002) 두 컨테이너 |
 | `tests/inference/test_inference_server.py` | 가짜 모델로 서버·클라이언트 계약 테스트 (torch 불필요) |
 
@@ -38,6 +39,8 @@ backend 이미지에서 torch를 빼고 이 서버를 부르게 하는 배선은
 - 클라이언트는 연결 실패·타임아웃·오류 응답을 URL이 들어간 `InferenceError`로 낸다. 서버 IP가 바뀌면 이 오류가 난다.
 
 ## 실행 (PowerShell, 레포 루트)
+
+빌드에 `vendor/phase2`의 모델 로더를 쓰므로 GPU 서버에 레포를 받을 때 submodule도 받는다(`git submodule update --init vendor/phase2`). 가중치 4개(`data/models/embedder/E2s-e2.pt`·`.json`, `data/models/reranker/RR-E2s-e2.pt`·`.json`)는 git에 없어서 따로 옮긴다.
 
 GPU로 두 서버 띄우기 (NVIDIA Container Toolkit 필요, Docker Desktop은 WSL2 GPU 지원):
 
@@ -78,6 +81,15 @@ docker compose -f docker-compose.yml -f docker-compose.inference.yml up -d --bui
 - CPU 서버의 backend는 `.env`의 `EMBED_URL=http://<GPU 서버 IP>:8001`, `RERANK_URL=http://<GPU 서버 IP>:8002`로 부른다. Qwen 주소(`STAGE2_BASE_URL`)와 같은 IP다. GPU 서버 방화벽에서 8001·8002를 CPU 서버 IP에만 연다.
 
 ## 확인
+
+컬렉션과 가중치 일치(torch 불필요, `.env`의 `DATABASE_URL`·`VECTOR_COLLECTION` 사용). backend 검색은 컬렉션 메타 `embed_ckpt`가 임베딩 서버 `ckpt`와 같을 때만 열린다. E2s-e2의 값은 `E2s-e2.pt@1a794c032797`이다.
+
+```powershell
+uv run python inference/check_collection.py
+uv run python inference/check_collection.py --embed-url http://<GPU 서버 IP>:8001
+```
+
+`PASS`면 그대로 쓰면 된다. `FAIL`이면 맞는 컬렉션 이름을 알려 주거나, 없으면 만드는 명령을 출력한다.
 
 계약 테스트(가짜 모델, torch 불필요):
 
