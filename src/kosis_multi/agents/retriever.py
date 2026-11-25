@@ -5,6 +5,7 @@
 
 - 새 질문: 사용자 원문으로 찾는다.
 - 이월 턴인데 직전 표가 표 불일치로 거절함: 다시 쓴 독립 질문으로 다시 찾는다(한 번만).
+- 이월 턴인데 ①이 직전 표를 쓰지 않기로 함(지표만 바꾼 이월, 직전 표에 없는 시도): 처음부터 다시 쓴 질문으로 찾는다.
 - 멀티쿼리 턴: 하위 질문마다 순서대로 찾는다(결정 5: 하위 질문 병렬은 뺌).
 S4 비동기 A: ①이 원문으로 미리 찾아 둔 결과가 있으면 retrieve_candidates가 그것을 기다려 쓴다(같은 질문일 때만).
 """
@@ -22,7 +23,7 @@ def make_retriever(steps: SearchSteps):
             questions = list(state["sub_questions"])
             update: dict = {}
         else:
-            fallback = bool(state.get("carried_over") and state["attempts"])
+            fallback = bool(state.get("carried_over") and (state["attempts"] or not state.get("reused_table")))
             questions = [state["resolved_question"] if fallback else state["question"]]
             # 다시 찾는 턴: 이제부터 직전 표가 아니라 새 검색 후보에서 고른다
             update = {"reused_table": False, "fallback_searched": True} if fallback else {}

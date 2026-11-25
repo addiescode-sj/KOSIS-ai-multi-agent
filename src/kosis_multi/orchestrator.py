@@ -49,6 +49,7 @@ from kosis_multi.state import MultiState
 from kosis_multi.tools import make_toolbox
 from kosis_rag.parse.schemas import ParsedQuery
 from kosis_rag.schemas.io import SearchOutput
+from kosis_rag.shared.fields import table_regions
 
 
 def timed(name: str, fn: Callable) -> Callable:
@@ -112,6 +113,8 @@ def build_graph(search: Any, stat_llm: StatLLMConfig, *, retry_interval: float =
         raise ValueError("alt_table_budget cannot be negative")
     parse = parse or default_parser(search)
     steps = SearchSteps(search)
+    records = getattr(getattr(search, "resources", None), "records", None)
+    regions_of = (lambda key: table_regions(records[key])) if records else None  # 직전 표의 시도 확인(region_gap)
     tools = make_toolbox(steps, stat_llm, retry_interval=retry_interval, summarize=summarize)
 
     def after_judge(state: dict) -> str:
@@ -146,7 +149,8 @@ def build_graph(search: Any, stat_llm: StatLLMConfig, *, retry_interval: float =
     graph = StateGraph(MultiState)
     graph.add_node("judge", timed("judge", make_judge(parse, interpreter=interpreter, llm=llm, splitter=splitter,
                                                    judge_llm=judge_llm,
-                                                   prefetch=steps.prefetch if prefetch else None)))
+                                                   prefetch=steps.prefetch if prefetch else None,
+                                                   regions_of=regions_of)))
     graph.add_node("retrieve", timed("retriever", make_retriever(steps)))
     graph.add_node("feasibility", timed("feasibility", make_feasibility(tools, make_calc_rewriter(rewrite_llm, parse) if rewrite_llm else None)))
     graph.add_node("calculate", timed("calculator", make_calculator(tools, parse)))

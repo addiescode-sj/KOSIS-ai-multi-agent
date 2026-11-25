@@ -18,6 +18,9 @@
    - 빈 답·호출 실패·Qwen 없음도 고정 문장.
    통계 사실을 말하지 말라는 것은 프롬프트로 막는다(숫자 검사가 마지막 방어선).
 5. rag 새 질문만 멀티쿼리 분해(split_question)를 한다.
+6. 후속 질문 규칙(agents/followup.py, 11/25 서버 점검): read_turn 전에 "이혼은?"(직전 연도·시도를 붙여 새 검색),
+   "부산이랑 비교해줘"(직전 시도에 더해 비교)를 코드로 정한다. 이월로 다시 쓴 질문이 직전 표에 없는 시도를 물으면
+   직전 표를 쓰지 않고 다시 쓴 질문으로 새로 찾는다(region_gap). 이렇게 새로 찾는 턴은 경로 판단·멀티쿼리 분해를 하지 않는다.
 되묻기는 여기서 하지 않는다(표를 본 실전 1이 규칙으로 함, 결정 4).
 """
 
@@ -34,6 +37,7 @@ from pydantic import BaseModel, Field
 
 from kosis_agent.graph.context import LLMReader, Mode, Reading, chart_request, read_turn
 from kosis_agent.graph.multiquery import SplitReader, split_question
+from kosis_multi.agents.followup import RegionsOf, follow_up, region_gap
 from kosis_rag.parse.schemas import ParsedQuery
 
 Route = Literal["rag", "direct"]
@@ -171,12 +175,14 @@ def decide_route(question: str, parsed: ParsedQuery, judge_llm: JudgeLLM | None,
 
 def make_judge(parse: Callable[[str], ParsedQuery], *, interpreter: Mode = "hybrid", llm: LLMReader | None = None,
                splitter: SplitReader | None = None, judge_llm: JudgeLLM | None = None,
-               prefetch: Callable[[str, RunnableConfig], None] | None = None):
+               prefetch: Callable[[str, RunnableConfig], None] | None = None,
+               regions_of: RegionsOf | None = None):
     """상태 → 이번 턴 필드. 이번 턴 상태를 모두 비우는 것도 여기서 한다(턴의 첫 에이전트).
 
     judge_llm = Qwen 판단(make_judge_llm). None이면 경로 판단은 규칙만이고, 판단 보류 턴은 rag(S1과 같은 동작).
     prefetch = S4 미리 검색(SearchSteps.prefetch). 규칙이 바로 direct로 정한 턴(인사)만 빼고, 판단을 시작할 때 원문으로
         ② 몫을 옆 스레드에서 돌려 둔다. 쓰이지 않으면 턴 끝에 버린다.
+    regions_of = 표 키 -> 표가 가진 시도(kosis_rag table_regions). None이면 직전 표의 시도 확인(region_gap)을 하지 않는다.
     """
 
     def judge(state: dict, config: RunnableConfig) -> dict:
@@ -187,17 +193,25 @@ def make_judge(parse: Callable[[str], ParsedQuery], *, interpreter: Mode = "hybr
         else:
             if prefetch is not None:
                 prefetch(question, config)
-            reading = read_turn(question, active_table=state.get("active_table"),
-                                active_question=state.get("active_question"), parse=parse, mode=interpreter, llm=llm)
+            reading = follow_up(question, state.get("active_question"), parse) if state.get("active_table") else None
+            if reading is None:
+                reading = read_turn(question, active_table=state.get("active_table"),
+                                    active_question=state.get("active_question"), parse=parse, mode=interpreter, llm=llm)
+            if (reading.use_previous_table and not reading.chart_only
+                    and region_gap(reading.resolved_question, state.get("active_table"), parse, regions_of)):
+                reading = reading.model_copy(update={"use_previous_table": False})  # 직전 표에 없는 시도: 새로 찾음
         wants_chart = reading.chart_only or reading.chart_type is not None or chart_request(question)[0]
-        carried = (reading.use_previous_table and not reading.chart_only
-                   and reading.resolved_question != question)
+        # 다시 쓴 질문으로 새로 찾는 턴(지표만 바꾼 이월, 직전 표에 없는 시도): ②가 resolved_question으로 찾는다
+        search_again = (not reading.use_previous_table and not reading.chart_only
+                        and reading.resolved_question != question)
+        carried = (reading.use_previous_table or search_again) and not reading.chart_only \
+            and reading.resolved_question != question
         route, direct_text, route_by = "rag", None, "rule"
-        if not reading.use_previous_table and not wants_chart:  # 새 질문 턴만 경로를 판단한다
+        if not reading.use_previous_table and not wants_chart and not search_again:  # 새 질문 턴만 경로를 판단한다
             route, direct_text, route_by = decide_route(question, parsed, judge_llm, parse=parse,
                                                         in_conversation=bool(state.get("active_table")))
         split = None
-        if route == "rag" and not reading.use_previous_table:
+        if route == "rag" and not reading.use_previous_table and not search_again:
             split = split_question(question, parse, splitter)
         subs = split.sub_questions if split and len(split.sub_questions) > 1 else []
         return {
