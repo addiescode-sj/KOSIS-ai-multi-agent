@@ -87,13 +87,25 @@ export function threadIdOf(message: Pick<ChatMessage, "parts">): string | null {
 }
 
 // Where an assistant turn stands while (or after) it streams, for the generating card.
-export type TurnState = "working" | "reconnecting" | "stopped" | "incomplete";
+export enum GeneratingStatus {
+  WORKING = "WORKING",
+  RECONNECTING = "RECONNECTING",
+  STOPPED = "STOPPED",
+  INCOMPLETE = "INCOMPLETE",
+}
 
-export function turnState(message: Pick<ChatMessage, "parts">, running: boolean): TurnState {
+// The heading the generating card shows for a status
+export interface GeneratingUserMessage {
+  title: string;
+  text: string;
+}
+
+export function turnState(message: Pick<ChatMessage, "parts">, running: boolean): GeneratingStatus {
   const reconnecting = message.parts.some((p) => p.type === "data-reconnect" && !p.data.connected);
   const draft = message.parts.some((p) => p.type === "data-draft" && p.data.text);
-  if (running) return reconnecting ? "reconnecting" : "working";
-  return draft ? "incomplete" : "stopped"; // tokens already shown stay, marked unfinished (api.md 2 error)
+  if (running) return reconnecting ? GeneratingStatus.RECONNECTING : GeneratingStatus.WORKING;
+  // tokens already shown stay, marked unfinished (api.md 2 error)
+  return draft ? GeneratingStatus.INCOMPLETE : GeneratingStatus.STOPPED;
 }
 
 export function refusalReason(result: ChatResult): string | null {

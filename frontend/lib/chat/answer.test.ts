@@ -3,6 +3,7 @@ import { expect, test } from "@jest/globals";
 import type { ChatMessage } from "../../types/chat.ts";
 import {
   answerKind, citation, copyText, formatValue, headline, progress, refusalReason, refusalTitle, REFUSALS, requestIdOf, threadIdOf,
+  GeneratingStatus,
   turnState,
 } from "./answer.ts";
 import { ANSWERED, CHART_FAILED, CLARIFY, PARTIAL, REFUSED, SEARCH_REFUSED } from "./fixtures.ts";
@@ -107,9 +108,9 @@ test("turn state: reconnecting until the new attempt's meta, unfinished draft ke
   const reconnect = (connected: boolean): Pick<ChatMessage, "parts"> => ({
     parts: [{ type: "data-draft", data: { text: "2024년 " } }, { type: "data-reconnect", data: { attempt: 1, connected } }],
   });
-  expect(turnState({ parts: [] }, true)).toBe("working");
-  expect(turnState(reconnect(false), true)).toBe("reconnecting");
-  expect(turnState(reconnect(true), true)).toBe("working");
-  expect(turnState(reconnect(false), false)).toBe("incomplete"); // the reconnect failed too: tokens stay, marked
-  expect(turnState({ parts: [] }, false)).toBe("stopped");
+  expect(turnState({ parts: [] }, true)).toBe(GeneratingStatus.WORKING);
+  expect(turnState(reconnect(false), true)).toBe(GeneratingStatus.RECONNECTING);
+  expect(turnState(reconnect(true), true)).toBe(GeneratingStatus.WORKING);
+  expect(turnState(reconnect(false), false)).toBe(GeneratingStatus.INCOMPLETE); // the reconnect failed too: tokens stay, marked
+  expect(turnState({ parts: [] }, false)).toBe(GeneratingStatus.STOPPED);
 });

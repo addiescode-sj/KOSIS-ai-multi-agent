@@ -18,7 +18,7 @@ import { sessionHeaders } from "@/lib/chat/session";
 import { streamAbort } from "@/lib/chat/screen-events";
 import { textOf } from "@/lib/chat/text";
 import { useTrack } from "@/lib/events/use-track";
-import { queryKeys } from "@/lib/query/keys";
+import { ChatListChange, chatListChanged } from "@/lib/chat/queries";
 import type { ChatMessage, InputMethod } from "@/types/chat";
 import type { Conversation } from "@/types/conversation";
 
@@ -98,7 +98,7 @@ export function Chat({ id, initial, prefill }: { id: string; initial: Conversati
   useEffect(() => {
     if (busy || messages.length === 0) return; // save when a reply ends (done, stopped or failed)
     if (member) {
-      void client.invalidateQueries({ queryKey: queryKeys.chatList }); // the backend saved the turn
+      void chatListChanged(client, ChatListChange.TURN_SAVED);
       return;
     }
     conversations.save({ id, title: titleOf(messages), threadId: threadId.current, updatedAt: Date.now(), messages });

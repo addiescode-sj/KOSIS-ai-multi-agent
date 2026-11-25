@@ -1,22 +1,24 @@
 "use client";
 
-import { CircleCheck, MessageSquare, Search, Trash2 } from "lucide-react";
-import Link from "next/link";
 import { useState } from "react";
 
-import { KakaoLoginButton } from "@/components/account/kakao-login-button";
+import { LOGIN_PROMPT, LoginPrompt, LoginPromptLayout } from "@/components/account/login-prompt";
 import { AppShell } from "@/components/app-shell";
 import { DeleteChatDialog } from "@/components/chat/history/delete-chat-dialog";
-import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
 import { useAuth } from "@/lib/auth/use-me";
 import { matchConversations } from "@/lib/chat/conversations";
-import { formatDay } from "@/lib/chat/history";
+import { LIST_SUB, showsLoginPrompt } from "@/lib/chat/list-view";
 import { itemsFromBrowser } from "@/lib/chat/restore";
-import { useGuestChatList, useMemberChatList, useWarmChat, type ChatList } from "@/lib/chat/use-chat-list";
+import { useGuestChatList, useMemberChatList, type ChatList } from "@/lib/chat/use-chat-list";
 import type { ConversationItem } from "@/types/account";
 
+import { DeletedNotice } from "./components/deleted-notice";
+import { ListBody } from "./components/list-body";
+import { ListToolbar } from "./components/list-toolbar";
+import { LoadMore } from "./components/load-more";
+
 // The /chat list. A member's comes from the server prefetch (useSuspenseInfiniteQuery), a guest's from this tab.
+// The auth status is read on every render, so a login or logout switches the list without a reload.
 export function ConversationList() {
   return useAuth().status === "member" ? <MemberConversations /> : <GuestConversations />;
 }
@@ -29,87 +31,47 @@ function GuestConversations() {
   return <ListView list={useGuestChatList()} />;
 }
 
+// A member searches the titles the server sent; a guest's search reads every question and answer of this tab
+function shownItems(list: ChatList, query: string): ConversationItem[] {
+  if (!list.member) return itemsFromBrowser(matchConversations(list.browser, query));
+  const q = query.trim().toLowerCase();
+  return list.items.filter((c) => !q || c.title.toLowerCase().includes(q));
+}
+
 function ListView({ list }: { list: ChatList }) {
   const [query, setQuery] = useState("");
   const [pending, setPending] = useState<ConversationItem | null>(null);
   const [deleted, setDeleted] = useState(false);
-  const q = query.trim().toLowerCase();
-  // a guest's search reads every question and answer; the server list has titles only
-  const shown = list.member
-    ? list.items.filter((c) => !q || c.title.toLowerCase().includes(q))
-    : itemsFromBrowser(matchConversations(list.browser, query));
+  const shown = shownItems(list, query);
+
+  function handleQuery(q: string) {
+    setQuery(q);
+    setDeleted(false);
+  }
+
+  function handleDelete(item: ConversationItem) {
+    setDeleted(false);
+    setPending(item);
+  }
+
+  function handleDialogClose() {
+    setPending(null);
+  }
+
+  function handleDeleted() {
+    setDeleted(true);
+  }
 
   return (
-    <AppShell title="대화 목록" sub={list.member ? "카카오 계정에 저장된 대화" : "이 탭에 저장된 비회원 대화"}>
+    <AppShell title="대화 목록" sub={list.member ? LIST_SUB.member : LIST_SUB.guest}>
       <div className="mx-auto max-w-4xl space-y-4">
-        {deleted && (
-          <div role="status" className="flex items-center gap-3 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
-            <CircleCheck size={18} />대화를 삭제했습니다.
-          </div>
-        )}
-        <div className="flex items-center gap-3">
-          <label className="flex h-10 flex-1 items-center gap-2 rounded-lg border border-line bg-white px-3 text-sm focus-within:border-brand-500">
-            <Search size={16} className="text-mute" />
-            <input value={query} onChange={(e) => { setQuery(e.target.value); setDeleted(false); }} className="w-full outline-none" placeholder={list.member ? "대화 제목 검색" : "대화 제목·내용 검색"} />
-          </label>
-          {/* eslint-disable-next-line @next/next/no-html-link-for-pages -- full load: see the "새 대화" link in app-shell */}
-          <Button asChild><a href="/">새 대화</a></Button>
-        </div>
-        {list.error ? (
-          <Card className="px-5 py-12 text-center text-sm text-red-600">{list.error}</Card>
-        ) : list.loading ? (
-          <Card className="px-5 py-12 text-center text-sm text-sub">대화 목록을 불러오는 중입니다…</Card>
-        ) : shown.length ? (
-          <Card className="divide-y divide-line">
-            {shown.map((c) => (
-              <Row key={c.id} item={c} member={list.member} onDelete={() => { setDeleted(false); setPending(c); }} />
-            ))}
-          </Card>
-        ) : (
-          <Card className="px-5 py-12 text-center text-sm text-sub">
-            {list.items.length ? (list.more ? "지금까지 불러온 대화에는 일치하는 것이 없어요." : "일치하는 대화가 없어요.") : "아직 저장된 대화가 없어요. 새 대화에서 질문해 보세요."}
-          </Card>
-        )}
-        {list.more && (
-          <div className="flex flex-col items-center gap-2 pt-1">
-            {list.moreFailed && <p role="alert" className="text-[13px] text-red-600">더 불러오지 못했습니다. 다시 시도해 주세요.</p>}
-            <Button variant="secondary" disabled={list.loadingMore} onClick={list.loadMore}>{list.loadingMore ? "불러오는 중…" : "이전 대화 더 보기"}</Button>
-          </div>
-        )}
-        {!list.member && !list.loading && (
-          <div className="flex flex-col items-center gap-3 pt-2 text-center text-[13px] text-sub">
-            로그인하면 어느 기기에서나 대화를 볼 수 있어요.
-            <KakaoLoginButton size="sm" />
-          </div>
-        )}
+        {deleted && <DeletedNotice />}
+        <ListToolbar query={query} member={list.member} onQuery={handleQuery} />
+        <ListBody list={list} shown={shown} onDelete={handleDelete} />
+        {list.more && <LoadMore list={list} />}
+        {showsLoginPrompt(list) && <LoginPrompt layout={LoginPromptLayout.INLINE} message={LOGIN_PROMPT.ANY_DEVICE} />}
       </div>
-      <DeleteChatDialog item={pending} member={list.member} onClose={() => setPending(null)} onDeleted={() => setDeleted(true)} />
+      <DeleteChatDialog item={pending} member={list.member} onClose={handleDialogClose} onDeleted={handleDeleted} />
     </AppShell>
   );
-}
-
-function Row({ item, member, onDelete }: { item: ConversationItem; member: boolean; onDelete: () => void }) {
-  // a member row the pointer or keyboard is on warms its conversation (GET /chat/{id}) before the click
-  const [intent, setIntent] = useState(false);
-  const warm = member ? () => setIntent(true) : undefined;
-  return (
-    <div className="flex items-center gap-4 px-5 py-4 hover:bg-gray-50/70" onPointerEnter={warm} onFocus={warm}>
-      {intent && <WarmChat id={item.id} />}
-      <span className="flex size-10 shrink-0 items-center justify-center rounded-full border border-brand-100 bg-brand-50 text-brand-600">
-        <MessageSquare size={17} />
-      </span>
-      <Link href={`/chat/${item.id}`} className="min-w-0 flex-1">
-        <p className="truncate text-[15px] font-medium">{item.title}</p>
-        <p className="mt-0.5 text-xs text-mute">{formatDay(item.updatedAt)} · 질문 {item.questions}개</p>
-      </Link>
-      <Button variant="ghost" size="sm" className="text-mute hover:text-red-600" onClick={onDelete}>
-        <Trash2 />삭제
-      </Button>
-    </div>
-  );
-}
-
-function WarmChat({ id }: { id: string }) {
-  useWarmChat(id);
-  return null;
 }

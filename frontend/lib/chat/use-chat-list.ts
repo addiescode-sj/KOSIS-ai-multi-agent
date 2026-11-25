@@ -13,7 +13,7 @@ import { queryKeys } from "@/lib/query/keys";
 import { conversations } from "./conversations";
 import { NoContent, request } from "@/lib/backend/request";
 
-import { chatListQuery, chatQuery } from "./queries";
+import { ChatListChange, chatListChanged, chatListQuery, chatQuery } from "./queries";
 import type { ChatPage, ChatRead } from "./read";
 import { itemsFromBrowser, itemsFromServer } from "./restore";
 import { sessionHeaders } from "./session";
@@ -109,7 +109,7 @@ export function useDeleteChat() {
     },
     onSuccess: (_, c) => {
       client.removeQueries({ queryKey: queryKeys.chat(c.id), exact: true });
-      return client.invalidateQueries({ queryKey: queryKeys.chatList });
+      return chatListChanged(client, ChatListChange.CHAT_DELETED);
     },
   });
 }

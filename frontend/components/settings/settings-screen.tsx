@@ -4,14 +4,13 @@ import { ExternalLink, LogOut, UserX } from "lucide-react";
 import { useState } from "react";
 
 import { AuthNotice } from "@/components/account/auth-notice";
-import { KakaoLoginButton } from "@/components/account/kakao-login-button";
 import { KakaoMark } from "@/components/account/kakao-mark";
+import { LOGIN_PROMPT, LoginPrompt, LoginPromptLayout } from "@/components/account/login-prompt";
 import { LogoutDialog } from "@/components/account/logout-dialog";
 import { useMember } from "@/components/account/use-member";
 import { WithdrawDialog } from "@/components/account/withdraw-dialog";
 import { AppShell } from "@/components/app-shell";
 import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
 import { notifySettings, RETENTION_DAYS } from "@/lib/account/settings";
 import { useNotifySettings } from "@/lib/account/use-settings";
 import { useUpdateAccount } from "@/lib/account/use-update-account";
@@ -39,12 +38,12 @@ export function SettingsScreen() {
   if (!member) {
     return (
       <AppShell title="개인정보 수정">
-        <Card className="mx-auto max-w-md p-8 text-center">
-          {auth.status === "error" && <div className="mb-5 text-left"><AuthNotice message={auth.message} /></div>}
-          <h2 className="text-lg font-semibold">로그인이 필요합니다</h2>
-          <p className="mt-1.5 text-sm text-sub">개인정보와 이용 설정은 카카오로 로그인한 회원만 관리할 수 있어요.</p>
-          <KakaoLoginButton size="lg" className="mt-6" />
-        </Card>
+        <LoginPrompt
+          layout={LoginPromptLayout.CARD}
+          title="로그인이 필요합니다"
+          message={LOGIN_PROMPT.SETTINGS}
+          notice={auth.status === "error" && <AuthNotice message={auth.message} />}
+        />
       </AppShell>
     );
   }

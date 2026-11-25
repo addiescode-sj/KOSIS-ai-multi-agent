@@ -2,6 +2,7 @@ import { Info } from "lucide-react";
 
 import { answerKind, copyText, requestIdOf } from "@/lib/chat/answer";
 import type { ChatResult, TurnFeedback } from "@/lib/chat/schemas";
+import type { Citation } from "@/types/answer";
 import { citationClick, copyAnswer } from "@/lib/chat/screen-events";
 import { useTrack } from "@/lib/events/use-track";
 import type { Ask, ChatMessage } from "@/types/chat";
@@ -36,6 +37,20 @@ export function AssistantMessage({ message, running, onAsk, threadId = null, tur
   const requestId = requestIdOf(message);
   const ids = { requestId, threadId, turn };
   const rated = result && answerKind(result) !== "failed";
+
+  function handleCitation(citation: Citation) {
+    const fields = citationClick(citation, ids);
+    if (fields) track("citation_click", fields);
+  }
+
+  function handleCopied() {
+    track("copy_answer", copyAnswer(ids, result?.table_key ?? null));
+  }
+
+  function handleFeedbackSaved(saved: TurnFeedback) {
+    if (requestId) onFeedback?.(requestId, saved);
+  }
+
   return (
     <div className="flex flex-col gap-3">
       {notices.map((n) => (
@@ -48,16 +63,10 @@ export function AssistantMessage({ message, running, onAsk, threadId = null, tur
         <ResultCard
           result={result}
           onAsk={onAsk}
-          onCitation={(c) => {
-            const fields = citationClick(c, ids);
-            if (fields) track("citation_click", fields);
-          }}
-          actions={rated && (
-            <CopyButton text={copyText(result)} onCopied={() => track("copy_answer", copyAnswer(ids, result.table_key ?? null))} />
-          )}
+          onCitation={handleCitation}
+          actions={rated && <CopyButton text={copyText(result)} onCopied={handleCopied} />}
           footer={rated && requestId && (
-            <FeedbackBar key={requestId} requestId={requestId} initial={feedback}
-              onSaved={(f) => onFeedback?.(requestId, f)} />
+            <FeedbackBar key={requestId} requestId={requestId} initial={feedback} onSaved={handleFeedbackSaved} />
           )}
         />
       ) : running || draft || progressed || notices.length === 0 ? (
