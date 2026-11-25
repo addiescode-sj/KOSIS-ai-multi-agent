@@ -33,18 +33,79 @@ export function formatValue(fact: Pick<Fact, "value" | "round">): string {
 }
 
 // 출처: KOSIS / 조사명 / 통계표명 (+링크). The table phase 1 answered from first, else the table search picked.
+// key and rank name the table for the citation_click event (log props table_key, rank: 1-based among the picked
+// tables, else among the candidates; null when the table is in neither list).
 export function citation(result: ChatResult): Citation | null {
   const source = result.stat_answer?.source;
   const picked = result.picked.find((t) => t.key === result.table_key) ?? result.picked[0];
   if (source) {
     const url = source.url ?? (picked && picked.tbl_id === source.tbl_id ? picked.url : null);
-    return { survey: source.survey_nm, table: source.tbl_nm, url, text: `KOSIS / ${source.survey_nm} / ${source.tbl_nm}` };
+    const key = `${source.org_id}_${source.tbl_id}`;
+    return { survey: source.survey_nm, table: source.tbl_nm, url, text: `KOSIS / ${source.survey_nm} / ${source.tbl_nm}`,
+      key, rank: rankOf(result, key) };
   }
   if (picked && result.outcome !== "refused") {
     return { survey: picked.survey_name, table: picked.table_name, url: picked.url,
-      text: `KOSIS / ${picked.survey_name} / ${picked.table_name}` };
+      text: `KOSIS / ${picked.survey_name} / ${picked.table_name}`, key: picked.key, rank: rankOf(result, picked.key) };
   }
   return null;
+}
+
+function rankOf(result: ChatResult, key: string): number | null {
+  for (const list of [result.picked, result.candidates]) {
+    const i = list.findIndex((t) => t.key === key);
+    if (i >= 0) return i + 1;
+  }
+  return null;
+}
+
+// What the 복사 button puts on the clipboard: the backend's answer as it is, with its 출처 line (added only when the
+// answer text does not carry it already). Nothing is reworded.
+export function copyText(result: ChatResult): string {
+  const c = citation(result);
+  const answer = result.answer.trim();
+  if (!c || answer.includes(c.text)) return answer;
+  return `${answer}\n\n출처: ${c.text}${c.url ? ` (${c.url})` : ""}`;
+}
+
+// The request_id of one assistant turn: the result's own (backend T3-55), else the stream's meta (trace_id).
+// Restored turns have only the result. null for a turn the backend never answered.
+export function requestIdOf(message: Pick<ChatMessage, "parts">): string | null {
+  let fromMeta: string | null = null;
+  for (const p of message.parts) {
+    if (p.type === "data-result") {
+      if (p.data.request_id) return p.data.request_id;
+    } else if (p.type === "data-meta") fromMeta = p.data.requestId ?? null;
+  }
+  return fromMeta;
+}
+
+// The backend thread of one streamed turn (its meta); null for a restored turn (the conversation's own then).
+export function threadIdOf(message: Pick<ChatMessage, "parts">): string | null {
+  const meta = message.parts.find((p) => p.type === "data-meta");
+  return meta?.type === "data-meta" ? meta.data.threadId : null;
+}
+
+// Where an assistant turn stands while (or after) it streams, for the generating card.
+export enum GeneratingStatus {
+  WORKING = "WORKING",
+  RECONNECTING = "RECONNECTING",
+  STOPPED = "STOPPED",
+  INCOMPLETE = "INCOMPLETE",
+}
+
+// The heading the generating card shows for a status
+export interface GeneratingUserMessage {
+  title: string;
+  text: string;
+}
+
+export function turnState(message: Pick<ChatMessage, "parts">, running: boolean): GeneratingStatus {
+  const reconnecting = message.parts.some((p) => p.type === "data-reconnect" && !p.data.connected);
+  const draft = message.parts.some((p) => p.type === "data-draft" && p.data.text);
+  if (running) return reconnecting ? GeneratingStatus.RECONNECTING : GeneratingStatus.WORKING;
+  // tokens already shown stay, marked unfinished (api.md 2 error)
+  return draft ? GeneratingStatus.INCOMPLETE : GeneratingStatus.STOPPED;
 }
 
 export function refusalReason(result: ChatResult): string | null {

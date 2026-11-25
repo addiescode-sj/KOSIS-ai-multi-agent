@@ -11,7 +11,8 @@ Rules
   says `expired: true` (F-SGTERZ). The old row and its checkpoint are removed by the cleanup job.
 - A thread_id nobody has used yet is adopted by the caller. Every checkpoint is created through open_thread, so an
   unknown id has no saved state to leak.
-- Feedback is accepted for a request of the same session within FEEDBACK_WINDOW; the last value wins.
+- Feedback is accepted for a request of the same session within FEEDBACK_WINDOW; the last value wins (one row per
+  request_id, replaced in place). The feedback table is the one source of the 👍/👎 metrics (T3-55).
 
 Members (T3-54)
 - A member's conversation belongs to user_id, never to a session, and does not expire after an hour: the cleanup job
@@ -40,6 +41,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.pool import StaticPool
 
 from kosis_store.db import session_scope
+from kosis_store.log_models import RequestLog
 from kosis_store.models import Base, Conversation, LoginSession, Message, User
 from kosis_store.service_models import ChatRequestRow, ChatSession, Feedback
 
@@ -120,7 +122,7 @@ class ServiceStore:
         engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
         event.listen(engine, "connect", lambda conn, _: conn.execute("PRAGMA foreign_keys=ON"))
         Base.metadata.create_all(engine, tables=[m.__table__ for m in (
-            User, LoginSession, Conversation, Message, ChatSession, ChatRequestRow, Feedback)])
+            User, LoginSession, Conversation, Message, ChatSession, ChatRequestRow, Feedback, RequestLog)])
         return cls(engine)
 
     def close(self) -> None:
@@ -346,6 +348,21 @@ class ServiceStore:
         with session_scope(self.engine) as s:
             row = s.get(ChatRequestRow, request_id)
             return None if row is None else (row.session_id, _aware(row.created_at), row.user_id)
+
+    def request_outcome(self, request_id: str) -> str | None:
+        """The stored outcome of a question (request_logs, written off the request thread by the user log); None when
+        the row is not there yet or the log is off. Only a hint: a missing row never blocks feedback."""
+        with session_scope(self.engine) as s:
+            return s.scalar(select(RequestLog.outcome).where(RequestLog.request_id == request_id))
+
+    def feedback_of(self, request_ids: list[str], user_id: uuid.UUID) -> dict[str, tuple[str, str | None]]:
+        """{request_id: (value, category)} of this member's feedback on these answers (one row per answer)."""
+        if not request_ids:
+            return {}
+        with session_scope(self.engine) as s:
+            rows = s.execute(select(Feedback.request_id, Feedback.value, Feedback.category).where(
+                Feedback.request_id.in_(request_ids), Feedback.user_id == user_id))
+            return {rid: (value, category) for rid, value, category in rows}
 
     def save_feedback(self, request_id: str, session_id: str | None, value: str, category: str | None,
                       reason: str | None, now: datetime, user_id: uuid.UUID | None = None) -> tuple[uuid.UUID, bool]:

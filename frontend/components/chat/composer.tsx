@@ -3,6 +3,8 @@
 import { ArrowUp, Square } from "lucide-react";
 import { useState } from "react";
 
+import { QUESTION_MAX } from "@/lib/chat/schemas";
+
 // Sticky question box under the conversation (prototype Composer). Enter sends, Shift+Enter breaks the line.
 export function Composer({ busy, onSend, onStop, placeholder = "궁금한 통계를 평소 말로 입력하세요. 예: 2023년 합계출산율은?" }: {
   busy: boolean;
@@ -37,6 +39,7 @@ export function Composer({ busy, onSend, onStop, placeholder = "궁금한 통계
           }}
           placeholder={placeholder}
           aria-label="질문"
+          maxLength={QUESTION_MAX}
           className="min-h-10 flex-1 resize-none bg-transparent py-2.5 text-[15px] outline-none placeholder:text-mute"
         />
         {busy ? (

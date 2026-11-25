@@ -19,6 +19,7 @@ from sqlalchemy import create_engine, text
 from kosis_store.db import session_scope
 from kosis_store.log_metrics import MetricFilter, _review_where, review_count, review_sql, review_turns
 from kosis_store.log_models import RequestLog, UiEvent
+from kosis_store.service_models import Feedback
 
 ROOT = Path(__file__).resolve().parents[1]
 PG_URL = os.environ.get("TEST_DATABASE_URL", "").strip()
@@ -83,9 +84,16 @@ def _turn(n, outcome, *, session=S1, hour=1, day=20, internal=False, member=Fals
 
 
 def _feedback(n, value, minute):
+    """The feedback table's one row of an answer (T3-55: POST /feedback replaces it in place)."""
     ts = _at(20, 9, minute)
-    return UiEvent(event_id=uuid.uuid4(), event_type="feedback", client_ts=ts, received_at=ts, ts_adjusted=False,
-                   request_id=R[n], props={"value": value, "choice": "other"}, is_internal=False)
+    return Feedback(id=uuid.uuid4(), request_id=R[n], value=value, category="other", reason="이유", created_at=ts,
+                    updated_at=ts)
+
+
+def _old_feedback_event(n, value):
+    """An old client's feedback screen event: still accepted, never read by the review."""
+    return UiEvent(event_id=uuid.uuid4(), event_type="feedback", client_ts=_at(20, 9, 9), received_at=_at(20, 9, 9),
+                   ts_adjusted=False, request_id=R[n], props={"value": value, "choice": "other"}, is_internal=False)
 
 
 @pytest.mark.postgres
@@ -99,8 +107,8 @@ def test_review_turns_match_hand_counts(migrated):
             _turn(7, "answered", hour=6, session=S2, member=True),
         ])
         s.flush()
-        s.add_all([_feedback(1, "down", 1), _feedback(1, "up", 2),  # pressed again: up is the last one
-                   _feedback(3, "down", 1), UiEvent(event_id=uuid.uuid4(), event_type="copy_answer",
+        s.add_all([_feedback(1, "up", 2),  # pressed down, then up: the one row holds up
+                   _feedback(3, "down", 1), _old_feedback_event(3, "up"), _old_feedback_event(2, "down"), UiEvent(event_id=uuid.uuid4(), event_type="copy_answer",
                                                     client_ts=_at(20, 9), received_at=_at(20, 9), ts_adjusted=False,
                                                     request_id=R[3], props={}, is_internal=False)])
     flt = MetricFilter(D20, D20).check(TODAY)
@@ -113,7 +121,8 @@ def test_review_turns_match_hand_counts(migrated):
         members = review_turns(s, MetricFilter(D20, D20, user="member").check(TODAY))
         page2 = review_turns(s, flt, size=2, page=2)
     # one outcome, newest first, each with its last feedback
-    assert [(r["request_id"], r["feedback"]) for r in refused] == [(R[3], "down"), (R[1], "up")]
+    assert [(r["request_id"], r["feedback"], r["feedback_choice"]) for r in refused] == [(R[3], "down", "other"),
+                                                                                         (R[1], "up", "other")]
     assert refused[0]["question"] == "질문 3" and refused[0]["reason_code"] == "no_period"
     # one user's flow, oldest first
     assert [r["request_id"] for r in flow] == [R[3], R[7]]
@@ -122,6 +131,7 @@ def test_review_turns_match_hand_counts(migrated):
     assert [r["request_id"] for r in members] == [R[7]]
     assert [r["request_id"] for r in page2] == [R[3], R[2]]
     assert everything[0]["feedback"] is None  # no feedback: an empty value, the row is still listed
+    assert everything[3]["request_id"] == R[2] and everything[3]["feedback"] is None  # an old feedback event: not read
 
 
 def test_review_rejects_an_unknown_outcome_and_bad_pages():
@@ -152,23 +162,22 @@ SELECT md5('r' || i), 'c' || i, 0,
 FROM generate_series(1, :turns) AS i;
 INSERT INTO ui_events (event_id, event_type, client_ts, received_at, ts_adjusted, request_id, props, is_internal,
                        log_version)
-SELECT gen_random_uuid(),
-       CASE WHEN j % 10 = 0 THEN 'feedback' WHEN j % 10 < 6 THEN 'citation_click' ELSE 'copy_answer' END,
+SELECT gen_random_uuid(), CASE WHEN j % 10 < 6 THEN 'citation_click' ELSE 'copy_answer' END,
        now() - j * interval '1 second', now() - j * interval '1 second', false,
-       md5('r' || (1 + j % :turns)),
-       CASE WHEN j % 10 = 0 THEN jsonb_build_object('value', CASE WHEN j % 20 = 0 THEN 'down' ELSE 'up' END,
-                                                    'choice', 'other') ELSE '{}'::jsonb END,
-       false, 3
+       md5('r' || (1 + j % :turns)), '{}'::jsonb, false, 3
 FROM generate_series(1, :events) AS j;
+INSERT INTO feedback (id, request_id, value, category, created_at, updated_at)
+SELECT gen_random_uuid(), md5('r' || i), CASE WHEN i % 20 = 0 THEN 'down' ELSE 'up' END, 'other', now(), now()
+FROM generate_series(1, :turns) AS i WHERE i % 10 = 0;
 """
 
 
 def bulk_load(conn, *, turns: int, events: int, sessions: int) -> None:
-    """Made-up log rows over 90 days ending 11/23: outcome mix 80/10/4/2/1/3 %, every 10th screen event a feedback."""
+    """Made-up log rows over 90 days ending 11/23: outcome mix 80/10/4/2/1/3 %, a feedback on every 10th question."""
     for statement in BULK.split(";"):
         if statement.strip():
             conn.execute(text(statement), {"turns": turns, "events": events, "sessions": sessions})
-    conn.execute(text("ANALYZE request_logs; ANALYZE ui_events"))
+    conn.execute(text("ANALYZE request_logs; ANALYZE ui_events; ANALYZE feedback"))
 
 
 def plan_of(conn, sql: str, params: dict) -> str:
@@ -190,4 +199,9 @@ def test_the_planner_uses_the_review_indexes(migrated):
         by_user = plan_of(conn, *review_sql(quarter, session_id=uuid.UUID(int=7)))
     assert "ix_request_logs_outcome_created" in by_outcome and "ix_request_logs_outcome_created" in count
     assert "ix_request_logs_session_created" in by_user
-    assert "ix_ui_events_request_id" in by_outcome and "ix_ui_events_request_id" in by_user  # last feedback lookup
+    # T3-55: feedback comes from the feedback table (one row per answer), never from ui_events. A rare outcome looks
+    # each listed question up on the unique feedback.request_id index; for one user's few questions the planner may
+    # instead hash the small feedback table once (measured: 3,000 rows), which is as cheap.
+    assert "feedback_request_id_key" in by_outcome
+    assert '"Relation Name": "feedback"' in by_user
+    assert "ui_events" not in by_outcome and "ui_events" not in by_user

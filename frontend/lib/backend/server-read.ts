@@ -1,5 +1,8 @@
 import { cookies } from "next/headers";
 import { connection } from "next/server";
+import type { z } from "zod";
+
+import { request, type ApiResult } from "./request";
 
 // Reads made by a server component on the caller's behalf (prefetch for streaming SSR). Server only.
 
@@ -14,13 +17,8 @@ export async function loginCookie(): Promise<string | null> {
   return LOGIN_COOKIES.some((name) => jar.has(name)) ? jar.toString() : null;
 }
 
-/** GET a backend path as the caller; null when the backend cannot be reached in time. */
-export async function backendGet(path: string, cookie: string): Promise<{ status: number; body: unknown } | null> {
+/** GET a backend path as the caller, checked with `schema`; status null when the backend cannot be reached in time. */
+export async function backendGet<T>(path: string, cookie: string, schema: z.ZodType<T>): Promise<ApiResult<T>> {
   const backend = process.env.BACKEND_URL ?? "http://localhost:8000"; // read per request, see lib/backend/proxy.ts
-  try {
-    const res = await fetch(`${backend}${path}`, { headers: { cookie }, cache: "no-store", signal: AbortSignal.timeout(5000) });
-    return { status: res.status, body: await res.json().catch(() => null) };
-  } catch {
-    return null;
-  }
+  return request(`${backend}${path}`, { responseSchema: schema, headers: { cookie }, signal: AbortSignal.timeout(5000) });
 }

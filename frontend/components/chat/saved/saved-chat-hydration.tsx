@@ -1,9 +1,8 @@
 import { dehydrate, HydrationBoundary } from "@tanstack/react-query";
 
-import { backendGet, loginCookie } from "@/lib/backend/server-read";
-import { chatFrom } from "@/lib/chat/read";
+import { loginCookie } from "@/lib/backend/server-read";
+import { prefetchChat } from "@/lib/chat/chat-list.server";
 import { makeQueryClient } from "@/lib/query/client";
-import { queryKeys } from "@/lib/query/keys";
 
 import { SavedChat } from "../entries";
 
@@ -12,12 +11,7 @@ import { SavedChat } from "../entries";
 export async function SavedChatHydration({ params }: { params: Promise<{ id: string }> }) {
   const [{ id }, cookie] = await Promise.all([params, loginCookie()]);
   const client = makeQueryClient();
-  if (cookie) {
-    void client.prefetchQuery({
-      queryKey: queryKeys.chat(id),
-      queryFn: async () => chatFrom(await backendGet(`/chat/${encodeURIComponent(id)}`, cookie)),
-    });
-  }
+  if (cookie) prefetchChat(client, id, cookie);
   return (
     <HydrationBoundary state={dehydrate(client)}>
       <SavedChat id={id} />

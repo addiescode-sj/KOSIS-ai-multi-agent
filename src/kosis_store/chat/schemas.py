@@ -45,11 +45,17 @@ class ConversationList(BaseModel):
     next_cursor: str | None = Field(description="다음 쪽이 있으면 `cursor`로 보낼 값")
 
 
+class TurnFeedback(BaseModel):
+    value: Literal["up", "down"]
+    category: str | None = Field(description="선택지 코드 (docs/service/api.md 3). 고르지 않고 닫았으면 null")
+
+
 class ConversationTurn(BaseModel):
     turn: int
     question: str
     result: dict[str, Any] = Field(description="그때의 `ChatResult` (답·차트·출처)")
     created_at: datetime
+    feedback: TurnFeedback | None = Field(default=None, description="이 답에 내가 남긴 마지막 피드백. 없으면 null")
 
 
 class ConversationDetail(BaseModel):

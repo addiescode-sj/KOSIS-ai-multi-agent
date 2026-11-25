@@ -17,8 +17,9 @@ from kosis_agent.graph.state import ChatResult
 from kosis_store.db import session_scope
 from kosis_store.log_collector import TurnLogCollector, db_writer
 from kosis_store.log_metrics import MetricFilter, down_answers, purge_rewrites, purge_texts, query
-from kosis_store.log_models import LogBase, RequestLog, RequestRewrite, UiEvent
+from kosis_store.log_models import LogBase, RequestLog, RequestRewrite
 from kosis_store.log_rows import rewrite_kind, rewrite_rows
+from kosis_store.service_models import Feedback
 
 RID = "ab" * 16
 
@@ -126,11 +127,12 @@ def _turn(n, kind, outcome="answered", internal=False):
 
 
 def _feedback(n, value):
+    """The answer's row in the feedback table (T3-55: the metrics read it, not ui_events)."""
     import uuid
 
     ts = datetime(2026, 11, 20, 9, 0, tzinfo=timezone.utc)
-    return UiEvent(event_id=uuid.uuid4(), event_type="feedback", client_ts=ts, received_at=ts, ts_adjusted=False,
-                   request_id=R[n], props={"value": value, "choice": "other"}, is_internal=False)
+    return Feedback(id=uuid.uuid4(), request_id=R[n], value=value, category="other", reason="이유", created_at=ts,
+                    updated_at=ts)
 
 
 @pytest.fixture

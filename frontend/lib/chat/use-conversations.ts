@@ -8,12 +8,13 @@ import { conversations } from "./conversations";
 
 const EMPTY: Conversation[] = [];
 
-// This browser's conversations, newest first. The server render has no storage and sees none.
+// This tab's guest conversations (sessionStorage through lib/storage), newest first. The server render has no
+// storage and sees none.
 export function useConversations(): Conversation[] {
   return useSyncExternalStore(conversations.subscribe, conversations.list, () => EMPTY);
 }
 
-// One saved conversation: undefined while not read yet (server render), null when this browser does not have it.
+// One saved conversation: undefined while not read yet (server render), null when this tab does not have it.
 export function useConversation(id: string): Conversation | null | undefined {
   return useSyncExternalStore(conversations.subscribe, () => conversations.get(id), () => undefined);
 }

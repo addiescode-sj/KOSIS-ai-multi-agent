@@ -10,12 +10,16 @@ import { AppShell } from "@/components/app-shell";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { useAuth } from "@/lib/auth/use-me";
-import { conversations, titleOf } from "@/lib/chat/conversations";
+import { requestIdOf, threadIdOf } from "@/lib/chat/answer";
+import { conversations, feedbackOf, setTurnFeedback, titleOf } from "@/lib/chat/conversations";
 import { EXAMPLES } from "@/lib/chat/examples";
+import { QUESTION_MAX, type TurnFeedback } from "@/lib/chat/schemas";
 import { sessionHeaders } from "@/lib/chat/session";
+import { streamAbort } from "@/lib/chat/screen-events";
 import { textOf } from "@/lib/chat/text";
-import { queryKeys } from "@/lib/query/keys";
-import type { ChatMessage } from "@/types/chat";
+import { useTrack } from "@/lib/events/use-track";
+import { ChatListChange, chatListChanged } from "@/lib/chat/queries";
+import type { ChatMessage, InputMethod } from "@/types/chat";
 import type { Conversation } from "@/types/conversation";
 
 import { AssistantMessage } from "./answer/assistant-message";
@@ -26,6 +30,8 @@ import { ConversationHistory } from "./history/conversation-history";
 // /chat/<id> without a remount. The backend thread_id from `meta` goes back with the next question so follow-ups
 // carry the context (multi-turn). A guest's turns are saved to this browser (lib/conversations) when a reply ends;
 // a member's are saved by the backend (the thread id is the conversation id, so the URL moves to it).
+// T3-55: a 되묻기 option is sent with input_method clarify_option, 다시 시도 with retry_of (the failed request_id);
+// stopping or leaving while an answer streams logs stream_abort (elapsed_ms since the question was sent).
 export function Chat({ id, initial, prefill }: { id: string; initial: Conversation | null; prefill?: string }) {
   const auth = useAuth();
   const member = auth.status === "member";
@@ -56,6 +62,33 @@ export function Chat({ id, initial, prefill }: { id: string; initial: Conversati
   });
   const busy = status === "submitted" || status === "streaming";
   const bottom = useRef<HTMLDivElement>(null);
+  const track = useTrack();
+  const startedAt = useRef<number | null>(null); // when the streaming question was sent; null when none runs
+  const turns = messages.filter((m) => m.role === "user").length;
+  const lastAnswer = messages.at(-1)?.role === "assistant" ? messages.at(-1)! : null;
+  const abortRef = useRef<() => void>(() => {});
+  useEffect(() => {
+    abortRef.current = () => {
+      const fields = streamAbort(
+        { requestId: lastAnswer ? requestIdOf(lastAnswer) : null, threadId: threadId.current, turn: turns },
+        startedAt.current, Date.now(),
+      );
+      startedAt.current = null; // one event per stream
+      if (fields) track("stream_abort", fields);
+    };
+  });
+  useEffect(() => {
+    if (!busy) startedAt.current = null; // the answer ended on its own
+  }, [busy]);
+  useEffect(() => {
+    // leaving the page (reload, close, another site) or this screen (another conversation) while an answer streams
+    const leave = () => abortRef.current();
+    window.addEventListener("beforeunload", leave);
+    return () => {
+      window.removeEventListener("beforeunload", leave);
+      leave();
+    };
+  }, []);
 
   useEffect(() => {
     // Block body: Chrome's scrollIntoView returns a Promise, which React would call as the effect cleanup
@@ -65,24 +98,44 @@ export function Chat({ id, initial, prefill }: { id: string; initial: Conversati
   useEffect(() => {
     if (busy || messages.length === 0) return; // save when a reply ends (done, stopped or failed)
     if (member) {
-      void client.invalidateQueries({ queryKey: queryKeys.chatList }); // the backend saved the turn
+      void chatListChanged(client, ChatListChange.TURN_SAVED);
       return;
     }
     conversations.save({ id, title: titleOf(messages), threadId: threadId.current, updatedAt: Date.now(), messages });
   }, [busy, id, messages, member, client]);
 
-  function send(text: string) {
+  function send(text: string, inputMethod: InputMethod = "direct") {
     if (!text.trim() || busy) return;
     if (messages.length === 0 && window.location.pathname !== `/chat/${id}`) {
       window.history.replaceState(null, "", `/chat/${id}`); // Next's router picks this up; no remount
     }
-    sendMessage({ text: text.trim() }, { body: { threadId: threadId.current }, headers: headers() });
+    startedAt.current = Date.now();
+    sendMessage({ text: text.trim() }, { body: { threadId: threadId.current, inputMethod }, headers: headers() });
   }
 
-  if (messages.length === 0) return <Home prefill={prefill} onSend={send} note={!member ? "대화는 이 브라우저에만 저장됩니다" : keeps ? "대화는 계정에 저장됩니다" : "대화 기록 저장이 꺼져 있습니다"} />;
+  function retry() {
+    const failure = lastAnswer?.parts.findLast((p) => p.type === "data-failure");
+    const retryOf = (failure?.type === "data-failure" ? failure.data.requestId : null) ?? (lastAnswer ? requestIdOf(lastAnswer) : null);
+    startedAt.current = Date.now();
+    void regenerate({ body: { threadId: threadId.current, retryOf }, headers: headers() });
+  }
+
+  function stopAnswer() {
+    abortRef.current();
+    void stop();
+  }
+
+  function keepFeedback(requestId: string, feedback: TurnFeedback) {
+    if (!member) setTurnFeedback(id, requestId, feedback); // a member's comes back with GET /chat/{id}
+  }
+
+  const failure = lastAnswer?.parts.findLast((p) => p.type === "data-failure");
+  const canRetry = !(failure?.type === "data-failure" && failure.data.status === 422); // bad input: the same again fails
+
+  if (messages.length === 0) return <Home prefill={prefill} onSend={send} note={!member ? "대화는 이 탭에만 저장됩니다" : keeps ? "대화는 계정에 저장됩니다" : "대화 기록 저장이 꺼져 있습니다"} />;
 
   return (
-    <AppShell title={titleOf(messages)} sub={!member ? "대화 · 이 브라우저에 저장됨" : keeps || initial ? "대화 · 계정에 저장됨" : "대화 · 저장하지 않음 (설정에서 변경)"}>
+    <AppShell title={titleOf(messages)} sub={!member ? "대화 · 이 탭에 저장됨" : keeps || initial ? "대화 · 계정에 저장됨" : "대화 · 저장하지 않음 (설정에서 변경)"}>
       <div className="flex gap-6">
       <ConversationHistory activeId={activeId} />
       <div className="mx-auto flex min-w-0 max-w-3xl flex-1 flex-col gap-5">
@@ -94,24 +147,26 @@ export function Chat({ id, initial, prefill }: { id: string; initial: Conversati
               </p>
             </div>
           ) : (
-            <AssistantMessage key={m.id} message={m} running={busy && i === messages.length - 1} onAsk={send} />
+            <AssistantMessage key={m.id} message={m} running={busy && i === messages.length - 1} onAsk={send}
+              threadId={threadIdOf(m) ?? initial?.threadId ?? null} turn={messages.slice(0, i).filter((x) => x.role === "user").length}
+              feedback={feedbackOf(initial, requestIdOf(m))} onFeedback={keepFeedback} />
           ),
         )}
         {status === "submitted" && messages.at(-1)?.role === "user" && (
           <AssistantMessage message={{ id: "pending", role: "assistant", parts: [] }} running onAsk={send} />
         )}
         {error && (
-          <Card className="flex items-start gap-4 p-6">
+          <Card role="alert" className="flex items-start gap-4 p-6">
             <span className="flex size-10 shrink-0 items-center justify-center rounded-full bg-red-50 text-red-500"><CircleAlert size={19} /></span>
             <div className="min-w-0 flex-1">
               <h2 className="text-[17px] font-semibold">응답을 마치지 못했습니다</h2>
               <p className="mt-1.5 text-sm break-words text-sub">{error.message}</p>
             </div>
-            <Button onClick={() => regenerate({ body: { threadId: threadId.current }, headers: headers() })}><RotateCw />다시 시도</Button>
+            {canRetry && <Button onClick={retry}><RotateCw />다시 시도</Button>}
           </Card>
         )}
         <div ref={bottom} />
-        <Composer busy={busy} onSend={send} onStop={stop} placeholder="이어서 질문하세요. 예: 같은 기간 서울은?" />
+        <Composer busy={busy} onSend={send} onStop={stopAnswer} placeholder="이어서 질문하세요. 예: 같은 기간 서울은?" />
       </div>
       </div>
     </AppShell>
@@ -151,6 +206,7 @@ function Home({ prefill, onSend, note }: { prefill?: string; onSend: (text: stri
               }}
               placeholder="궁금한 통계를 평소 말로 입력하세요"
               aria-label="질문"
+              maxLength={QUESTION_MAX}
               className="w-full resize-none bg-transparent px-3 pt-2 text-[15px] outline-none placeholder:text-mute"
             />
             <div className="flex items-center justify-between border-t border-line px-2 pt-3">

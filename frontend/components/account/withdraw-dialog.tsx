@@ -7,39 +7,25 @@ import { useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Dialog } from "@/components/ui/dialog";
-import { notifySettings } from "@/lib/account/settings";
-import { useRefreshAuth } from "@/lib/auth/use-me";
+import { useWithdraw } from "@/lib/auth/use-account-actions";
 import { useChatList } from "@/lib/chat/use-chat-list";
 
-// Withdrawal calls DELETE /auth/me. The screen moves on to "탈퇴 완료" only when the server says it is done;
+// Withdrawal calls DELETE /auth/me (lib/auth/use-account-actions). The screen moves on to "탈퇴 완료" only when the server says it is done;
 // otherwise it says it could not. The count shown is the
 // server's conversation list; the feedback count has no source and is not shown.
 export function WithdrawDialog({ open, onOpenChange, provider }: { open: boolean; onOpenChange: (open: boolean) => void; provider: string }) {
   const router = useRouter();
-  const refresh = useRefreshAuth();
   const list = useChatList();
   const [agree, setAgree] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const action = useWithdraw(() => {
+    onOpenChange(false);
+    router.push("/withdrawn");
+  });
+  const error = action.data?.ok === false ? action.data.message : null;
 
   function change(o: boolean) {
     onOpenChange(o);
-    if (!o) { setAgree(false); setError(null); }
-  }
-
-  async function withdraw() {
-    setBusy(true);
-    setError(null);
-    const res = await fetch("/auth/me", { method: "DELETE" }).catch(() => null);
-    setBusy(false);
-    if (!res?.ok) {
-      setError(`탈퇴를 처리하지 못했습니다${res ? ` (${res.status})` : ""}. 계정과 대화는 그대로 있습니다.`);
-      return;
-    }
-    notifySettings.reset();
-    change(false);
-    await refresh();
-    router.push("/withdrawn");
+    if (!o) { setAgree(false); action.reset(); }
   }
 
   const count = list.loading ? "확인 중" : list.error ? "확인하지 못함" : `${list.items.length}${list.more ? "개 이상" : "개"}`;
@@ -67,7 +53,7 @@ export function WithdrawDialog({ open, onOpenChange, provider }: { open: boolean
         {error && <p role="alert" className="mt-4 rounded-lg bg-red-50 px-3 py-2 text-[13px] text-red-700">{error}</p>}
         <Dialog.Footer>
           <Dialog.Close asChild><Button variant="secondary">취소</Button></Dialog.Close>
-          <Button variant="destructive" disabled={!agree || busy} onClick={withdraw}>탈퇴하기</Button>
+          <Button variant="destructive" disabled={!agree || action.isPending} onClick={() => action.mutate()}>탈퇴하기</Button>
         </Dialog.Footer>
       </Dialog.Content>
     </Dialog.Root>
