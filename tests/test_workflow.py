@@ -278,7 +278,7 @@ def test_summarize_stat_args_carry_the_conditions_of_each_turn():
 # ---------------------------------------------------------------- T3-27: 이월 해석 (graph/context.py)
 
 from kosis_agent.graph.context import LLMReading, carry_over, leftover, read_turn, verify_reading  # noqa: E402
-from kosis_agent.services.chart import NO_CHART_TEXT, draw, phase1_kind  # noqa: E402
+from kosis_agent.services.chart import NO_CHART_TEXT, chart_payload, draw  # noqa: E402
 from kosis_ai.schemas import ChartPoint, ChartSeries, ChartSpec  # noqa: E402
 from kosis_rag.parse.node import parse_query  # noqa: E402
 
@@ -416,12 +416,16 @@ def test_llm_mode_asks_the_llm_on_every_follow_up():
 
 def bar_chart(key: str) -> ChartSpec:
     return ChartSpec(kind="bar", title="출생아 수", series=[ChartSeries(name=key, points=[
-        ChartPoint(label="경기도", value=100, display="100명", fact_id="f1")])], fact_ids=["f1"])
+        ChartPoint(label="경기도", value=100, display="100명", fact_id="f1", highlight=True),
+        ChartPoint(label="서울", value=80, display="80명", fact_id="f2")])], fact_ids=["f1", "f2"])
 
 
 def charted(key: str) -> StatOutput:
+    """답 + 차트. 차트는 점이 둘 이상이어야 그린다(실전 1 형태 검사), 그래서 비교 대상 사실 f2를 더한다."""
     out = answered(key)
-    return out.model_copy(update={"chart": bar_chart(key)})
+    other = Fact(id="f2", value=80.0, source_ref=f"{key.partition('_')[2]}|T1|21|2024", unit="명", period="2024")
+    answer = out.answer.model_copy(update={"result": StatResult(facts=[*out.answer.result.facts, other])})
+    return out.model_copy(update={"answer": answer, "chart": bar_chart(key)})
 
 
 def test_an_elliptical_turn_asks_phase1_the_carried_over_question():
@@ -474,13 +478,15 @@ def test_the_harness_grades_chart_requests_through_make_chart():
     assert rows[0]["passed"], rows[0]["errors"]
 
 
-def test_phase1_chart_kinds():
-    assert phase1_kind("bar", "line") == "timeline" and phase1_kind("bar", "multi_line") == "grouped_bar"
-    assert phase1_kind("line", "timeline") == "line" and phase1_kind("line", "grouped_bar") == "multi_line"
-    assert phase1_kind("pie", "bar") == "pie" and phase1_kind("bar", "bar") == "bar"
+def test_make_chart_redraws_with_the_phase1_chart_module():
+    """종류 결정은 실전 1 redraw (T1-32). 응답 차트는 ChartSpec JSON이고 Vega-Lite는 없다 (KOS-202)."""
     out = draw(bar_chart("101_A"), "bar")
-    assert out["vega_lite"] is not None and out["kind"] == "bar" and out["note"] is None
+    assert out["kind"] == "bar" and out["note"] is None and out["chart"]["kind"] == "bar"
+    assert "vega_lite" not in out["chart"] and [p["value"] for p in out["chart"]["series"][0]["points"]] == [100, 80]
+    line = draw(bar_chart("101_A"), "line")  # 지역 비교는 꺾은선으로 잇지 않는다
+    assert line["kind"] == "bar" and "시점" in line["note"]
     assert draw(None, "bar")["note"] == NO_CHART_TEXT
+    assert chart_payload(bar_chart("101_A"))["fact_ids"] == ["f1", "f2"] and chart_payload(None) is None
 
 
 def test_a_verified_llm_rewrite_that_borrows_the_previous_question_is_a_follow_up():

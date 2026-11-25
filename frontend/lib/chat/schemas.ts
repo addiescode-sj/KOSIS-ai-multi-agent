@@ -57,6 +57,26 @@ export const SubResult = z.looseObject({
 });
 export type SubResult = z.infer<typeof SubResult>;
 
+// The drawn chart as data (ChatResult.chart, T3-02 / KOS-202: phase 1 ChartSpec JSON from kosis_chat/chart/module.py
+// chart_data, no Vega-Lite). lib/chat/chart.ts draws it with Recharts; numbers and display strings are the backend's.
+const ChartPoint = z.looseObject({
+  label: z.string(),
+  value: z.number().nullable(),
+  display: z.string(),
+  period: z.string().nullish(),
+  highlight: z.boolean().default(false),
+  share_pct: z.number().nullish(),
+});
+export const ChartSpec = z.looseObject({
+  kind: z.string(),
+  title: z.string(),
+  unit: z.string().nullish(),
+  series: z.array(z.looseObject({ name: z.string(), points: z.array(ChartPoint) })).min(1),
+  orientation: z.enum(["horizontal", "vertical"]).nullish(),
+  sort: z.union([z.array(z.string()), z.string()]).nullish(),
+});
+export type ChartSpec = z.infer<typeof ChartSpec>;
+
 export const ChatResult = z.looseObject({
   question: z.string(),
   route: z.string(),
@@ -68,7 +88,7 @@ export const ChatResult = z.looseObject({
   answer_origin: z.string(),
   table_key: z.string().nullish(),
   stat_answer: StatAnswer.nullish(),
-  chart: z.record(z.string(), z.unknown()).nullish(), // Vega-Lite v5 spec, drawn as is
+  chart: z.record(z.string(), z.unknown()).nullish(), // the drawn chart as data (ChartSpec above); lib/chat/chart.ts toChartView checks it
   outcome: Outcome.nullish(), // None only on records older than T3-23
   reused_table: z.boolean().default(false),
   degraded: z.boolean().default(false),

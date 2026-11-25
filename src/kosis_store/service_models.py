@@ -15,7 +15,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import CheckConstraint, DateTime, Index, String, Text, func
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from kosis_store.models import Base
@@ -33,6 +33,9 @@ class ChatSession(Base):
 
     thread_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     session_id: Mapped[str | None] = mapped_column(String(64), index=True)  # NULL: a caller that sent no session
+    # T3-54: the member who owns it (thread_id = conversations.id as str(UUID)); NULL = a guest conversation
+    user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    busy_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))  # a member turn is running until then
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     last_used_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
 
@@ -43,6 +46,7 @@ class ChatRequestRow(Base):
     request_id: Mapped[str] = mapped_column(String(32), primary_key=True)  # = OTel trace id = meta.trace_id
     thread_id: Mapped[str] = mapped_column(String(64), index=True)
     session_id: Mapped[str | None] = mapped_column(String(64))
+    user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)  # T3-54
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
 
 
@@ -56,6 +60,8 @@ class Feedback(Base):
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     request_id: Mapped[str] = mapped_column(String(32), unique=True)
     session_id: Mapped[str | None] = mapped_column(String(64))
+    # the member who gave it: goes with the account on withdrawal, also when the conversation was deleted before
+    user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
     value: Mapped[str] = mapped_column(String(8))
     category: Mapped[str | None] = mapped_column(String(32))  # NULL: closed without a choice (api.md 10, proposal 3)
     reason: Mapped[str | None] = mapped_column(Text)  # masked; NULL after the retention period

@@ -1,5 +1,6 @@
 import { createUIMessageStream, createUIMessageStreamResponse } from "ai";
 
+import { callerHeaders } from "@/lib/backend/proxy";
 import { ChatResult } from "@/lib/chat/schemas";
 import { textOf } from "@/lib/chat/text";
 import { parseSSE } from "@/lib/sse";
@@ -22,6 +23,9 @@ export async function POST(request: Request) {
   // Read per request: a module-level constant would be fixed at build time in the standalone image
   const backend = process.env.BACKEND_URL ?? "http://localhost:8000";
 
+  const headers = callerHeaders(request); // the member's login cookie or the guest session (T3-54)
+  headers.set("content-type", "application/json");
+
   const stream = createUIMessageStream<ChatMessage>({
     execute: async ({ writer }) => {
       writer.write({ type: "start" });
@@ -35,7 +39,7 @@ export async function POST(request: Request) {
       }
       const res = await fetch(`${backend}/chat/stream`, {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers,
         body: JSON.stringify({ question, thread_id: threadId ?? null }),
         signal: request.signal, // the user's stop reaches the backend
       });
@@ -80,7 +84,8 @@ async function threadLost(backend: string, threadId: string, signal: AbortSignal
 async function detail(res: Response): Promise<string> {
   const text = await res.text().catch(() => "");
   try {
-    return JSON.parse(text).detail ?? text;
+    const body = JSON.parse(text);
+    return body.error?.message ?? body.detail ?? text;
   } catch {
     return text || res.statusText;
   }
