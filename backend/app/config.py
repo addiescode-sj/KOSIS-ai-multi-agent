@@ -9,6 +9,9 @@ then reads os.environ. In the container compose passes the same file as `env_fil
     KOSIS_WORKSPACE                                 repo root; data files default to <root>/data (phase 1 reads it too)
     DATABASE_URL VECTOR_COLLECTION                 PostgreSQL (+ pgvector: the vector store, T3-47) and the dense collection
     TEXT_FORMAT EMBED_CKPT RERANK_CKPT RERANK_MODE  table text check, query embedder, stage 1 cross-encoder
+    EMBED_URL RERANK_URL                            query embedder / stage 1 on inference servers (inference/, deploy);
+                                                    empty = loaded in this process from EMBED_CKPT / RERANK_CKPT
+                                                    (backend/app/search_open.py)
     STAGE2 COND_FILTER ANSWER_K                     stage 2 LLM (clova | hcx | gpt | none), conditions, k default
     COND_SCOPE                                      which conditions filter: all (phase 2 default) | years (KOS-192 best L1:
                                                     only the years and the period range)
@@ -16,6 +19,7 @@ then reads os.environ. In the container compose passes the same file as `env_fil
                                                     (STAGE2=gpt only) and its key (default the STAGE2 key below) (T3-33)
     STAGE2_MAX_TOKENS                               stage 2 output cap (default phase 2's: 512 for gpt); a thinking model needs room
     HQ_BUILD HQ_WEIGHT HQ_BM25                      reverse HyDE question index (empty HQ_BUILD = off)
+    BM25_WEIGHT                                     RRF weight of the BM25 list (default 0 = dense order only, T3-23)
     HCX_API_KEY HCX_THINKING OPENAI_API_KEY         stage 2 keys (clova / hcx: HCX_API_KEY, gpt: OPENAI_API_KEY)
     STAT_PROVIDER STAT_MODEL STAT_RETRY_INTERVAL    phase 1 model (hcx = HCX-DASH-002 default | openai | gemma | mock), seconds before a retry
     HCX_API_KEY                                     phase 1 key too (None: LLMKeyMissing when a phase 1 LLM step runs)
@@ -58,6 +62,8 @@ class AgentConfig(NamedTuple):
     alt_table_budget: int  # T3-23: tables tried after the first one refuses for a table mismatch
     interpreter: str  # T3-27: rules | hybrid | llm (src/kosis_agent/graph/context.py)
     interpreter_model: str  # T3-27: the LLM step's model (default gpt-4o-mini, interpreter_llm below)
+    embed_url: str | None = None  # EMBED_URL: query embedder server (backend/app/search_open.py), None = local
+    rerank_url: str | None = None  # RERANK_URL: stage 1 cross-encoder server, None = local (RERANK_CKPT)
 
 
 def _env(name: str) -> str | None:
@@ -175,6 +181,8 @@ def agent_config() -> AgentConfig:
         stage2=(_env("STAGE2") or "none").strip().lower(),
         answer_k=int(_env("ANSWER_K") or 5),
         hq_weight=float(_env("HQ_WEIGHT") or 1.0),
+        # T3-23: RRF weight of the BM25 list; 0 = the A1-e3 dense order only (kos192 / dev13 best), raise it in .env
+        bm25_weight=float(_env("BM25_WEIGHT") or 0.0),
         hq_bm25=(_env("HQ_BM25") or "off").strip().lower() not in OFF,
     )
     spec = IndexSpec(
@@ -192,4 +200,6 @@ def agent_config() -> AgentConfig:
                        alt_table_budget=int(_env("ALT_TABLE_BUDGET") or 0),
                        interpreter=(_env("INTERPRETER") or "hybrid").strip().lower(),
                        # T3-27: gpt-4o-mini beat HCX-005 on the LLM-only reading (dev 0.798 vs 0.723) at ~1/5 of Gemma's latency
-                       interpreter_model=_env("INTERPRETER_MODEL") or "gpt-4o-mini")
+                       interpreter_model=_env("INTERPRETER_MODEL") or "gpt-4o-mini",
+                       embed_url=(_env("EMBED_URL") or "").strip() or None,
+                       rerank_url=(_env("RERANK_URL") or "").strip() or None)

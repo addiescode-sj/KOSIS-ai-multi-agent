@@ -36,8 +36,8 @@ def build_agent():
     """메모리 checkpointer를 단 멀티에이전트 그래프 (evals --agent용, 기존 backend.app.main:build_agent와 같은 역할)."""
     load_env_file()
     from backend.app.config import agent_config
-    from kosis_rag.api import SearchModule
+    from backend.app.search_open import open_search
 
     cfg = agent_config()
-    search = SearchModule(cfg.spec, cfg.options, cfg.stage2_llm)
+    search = open_search(cfg)  # 서비스와 같은 열기(EMBED_URL·RERANK_URL)
     return build_multi_graph(search, cfg, new_checkpointer())

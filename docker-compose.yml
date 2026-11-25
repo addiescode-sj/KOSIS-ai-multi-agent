@@ -4,6 +4,9 @@ services:
       context: .
       dockerfile: backend/Dockerfile
       target: backend
+      args:
+        # 0 = no torch in the image: set EMBED_URL / RERANK_URL in .env (inference servers, docker-compose.inference.yml)
+        WITH_EMBED: ${BACKEND_WITH_EMBED:-1}
     env_file:
       # Optional: /health and the stack come up without keys; /chat/stream needs HCX_API_KEY (503 otherwise)
       - path: .env

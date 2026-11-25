@@ -146,10 +146,10 @@ def _build(checkpointer: Any = None) -> tuple[Any, dict[str, BaseTool]]:
     """The graph and the tools its nodes call, over one phase 2 SearchModule (loaded once). checkpointer None = an
     in-memory one (evaluation); the service passes get_checkpointer()."""
     from backend.app.config import agent_config, interpreter_llm, splitter_llm
-    from kosis_rag.api import SearchModule
+    from backend.app.search_open import open_search
 
     cfg = agent_config()
-    search = SearchModule(cfg.spec, cfg.options, cfg.stage2_llm)
+    search = open_search(cfg)  # EMBED_URL·RERANK_URL이 있으면 추론 서버, 없으면 로컬 로드
     checkpointer = checkpointer if checkpointer is not None else new_checkpointer()
     if multi_graph_on():  # 임시(min-lab-multi-agent): 멀티에이전트 그래프로 서버 테스트
         from kosis_multi.build import build_multi_graph
