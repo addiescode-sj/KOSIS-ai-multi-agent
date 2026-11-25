@@ -56,6 +56,8 @@ docker build -f backend/Dockerfile --target backend --build-arg WITH_EMBED=0 -t 
 | `EMBED_URL` | `http://<GPU private IP>:8001` | 질의 임베딩 서버 |
 | `RERANK_URL` | `http://<GPU private IP>:8002` | 1차 리랭커 서버 |
 | `AGENT_GRAPH` | `multi` | 멀티에이전트 그래프로 답함(빼면 기존 그래프). 테스트용 임시 스위치 |
+| `INTERPRETER_MODEL` | `stage2` | 이어 묻기 해석·질문 나누기도 Qwen(STAGE2 서버)으로. 빼면 gpt-4o-mini(OPENAI_API_KEY 필요) |
+| `KOSIS_DISABLE_DEV_ROUTES` | `1` | **필수.** 개발용 주소(`/dev/*`, 옛 `/tools/*`·`/threads/*`·`POST /chat`)를 404로 막음. 없으면 thread_id만으로 남의 대화 상태를 볼 수 있음 |
 
 확인
 
@@ -82,7 +84,13 @@ docker build -f backend/Dockerfile --target backend --build-arg WITH_EMBED=0 -t 
    - `InferenceError: ... http://...:8001 ...`: 연결 실패 → IP·포트·방화벽 확인
    - `no sentence-transformers in this image: set EMBED_URL and RERANK_URL ...`: WITH_EMBED=0 이미지에 URL이 안 들어감 → 4절 확인
 
-## 7. 되돌리기
+## 7. 운영 주의
+
+- **가중치 교체 뒤 backend 재시작.** backend는 처음 연결할 때 추론 서버의 `ckpt`를 기억하고, 응답의 `ckpt`가 바뀌면 거절함. GPU 서버의 가중치를 바꾸면 backend 파드를 재시작해야 하고, 새 가중치에 맞는 `VECTOR_COLLECTION`도 함께 바꿔야 함.
+- **추론 서버 여러 개를 한 주소 뒤에 둘 때** 모두 같은 가중치여야 함(다르면 요청마다 실패할 수 있음).
+- **`/health`는 추론 서버 상태를 보지 않음.** GPU 서버가 꺼져 있어도 backend `/health`는 ok임. 이 경우 첫 질문이 최대 60초(연결 시간 제한) 기다린 뒤 503으로 실패함. GPU 서버 상태는 `:8001/health`·`:8002/health`로 따로 감시해야 함.
+
+## 8. 되돌리기
 
 `EMBED_URL`·`RERANK_URL`을 지우고 `WITH_EMBED=1`(기본)로 빌드한 이미지를 쓰면 예전처럼 backend 안에서 모델을 로드함(이때는 `EMBED_CKPT`·`RERANK_CKPT`와 `data/models`가 backend에 필요).
 
