@@ -26,7 +26,8 @@ then reads os.environ. In the container compose passes the same file as `env_fil
     ALT_TABLE_BUDGET                                candidate tables tried after a table-mismatch refusal (default 0 = off, T3-23)
     INTERPRETER INTERPRETER_MODEL                   follow-up reading and multi-query split (T3-28): rules | hybrid | llm (default hybrid, T3-27) and its
                                                     model (default gpt-4o-mini with OPENAI_API_KEY; HCX-* on ChatClovaX, *gemma* at Gemma_BASE_URL;
-                                                    no key = no LLM step: hybrid reads by rules)
+                                                    stage2 = the stage 2 server's model (STAGE2_BASE_URL / STAGE2_MODEL / STAGE2_API_KEY,
+                                                    e.g. the self-hosted Qwen); no key = no LLM step: hybrid reads by rules)
 
 The search names and defaults are phase 2's backend/app/config.py search_config_from_shell @56b4252 (which this repo
 cannot import: its backend.app shadows phase 2's), so an unset variable means the phase 2 default. The phase 1 model
@@ -122,6 +123,8 @@ def interpreter_chat_model(cfg):
     Gemma_API_KEY for *gemma*, else ChatClovaX with HCX_API_KEY; None (rules only) when the interpreter is "rules".
     A missing key is not an error here: the hybrid steps then read by rules, as with no model set."""
     model = cfg.interpreter_model or ""
+    if model.strip().lower() == "stage2":  # the stage 2 / multi-agent judge server (self-hosted Qwen, OpenAI-compatible)
+        return _stage2_chat_model() if cfg.interpreter != "rules" else None
     gpt = model.lower().startswith("gpt")
     gemma = "gemma" in model.lower()  # self-hosted OpenAI-compatible server: Gemma_BASE_URL + Gemma_API_KEY
     key = _env("OPENAI_API_KEY" if gpt else "Gemma_API_KEY" if gemma else "HCX_API_KEY")
@@ -135,6 +138,20 @@ def interpreter_chat_model(cfg):
     from langchain_naver import ChatClovaX
 
     return ChatClovaX(model=model, api_key=key, temperature=0, timeout=30, max_retries=2)
+
+
+def _stage2_chat_model():
+    """INTERPRETER_MODEL=stage2: ChatOpenAI on STAGE2_BASE_URL with STAGE2_MODEL (key STAGE2_API_KEY, else
+    OPENAI_API_KEY, else "EMPTY" for a keyless vLLM), as kosis_multi.config.judge_chat_model; None without model or
+    URL (hybrid then reads by rules). Thinking off: the reader and the splitter answer one JSON line."""
+    model, base_url = _env("STAGE2_MODEL"), _env("STAGE2_BASE_URL")
+    if not model or not base_url:
+        return None
+    from langchain_openai import ChatOpenAI
+
+    key = _env("STAGE2_API_KEY") or _env("OPENAI_API_KEY") or "EMPTY"
+    return ChatOpenAI(model=model, base_url=base_url, api_key=key, temperature=0, timeout=30, max_retries=2,
+                      extra_body={"chat_template_kwargs": {"enable_thinking": False}})
 
 
 def interpreter_llm(cfg):

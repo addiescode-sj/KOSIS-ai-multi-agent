@@ -38,11 +38,15 @@ def open_search(cfg: Any) -> SearchModule:
         from inference.client import RemoteScorer
 
         scorer = RemoteScorer(rerank_url)
-        fmt = text.text_format(spec, dense) if dense is not None else spec.text_format
-        trained = scorer.doc_format
-        if fmt and trained and trained != fmt:
-            raise ValueError(f"reranker server {rerank_url} was trained on {trained!r} text, the search uses {fmt!r}")
-        fmt = fmt or trained or text.DOC_FORMAT
+        if dense is None:  # RERANK_URL only: open the local dense list now, so the passages use the collection's format
+            from kosis_rag.legacy.retrievers import DenseTableRetriever
+
+            dense = DenseTableRetriever.connect(spec.vector_store.collection, k=options.pool, device=spec.device,
+                                                embed_ckpt=spec.embed_ckpt, vector_store=spec.vector_store)
+        fmt = text.text_format(spec, dense)  # the search's text format (collection's, TEXT_FORMAT must agree)
+        if scorer.doc_format and scorer.doc_format != fmt:
+            raise ValueError(f"reranker server {rerank_url} was trained on {scorer.doc_format!r} text, "
+                             f"the search uses {fmt!r}")
         text_of = {r.info.key: text.build_doc(r, fmt)["embed_text"] for r in records}
         stage1 = passage_scorer(scorer, text_of, text.norm_query)
     resources = load_resources(spec=spec, options=options, llm=cfg.stage2_llm, records=records, dense=dense,

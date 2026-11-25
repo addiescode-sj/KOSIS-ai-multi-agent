@@ -83,3 +83,23 @@ def test_missing_sentence_transformers_names_the_variables(monkeypatch):
     monkeypatch.setattr(search_open.importlib.util, "find_spec", lambda name: None)
     with pytest.raises(RuntimeError, match="EMBED_URL and RERANK_URL"):
         search_open.open_search(_cfg())
+
+
+def test_rerank_url_only_formats_passages_like_the_local_collection(fakes, monkeypatch):
+    """RERANK_URL without EMBED_URL: the local dense list is opened first and its collection format is the one checked."""
+    from kosis_rag.legacy import retrievers
+
+    monkeypatch.setattr(retrievers.DenseTableRetriever, "connect",
+                        classmethod(lambda cls, *a, **kw: SimpleNamespace(doc_format="n2-L60")))
+
+    class Scorer:
+        def __init__(self, url):
+            self.doc_format = "n3"
+
+    monkeypatch.setattr(client, "RemoteScorer", Scorer)
+    cfg = _cfg(rerank_url="http://r:8002", text_format=None)
+    cfg.spec.vector_store = SimpleNamespace(collection="c")
+    cfg.spec.device = None
+    cfg.spec.embed_ckpt = None
+    with pytest.raises(ValueError, match="the search uses 'n2-L60'"):
+        search_open.open_search(cfg)

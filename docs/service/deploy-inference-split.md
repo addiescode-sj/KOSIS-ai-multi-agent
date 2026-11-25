@@ -24,13 +24,14 @@ CPU 서버 (k3s)                          GPU 서버 (private IP 고정)
 실행 (레포 루트)
 
 ```bash
+git submodule update --init vendor/phase2   # 이미지가 vendor/phase2의 모델 로딩 코드를 복사함
 docker compose -f docker-compose.inference.yml up -d --build
 curl http://127.0.0.1:8001/health
 curl http://127.0.0.1:8002/health
 ```
 
 - 두 응답 모두 `"status":"ok"`, `"device":"cuda"`, `"doc_format":"n2-L60"`이어야 함.
-- `ckpt` 값(`E2s-e2.pt@<해시 12자리>`)은 4절 컬렉션 확인에 씀.
+- `ckpt` 값은 4절 컬렉션 확인에 씀. 임베딩 서버는 `E2s-e2.pt@1a794c032797`이어야 함. 컬렉션과 맞는지는 `inference/check_collection.py`로 확인할 수 있음(`inference/README.md`).
 - 첫 빌드는 CUDA torch와 기반 모델을 받아 오래 걸림(이미지 약 10GB). 컨테이너마다 모델 적재에 30초~1분.
 - 두 컨테이너가 GPU 1장을 Qwen(vLLM)과 나눠 씀. 둘이 합쳐 약 3~5GB이므로 vLLM `--gpu-memory-utilization`을 낮춰 5GB쯤 남겨야 함.
 - GPU가 컨테이너에 안 보이면 CPU로 내려가지 않고 시작에서 실패함(`INFER_DEVICE: cuda`).

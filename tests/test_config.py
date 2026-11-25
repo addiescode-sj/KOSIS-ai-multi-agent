@@ -76,6 +76,22 @@ def test_multiturn_and_multiquery_llm_step_defaults_to_gpt_4o_mini(env, monkeypa
     assert config.splitter_llm(cfg) is not None
 
 
+def test_interpreter_model_stage2_uses_the_stage2_server(env, monkeypatch):
+    """INTERPRETER_MODEL=stage2: the follow-up reader and the splitter call the STAGE2_* server (self-hosted Qwen);
+    without STAGE2_MODEL / STAGE2_BASE_URL there is no LLM step (rules), and "rules" never builds one."""
+    monkeypatch.setenv("INTERPRETER_MODEL", "stage2")
+    monkeypatch.delenv("INTERPRETER", raising=False)
+    assert config.interpreter_chat_model(config.agent_config()) is None
+    monkeypatch.setenv("STAGE2_MODEL", "qwen-test")
+    monkeypatch.setenv("STAGE2_BASE_URL", "http://10.0.0.9:8000/v1")
+    cfg = config.agent_config()
+    model = config.interpreter_chat_model(cfg)
+    assert model.model_name == "qwen-test" and str(model.openai_api_base).startswith("http://10.0.0.9:8000/v1")
+    assert config.interpreter_llm(cfg) is not None and config.splitter_llm(cfg) is not None
+    monkeypatch.setenv("INTERPRETER", "rules")
+    assert config.interpreter_chat_model(config.agent_config()) is None
+
+
 def test_stage2_model_server_and_key_have_their_own_variables(env):
     """T3-33 (phase 2 PR #48): STAGE2_MODEL / STAGE2_BASE_URL / STAGE2_API_KEY pick stage 2's model, server and key;
     unset, the phase 2 defaults and the STAGE2 name's usual key. The eval config is the same function."""
