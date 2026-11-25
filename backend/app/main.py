@@ -118,6 +118,20 @@ _lock = threading.Lock()
 UNAVAILABLE = {503: {"description": "에이전트를 열 수 없음 (데이터·벡터 DB·키 확인)"}}
 
 
+def multi_graph_on() -> bool:
+    """임시 스위치(min-lab-multi-agent): .env AGENT_GRAPH=multi면 서비스가 src/kosis_multi 그래프를 쓴다(기본 main)."""
+    return os.environ.get("AGENT_GRAPH", "").strip().lower() == "multi"
+
+
+def turn_result(state: dict) -> ChatResult:
+    """그래프 마지막 상태 → ChatResult. 멀티에이전트 그래프면 direct 턴(검색 없음)을 다루는 kosis_multi 변환을 쓴다."""
+    if multi_graph_on():
+        from kosis_multi.result import multi_chat_result
+
+        return multi_chat_result(state)
+    return chat_result(state)
+
+
 def _build(checkpointer: Any = None) -> tuple[Any, dict[str, BaseTool]]:
     """The graph and the tools its nodes call, over one phase 2 SearchModule (loaded once). checkpointer None = an
     in-memory one (evaluation); the service passes get_checkpointer()."""
@@ -126,10 +140,15 @@ def _build(checkpointer: Any = None) -> tuple[Any, dict[str, BaseTool]]:
 
     cfg = agent_config()
     search = SearchModule(cfg.spec, cfg.options, cfg.stage2_llm)
-    graph = build_graph(search, cfg.stat_llm, retry_interval=cfg.stat_retry_interval,
-                        checkpointer=checkpointer if checkpointer is not None else new_checkpointer(),
-                        alt_table_budget=cfg.alt_table_budget, interpreter=cfg.interpreter, llm=interpreter_llm(cfg),
-                        splitter=splitter_llm(cfg))
+    checkpointer = checkpointer if checkpointer is not None else new_checkpointer()
+    if multi_graph_on():  # 임시(min-lab-multi-agent): 멀티에이전트 그래프로 서버 테스트
+        from kosis_multi.build import build_multi_graph
+
+        graph = build_multi_graph(search, cfg, checkpointer)
+    else:
+        graph = build_graph(search, cfg.stat_llm, retry_interval=cfg.stat_retry_interval, checkpointer=checkpointer,
+                            alt_table_budget=cfg.alt_table_budget, interpreter=cfg.interpreter,
+                            llm=interpreter_llm(cfg), splitter=splitter_llm(cfg))
     tools = [make_search_tables_tool(search),
              make_summarize_stat_tool(cfg.stat_llm, retry_interval=cfg.stat_retry_interval), make_chart_tool()]
     return graph, {t.name: t for t in tools}
@@ -372,7 +391,7 @@ def chat_stream(req: ChatRequest, graph=Depends(get_graph), tracer: Tracer = Dep
                 yield ServerSentEvent(event=name, data=payload)
             else:
                 final = chunk
-        result = chat_result(final).model_copy(update={"request_id": request_id})
+        result = turn_result(final).model_copy(update={"request_id": request_id})
         _record_turn(root, req.question, result)
         for piece in tokens(result.answer):
             if first_token_ms is None:  # tokens follow the whole answer today, so this is close to the latency
@@ -474,7 +493,7 @@ def chat(req: ChatRequest, graph=Depends(get_graph), tracer: Tracer = Depends(te
     try:
         state = graph.invoke({"messages": [("user", req.question)]},
                              {"configurable": {"thread_id": thread}, "callbacks": [spans]})
-        result = chat_result(state).model_copy(update={"request_id": request_id})
+        result = turn_result(state).model_copy(update={"request_id": request_id})
         _record_turn(root, req.question, result)
         return ChatResponse(thread_id=thread, trace_id=request_id, expired=opened.expired, result=result)
     except Exception as e:

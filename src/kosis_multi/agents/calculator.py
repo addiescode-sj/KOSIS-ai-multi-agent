@@ -2,8 +2,7 @@
 
 - 한 질문: ③이 고른 표(plan_key)로 한 번. 결과는 attempts에 쌓고, 턴은 마지막으로 시도한 표에서 끝난다.
 - 멀티쿼리: 하위 질문마다 한 번(표가 없는 하위 질문은 거절 문장). 계산 요청이고 둘 다 답했으면 combine_values.
-TODO(S4, 비동기 B): 하위 질문의 summarize_stat을 병렬로 + 동시 호출 상한.
-TODO(S4): ⑤ 차트 판단과 병렬 (지연 이득은 0으로 예상, 구조 요구).
+하위 질문은 순서대로 부른다(결정 5: 하위 질문 병렬은 뺌, 멀티쿼리 턴이 약 3%).
 """
 
 from __future__ import annotations
@@ -18,11 +17,19 @@ from kosis_multi.tools import Toolbox, call_tool
 from kosis_rag.parse.schemas import ParsedQuery
 
 
+def with_note(text: str, rewritten: str | None) -> str:
+    """다듬은 질문으로 답했으면 답 끝에 어떻게 읽었는지 한 줄 알린다(S4b)."""
+    return f"{text}\n\n(질문을 \"{rewritten}\"(으)로 읽고 답했어요.)" if rewritten else text
+
+
 def make_calculator(tools: Toolbox, parse: Callable[[str], ParsedQuery]):
-    def ask(question: str, key: str, config: RunnableConfig) -> StatOutput:
-        """summarize_stat 한 번: 질문 + 표 키 + 그 질문을 실전 2 규칙으로 읽은 조건 4개(채점용 인자)."""
-        parsed = parse(question)
+    def ask(question: str, key: str, config: RunnableConfig, rewritten: str | None = None) -> StatOutput:
+        """summarize_stat 한 번: 질문 + 표 키 + 조건 4개(채점용 인자). 다듬은 질문(S4b)이 있으면 실전 1은 그것으로 답하고,
+        조건도 그것으로 읽는다("작년" → 2025). question 인자는 사용자 원 질문 그대로 남긴다."""
+        parsed = parse(rewritten or question)
         args = {"question": question, "table_key": key, **{f: getattr(parsed, f) for f in CONDITION_FIELDS}}
+        if rewritten:
+            args["rewritten"] = rewritten
         return call_tool(tools.summarize_stat, args, config).artifact
 
     def attempt(key: str, stat: StatOutput) -> dict:
@@ -31,22 +38,25 @@ def make_calculator(tools: Toolbox, parse: Callable[[str], ParsedQuery]):
 
     def single(state: dict, config: RunnableConfig) -> dict:
         key = state["plan_key"]
-        stat = ask(state.get("resolved_question") or state["question"], key, config)
+        stat = ask(state.get("resolved_question") or state["question"], key, config, state.get("calc_question"))
         return {"attempts": [*state["attempts"], attempt(key, stat)], "stat": stat, "table_key": key}
 
     def multi(state: dict, config: RunnableConfig) -> dict:
         results, attempts, last = [], [], None
-        for question, out, key in zip(state["sub_questions"], state["sub_searches"], state["sub_keys"]):
+        rewrites = state.get("sub_calc_questions") or [None] * len(state["sub_questions"])
+        for question, out, key, rewritten in zip(state["sub_questions"], state["sub_searches"], state["sub_keys"],
+                                                  rewrites):
             if key is None:
                 text = (out.refusal_text or NO_TABLE_TEXT) if out.route == "refuse" else NO_TABLE_TEXT
                 results.append({"question": question, "table_key": None, "outcome": "refused",
                                 "reason": out.refusal_reason, "text": text, "answer": None})
                 continue
-            stat = ask(question, key, config)
+            stat = ask(question, key, config, rewritten)
             a = attempt(key, stat)
             attempts.append(a)
             results.append({"question": question, "table_key": key, "outcome": a["outcome"], "reason": a["reason"],
-                            "text": stat.answer.text, "answer": stat.answer.model_dump(mode="json")})
+                            "text": with_note(stat.answer.text, rewritten),
+                            "answer": stat.answer.model_dump(mode="json")})
             if a["outcome"] == "answered":
                 last = (stat, key, question)
         combined = None
