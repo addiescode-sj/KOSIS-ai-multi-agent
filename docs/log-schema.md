@@ -129,15 +129,15 @@ CREATE TABLE request_logs (
 CREATE INDEX ix_request_logs_conversation_turn ON request_logs (conversation_id, turn_index);
 CREATE INDEX ix_request_logs_created_at ON request_logs (created_at);
 CREATE INDEX ix_request_logs_picked_key ON request_logs (picked_key);
-CREATE INDEX ix_request_logs_session_id ON request_logs (session_id);
+CREATE INDEX ix_request_logs_session_id ON request_logs (session_id);  -- T3-52: (session_id, created_at)로 바뀜, 16장
 ```
 </details>
 
 ## 3. 개인정보·보관 규칙
 
-- **원문이 들어가는 곳은 세 열뿐이다:** `request_logs.question`, 화면 피드백 이벤트의 `ui_events.reason`(T3-48), `feedback.reason`(KOS-158). 모두 저장 전에 가린다(`kosis_store.masking.mask`).
+- **원문이 들어가는 곳은 네 열뿐이다:** `request_logs.question`, 에이전트가 다시 쓴 질문 `request_rewrites.text`(T3-50, 15장), 화면 피드백 이벤트의 `ui_events.reason`(T3-48), `feedback.reason`(KOS-158). 모두 저장 전에 가린다(`kosis_store.masking.mask`).
 - **단계는 허용 키만 읽는다:** `name`, `kind`, `stage`, `ms`, `status`, `error_type`, `input_tokens`, `output_tokens`, `model` (`clean_spans`). 로그 버전 3부터 행에 저장하지 않지만, 메트릭 속성도 같은 원칙을 따른다(10장). 툴 인자·결과(`gen_ai.tool.call.arguments`·`.result`)는 질문과 답 원문이 들어 있어 옮기지 않는다. 예외 메시지, 검색 상위 표 목록, 실전 1의 `unresolved` 같은 값은 넣지 않는다. 질문 조각이 섞일 수 있고, 섞이면 90일 삭제가 닿지 않는다.
-- **보관:** 90일이 지나면 `question`만 NULL로 바꾼다. 행과 나머지 열은 남는다(`purge_questions`, 다시 돌려도 결과가 같다). 실행 주기는 정제 배치(KOS-167)가 정한다.
+- **보관:** 90일이 지나면 원문 열만 NULL로 바꾼다. 행과 나머지 열은 남는다(`purge_questions`·`purge_rewrites`·`purge_feedback_reasons`, 한 번에 `purge_texts`, 다시 돌려도 결과가 같다). 실행 주기는 정제 배치(KOS-167)가 정한다.
 - **하네스·팀 트래픽:** `is_internal=true`, 원문은 저장하지 않는다(제약). 골든 문항·정답·문항 ID는 어느 열에도 넣지 않는다.
 - IP, 기기 식별자, 이름·연락처는 저장하지 않는다. `session_id`는 브라우저가 만든 임의 값이다.
 - Jaeger로 나가는 span 속성은 이 규칙 밖이다. 사용자 요청을 추적으로 내보낼 때도 같은 허용 목록을 쓰도록 KOS-170에서 맞춘다.
@@ -277,7 +277,7 @@ TEST_DATABASE_URL=postgresql+psycopg://kosis:kosis@localhost:5432/kosis_test PYT
 | `llm.attempts` (실전 1 형식·HTTP 재시도, rerank2 HTTP 재시도) | — | `kosis.llm.attempts` (**추가 요청**) |
 | `gen_ai.response.finish_reasons` (LangChain 호출만) | — | `kosis.llm.finishes` (**추가 요청**) |
 | `kosis.stage2` | — | 넣지 않음(`gen_ai.request.model`과 같은 정보) |
-| 원문: `kosis.turn.question`·`answer`·`resolved_question`, 툴 인자·결과, 예외 메시지 | `question`만, 가린 값 | **절대 넣지 않음** |
+| 원문: `kosis.turn.question`·`answer`·`resolved_question`, 툴 인자·결과, 예외 메시지 | `question`만, 가린 값. 다시 쓴 질문은 span이 아니라 `ChatResult`에서 가려 `request_rewrites`에 (T3-50) | **절대 넣지 않음** |
 
 ### 10.2 메트릭 목록
 
@@ -391,7 +391,7 @@ sum by (gen_ai_request_model) (increase(kosis_llm_finishes_total{$env, gen_ai_re
 | 사용 패턴 탭 답 전 이탈률 | `outcome = 'aborted'` ÷ 질문 수 (화면 `stream_abort`는 이탈 시점 참고용, 세지 않음) |
 | 요약 탭 질문 수 | `request_logs` 행 수 (`is_internal` 제외). 화면 `question_submit` 이벤트는 만들지 않는다 |
 | 답 품질 탭 실패 단계 검색 / 계산 / 차트 | `failed_stage` = `search` / `stat` / `chart`, `agent`는 "기타" |
-| 👍 / 👎 | 화면 피드백 이벤트 `ui_events`(`event_type='feedback'`, `props.value` = `up` / `down`), 같은 답은 마지막 값. KOS-158의 `feedback` 테이블이 생기면 둘 중 하나로 정한다 |
+| 👍 / 👎 | **`feedback` 테이블**(`POST /feedback`, T3-55에서 정함). `value` = `up` / `down`, 선택지는 `category`(👍 `accurate_number`·`right_table`·`easy`·`chart_helpful`·`other`, 👎 `wrong_number`·`wrong_table`·`hard`·`other`). 답마다 1행이라 그 행이 마지막 값이다(14.2). 화면 피드백 이벤트(`ui_events`)는 읽지 않는다(13.4) |
 | 응답 지연 p50·p95 | `latency_ms` = 서버가 질문을 받은 때부터 답이 끝날 때까지(턴 루트 span), 끝까지 간 턴만(11장 3번). 화면에서 잰 왕복 시간이 아니다 |
 | 첫 글자까지 시간 | `first_token_ms` (서버가 첫 `token` 이벤트를 보낸 시각. 지금은 답이 다 만들어진 뒤 토큰이 나가 `latency_ms`와 거의 같다, 13장) |
 | 👎 답 목록 | `feedback ⋈ request_logs` (집계표가 아니라 질문 행에서 읽는다. 원문 90일 삭제가 그대로 적용됨) |
@@ -440,10 +440,11 @@ sum by (gen_ai_request_model) (increase(kosis_llm_finishes_total{$env, gen_ai_re
 - 화면 피드백 이유(`ui_events.reason`)도 같은 함수로 가린다. KOS-158의 `feedback.reason`도 같은 함수를 쓴다.
 
 ### 13.4 화면 이벤트 `POST /events`
-- 이벤트 목록(최대 100개)을 받아 검사한다: 종류(4장 4종), `log_version`, `event_id`(UUID), `ts`(시간대 있는 ISO 8601), 선택 ID(세션 UUID, `request_id` 32자리 hex, 화면·기능 ID), `props`(종류별 허용 키·타입만, 문자열 64자 이하).
+- 본문은 `{"events": [...]}`(최대 100개, T3-55. 예전 맨 목록 본문은 이제 422). 이벤트마다 검사한다: 종류(4장 4종), `log_version`, `event_id`(UUID), `ts`(시간대 있는 ISO 8601), 선택 ID(세션 UUID, `request_id` 32자리 hex, 화면·기능 ID), `props`(종류별 허용 키·타입만, 문자열 64자 이하).
   - `citation_click`: `table_key`, `rank` / `copy_answer`: 없음 / `stream_abort`: `elapsed_ms`
   - `feedback`: props `value`(`up`·`down`), `choice`(👍 `accurate`·`found_table`·`easy`·`chart_helpful`·`other`, 👎 `wrong_number`·`wrong_table`·`hard`·`other`), 필드 `reason`(200자 이하, `other`면 필수, 가려서 `ui_events.reason`에 저장, 90일 뒤 비움 `purge_feedback_reasons`), `request_id` 필수
   - 자유 글자 `reason`은 `feedback`에만 받는다(다른 종류에 오면 탈락).
+  - **`feedback` 이벤트는 옛 클라이언트 호환으로 받기만 한다(T3-55).** 저장은 되지만 지표·👎 목록·검수·`daily_usage`는 읽지 않는다. 피드백은 `POST /feedback`(`feedback` 테이블)으로 보낸다. 이미 `ui_events`에 쌓인 피드백 이벤트는 옮기지 않았다(백필 없음).
 - 통과는 `ui_events`(같은 `event_id`는 무시), 실패는 `ingest_rejects`에 사유·종류·건수만. 응답 202 `{accepted, rejected}`.
 - 저장이 실패해도 202다(화면 동작에 영향 없음). 로그가 꺼져 있으면 검사만 한다.
 
@@ -462,15 +463,140 @@ sum by (gen_ai_request_model) (increase(kosis_llm_finishes_total{$env, gen_ai_re
 | `multi_turn_conversations` | 그날 2턴 이상 이어진 대화 수 |
 | `aborted` | 답 전 이탈 턴 수 |
 | `citation_clicks`, `copy_answers` | 클릭 종류별 수 |
-| `feedback_up`, `feedback_down` | 마지막 피드백이 👍·👎인 답 수 |
+| `feedback_up`, `feedback_down` | 마지막 피드백이 👍·👎인 답 수 (`feedback` 테이블, 14.2) |
 
 **사용자별 (`daily_session_usage`, 하루 × 사용자 1행, 키 `(day, session_id)`)**
 - 열: `is_member`(그날 로그인한 질문이 있었는지), 그리고 위 표의 `questions`부터 `feedback_down`까지 같은 뜻의 값을 그 사용자 것만 센다.
 - **사용자 = 익명 `session_id`** (브라우저가 만든 임의 UUID). 로그 정책상(3장, POL-006) 계정 ID를 남기지 않으므로 회원을 계정 단위로 묶지 않는다. 계정 단위가 필요하면 정책을 먼저 바꿔야 한다.
-- 질문 없이 클릭·피드백만 한 사용자도 행이 생긴다(질문 0). `session_id` 없는 질문은 전체 표에만 들어간다.
+- 질문 없이 클릭만 한 사용자도 행이 생긴다(질문 0). 피드백은 질문 쪽 사용자에게 센다(14.2). `session_id` 없는 질문은 전체 표에만 들어간다.
 
 ### 13.6 한계
 - **첫 글자 시간:** 지금 `/chat/stream`은 답이 다 만들어진 뒤 토큰을 한꺼번에 보내서, 첫 글자 시간이 응답 지연과 거의 같다. 진짜 토큰 스트리밍이 들어오면 의미가 생긴다.
 - **이탈 시점:** Starlette는 끊긴 스트림의 sync generator를 바로 닫지 않을 수 있다(다음 `next()`나 GC 때 닫힘). 그래서 이탈 행은 늦게 쓰일 수 있고, 그 행의 `latency_ms`는 실제로 떠난 시각보다 길 수 있다. 테스트는 generator를 직접 닫아 경로만 확인했다.
 - **마이그레이션 순서:** `0002_log_tables`, PR #34 `0002_pgvector`, KOS-158이 모두 `0001`에서 시작한다. 나중에 머지하는 쪽이 `down_revision`을 고쳐 한 줄로 잇는다.
 - **범위 밖:** 90일 원문 삭제 실행(KOS-167), 화면 쪽 `session_id`·이벤트 전송(FE), Jaeger 원문 속성(10.5).
+
+## 14. 메트릭 화면 조회 (T3-49, KOS-161)
+
+`src/kosis_store/log_metrics.py` 한 파일에 지표 정의가 모두 있다. 화면·BI 도구는 결과만 읽는다.
+
+### 14.1 공통 필터 `MetricFilter(start_day, end_day, user, include_internal)`
+- 기간: KST 날짜. **끝 날짜는 어제까지**(오늘은 아직 덜 쌓임), **시작 날짜는 오늘 − 90일 이후**, 시작 ≤ 끝. 어기면 `check()`가 `ValueError`.
+- `user`: `all`(기본) · `member` · `guest` — 질문 행의 `is_member`.
+- `include_internal`: 기본 끔. 켜면 팀 트래픽과 평가 하네스가 함께 들어온다(원문은 저장되지 않지만 상위 표·👎 목록 숫자가 섞인다).
+- 모든 지표는 공통 테이블 두 개 위에서 계산한다: `turns`(필터 건 `request_logs`), `last_feedback`(`feedback` 테이블의 답마다 1행 → `turns`와 join).
+
+### 14.2 피드백 규칙
+- 원천은 **`feedback` 테이블 하나**다(T3-55, 11/25 결정). `ui_events`의 피드백 이벤트는 읽지 않는다.
+- 답(`request_id`)마다 **마지막 값 하나**: `POST /feedback`이 `request_id`당 1행을 고쳐 쓴다(유일 인덱스). 그래서 서버에 마지막으로 도착한 값이 남고 `updated_at`이 그 시각이다. 예전 규칙(브라우저 시각 `client_ts` 순서)은 쓰지 않는다. 기간과 상관없이 그 행을 쓴다.
+- 응답 칸 이름은 그대로다: `category`를 `choice`로 읽는다. 코드값은 `POST /feedback`의 것(`accurate_number`·`right_table` 등)이라 예전 `accurate`·`found_table`은 나오지 않는다.
+- 회원이 탈퇴하면 그 회원의 피드백 행도 지워져 지표에서 빠진다.
+- 날짜·회원 여부·내부 여부는 **질문 쪽 값**. 그래서 전체 = 회원 + 비회원이고, 질문 행이 없는 피드백은 어디에도 세지 않는다.
+- 늦게 온 피드백은 그 질문 날짜의 숫자를 바꿀 수 있다(같은 데이터로 다시 조회하면 같은 숫자). `daily_usage`도 같은 규칙이다.
+
+### 14.3 탭별 지표 (`TABS`, `query(session, 이름, 필터, by_day=False)`)
+
+| 탭 | 지표 | 정의 |
+|---|---|---|
+| 요약 | `question_count` | 질문 수 (`by_day` 가능) |
+| | `outcome_ratio` | 답함·거절·되묻기·오류(`failed`+`error`) 비율, 분모는 이탈 뺀 질문 수(합 100%) |
+| | `thumbs_up_ratio` | 👍 ÷ (👍+👎), 마지막 값 기준 (`by_day` 가능) |
+| | `latency` | 응답 지연 p50·p95, 끝까지 간 턴만(이탈·오류 제외) |
+| 답 품질 | `refusal_reasons`, `down_reasons`, `up_reasons` | 거절 사유·👎 선택지·👍 선택지별 수 |
+| | `failed_stages` | 검색·계산·차트, 나머지는 `other` |
+| | `rewrite_kinds` | 질문 해석 종류별 질문 수·답한 비율·👍 비율 (T3-50, 15.4) |
+| | `down_answers(page, size)` | 👎 답 목록: 날짜, 가린 질문(90일 뒤 비어 있음), 해석 종류·다시 쓴 질문(T3-50), 표·조사, 결과, 선택지, 가린 이유, `request_id`(Jaeger), 최신순 |
+| 사용 패턴 | `top_tables` | 답에 쓴 표 상위 20 |
+| | `turns_per_conversation` | 대화당 턴 1·2·3·4+ 분포 |
+| | `citation_click_rate` | 출처를 누른 답 ÷ 숫자가 있는 답 |
+| | `abort_rate` | 답 전 이탈 ÷ 질문 수 (`by_day` 가능) |
+| 성능·비용 | `llm_usage` | 질문당 LLM 호출·입력·출력 토큰 (단계 지연·모델별 토큰은 Prometheus, 10.3) |
+
+- `outcome_share`(저장된 결과 6종 그대로)와 `first_token`은 진단용으로 남겼다(탭에는 없음).
+- `tab(session, "summary", 필터)`로 한 탭의 지표를 한 번에 받는다.
+
+## 15. 다시 쓴 질문 (T3-50)
+
+사용자 질문 원문과 함께, 에이전트가 **다시 쓴 질문**을 남긴다. 멀티턴 오답이 재작성 탓인지, 원문과 다시 쓴 문장을 나란히 보고 판단하기 위해서다. 계획·결정은 `plans/T3-50.md`(옵션 B: 별도 테이블, 11/23).
+
+### 15.1 해석 종류 `request_logs.rewrite_kind`
+
+턴이 끝난 뒤의 `ChatResult`로 정한다(`kosis_store.log_rows.rewrite_kind`). 위에서부터 처음 맞는 것 하나.
+
+| 순서 | 값 | 판정 | 다시 쓴 문장 |
+|---|---|---|---|
+| 1 | `chart_only` | `answer_origin = "chart"` ("막대로") | 없음. `resolved_question`이 직전 질문 복사본이라 넣지 않는다 |
+| 2 | `multi` | `sub_results` 있음 ("서울이랑 부산 비교") | 하위 질문마다 1행 |
+| 3 | `carry_over` | `resolved_question ≠ question` ("부산은?", "아니 2023년으로") | 조건을 채운 독립 질문 1행 |
+| 4 | `reference` | `reused_table` ("그 표에서 …") | 없음 (원문 그대로 직전 표에) |
+| 5 | `new` | 그 밖 | 없음 |
+| - | NULL | 결과 없이 예외로 끝난 턴 | 없음 |
+
+- 이월 판정은 `reused_table`을 보지 않는다. 직전 표가 못 답해 다시 쓴 문장으로 다시 검색한 턴은 끝날 때 `reused_table`이 거짓이다.
+- `interpreted_by`: 누가 해석했는지 (`rule`·`llm`·`none`, `ChatResult.interpreted_by` 그대로).
+- 두 칸은 정해진 값이라 90일 뒤에도 남는다.
+
+### 15.2 `request_rewrites` — 다시 쓴 질문 1개 = 1행
+
+| 열 | 뜻 |
+|---|---|
+| `request_id`, `seq` | 질문 행 키(FK, 질문 행을 지우면 함께 지워짐)와 순번. 둘이 기본키라 같은 턴을 다시 보내도 두 번 들어가지 않는다 |
+| `kind` | `resolved`(이월 독립 질문) · `sub_question`(멀티쿼리 하위 질문) |
+| `text`, `text_len` | 가린 문장, 글자 수. 문장은 90일 뒤 NULL, 글자 수는 남는다 |
+| `created_at` | 90일 삭제 기준 |
+
+### 15.3 개인정보
+
+- `ChatResult`의 문장은 가리지 않은 원문이고, LLM이 다시 쓴 문장에는 직전 질문의 낱말이 섞인다. 그래서 행을 만들 때(`rewrite_rows`) `mask()`를 부른다.
+- 하네스·팀 트래픽(`is_internal`)은 `request_rewrites` 행을 만들지 않는다. 해석 종류는 남는다.
+- 90일 삭제: `purge_rewrites(session, 기준 시각)`, 원문·이유와 함께 `purge_texts`.
+- 쓰기 순서: 수집기가 질문 행 다음에 다시 쓴 질문 행을 같은 쓰기 스레드에 넣는다(FK 때문에 질문 행이 먼저). 질문 행 쓰기가 실패하면 다시 쓴 질문 행도 FK로 실패해 고아 행이 생기지 않는다(`failed_request_rewrites`로 셈).
+
+### 15.4 조회
+
+- `rewrite_kinds`(답 품질 탭): 해석 종류별 질문 수, 답한 수·비율, 👍·👎 수, 👍 비율. 공통 필터 그대로. 결과 없는 턴은 `unknown`.
+- `down_answers`: `rewrite_kind`와 `rewritten`(다시 쓴 질문, 여러 개면 ` / `로 이음, 90일 뒤 비어 있음) 칸 추가.
+
+### 15.5 한계
+
+- 하위 질문이 모두 같은 표를 찾아 한 질문 경로로 합쳐진 멀티쿼리는 `sub_results`가 없어 `new`로 남는다. 알려면 그래프가 `sub_questions`를 `ChatResult`에 내보내야 한다(에이전트 코드, 담당 밖).
+- 검색 툴에 넘긴 문장은 따로 남기지 않는다. 새 질문은 원문으로, 이월 턴의 다시 검색은 `resolved` 문장으로 검색하므로 위 두 칸으로 알 수 있다.
+
+## 16. 데이터 검수 조회와 인덱스 (T3-52)
+
+데이터 검수용 조회 함수와 그에 맞춘 인덱스다. 계획·측정은 `plans/T3-52.md`(옵션 A, 11/24). 참고 자료(데이터 모델링 3단계, 인덱스 생성, 정규화·비정규화)에 따라 **물리 단계(접근 방법)만** 바꿨다. 테이블·칸·정규화는 그대로다.
+
+### 16.1 조회 (`kosis_store.log_metrics`)
+| 함수 | 꺼내는 것 | 순서 |
+|---|---|---|
+| `review_turns(session, 필터, outcome=…)` | 기간 안의 한 결과(`answered`·`refused`·`clarify`·`failed`·`error`·`aborted` 중 하나) 질문 | 최신순 |
+| `review_turns(session, 필터, session_id=…)` | 한 사용자(브라우저 세션)의 기간 안 질문 흐름 | 시간순 |
+| `review_turns(session, 필터)` | 기간 안 모든 질문 | 최신순 |
+| `review_count(...)` | 위 목록의 전체 건수 (따로 세어 목록은 한 쪽만 읽고 멈춤) | — |
+| `review_sql(...)` | 실행할 SQL과 인자 (EXPLAIN 확인용) | — |
+
+- 행마다 칸: 날짜, 대화·턴, 세션, 회원 여부, 결과, 사유, 실패 단계, 표·조사, 가린 질문(90일 뒤 비어 있음), 해석 종류, **마지막 피드백 값·선택지**(`feedback` 테이블의 한 행, 14.2).
+- 공통 필터(기간·회원/비회원·내부 트래픽)는 14.1과 같다. `failed`와 `error`는 따로 저장되므로 따로 본다.
+- `request_logs`를 직접 읽는다(공통 `turns` CTE를 거치지 않음). 그래야 결과·세션 조건이 인덱스까지 내려간다.
+
+### 16.2 인덱스 (마이그레이션 `0006_review_indexes`)
+| 인덱스 | 쓰이는 곳 |
+|---|---|
+| `ix_request_logs_outcome_created (outcome, created_at)` | 드문 결과의 목록(예: 오류), 결과별 건수 |
+| `ix_request_logs_session_created (session_id, created_at)` | 한 사용자의 흐름. 앞칸이 `session_id` 단독 조회도 받으므로 기존 `ix_request_logs_session_id`를 대체 |
+
+- 피드백은 `feedback.request_id` 유일 인덱스(`feedback_request_id_key`)로 질문마다 한 건 찾는다(T3-55. 전에는 `ix_ui_events_request_id`). 한 사용자의 질문처럼 몇 건 안 되면 플래너가 작은 `feedback` 테이블을 한 번 읽어 붙이기도 한다.
+- **피드백 전용 인덱스는 넣지 않았다**(T3-52 당시, 원천이 `ui_events`일 때). `(request_id, client_ts DESC, …) WHERE event_type='feedback'`을 시험했더니 메트릭 화면의 👎 목록·👍 비율(14.2, 모든 피드백을 `DISTINCT ON`으로 읽음)이 약 2배 느려졌다(76 → 163 ms).
+
+### 16.3 측정 (지어낸 데이터: 질문 20만·이벤트 100만·90일)
+| 쿼리 | 전 | 후 |
+|---|---|---|
+| 오류 목록 90일, 1쪽 | 0.67 ms | 0.25 ms |
+| 거절 건수 90일 | 11.0 ms | 3.1 ms |
+| 거절 목록 90일, 1쪽 | 0.28 ms | 0.28 ms (기존 `created_at` 인덱스가 이미 쌈) |
+| 한 사용자 90일 | 0.24 ms | 0.20 ms |
+| 👎 답 목록 7일 (14장, 바꾸지 않음) | 75.8 ms | 76.3 ms |
+
+- 플래너가 상황마다 더 싼 인덱스를 고른다. 흔한 결과를 한 쪽만 꺼낼 때는 `created_at` 인덱스를 최신순으로 읽는 편이 이미 싸서 새 인덱스를 쓰지 않는다.
+- 지금 실제 로그는 거의 없어 차이가 없다. 로그가 쌓이면 실제 데이터로 다시 재고, 피드백 조회가 느려지면 질문 행에 마지막 피드백 값을 붙이는 안(`plans/T3-52.md` 옵션 C)을 검토한다.
+

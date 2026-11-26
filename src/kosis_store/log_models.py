@@ -7,8 +7,9 @@ the turn's spans and its ChatResult.
 T3-48: the tables have the migration `0002_log_tables` and sit on the store's Base (LogBase is the same object), so the
 T3-18 migration check covers them. The service writes them through kosis_store.log_collector.
 
-Text as typed lives in `question` only. It is masked before it is stored, never stored for harness requests
-(is_internal), and set to NULL after the retention period; every other column is kept.
+Free text lives in three places only: `request_logs.question` (the question as typed), `request_rewrites.text` (the
+question the agent rewrote, T3-50) and `ui_events.reason` (the feedback reason). Each is masked before it is stored,
+never stored for harness requests (is_internal), and set to NULL after the retention period; every other column is kept.
 
 Log version 3: the row has no per-step column. Node, tool and LLM step timings are OpenTelemetry metrics sent to
 Prometheus (docs/log-schema.md 10). The steps of a turn are still read once at write time, with the keys of SPAN_KEYS
@@ -20,7 +21,8 @@ from __future__ import annotations
 import uuid
 from datetime import date, datetime
 
-from sqlalchemy import Boolean, CheckConstraint, Date, DateTime, Float, Index, Integer, String, Text, func
+from sqlalchemy import (Boolean, CheckConstraint, Date, DateTime, Float, ForeignKey, Index, Integer, SmallInteger, String,
+                        Text, func)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from kosis_store.models import Base, JSONType
@@ -35,6 +37,13 @@ SPAN_STATUSES = ("ok", "refused", "error")
 SPAN_KEYS = ("name", "kind", "stage", "ms", "status", "error_type", "input_tokens", "output_tokens", "model")
 UNKNOWN_REASON = "unknown"  # a refusal the agent gave no reason for (multi-query turns, a failed reason lookup)
 NO_TRACE = "0" * 32  # trace id of a no-op tracer: tracing was off, the row would have no usable key
+# T3-50: how the agent read the question (kosis_store.log_rows.rewrites_from_turn), first match wins:
+# chart_only (redraw the last chart), multi (split into sub-questions), carry_over (rewritten with the earlier turn's
+# conditions, "부산은?"), reference ("그 표에서 ..." asked as typed on the earlier table), new
+REWRITE_KINDS = ("new", "carry_over", "reference", "chart_only", "multi")
+INTERPRETERS = ("rule", "llm", "none")  # ChatResult.interpreted_by: who read the turn
+# one request_rewrites row: the standalone question of a carry-over turn, or one sub-question of a multi-query turn
+REWRITE_TEXT_KINDS = ("resolved", "sub_question")
 LOG_VERSION = 3  # 2: trace id key, string conversation id, 0-based turn index, failed outcome; 3: no steps column
 
 
@@ -58,6 +67,12 @@ class RequestLog(LogBase):
         CheckConstraint("turn_index >= 0", name="ck_request_logs_turn_index"),
         CheckConstraint(f"length(request_id) = 32 AND request_id <> '{NO_TRACE}'", name="ck_request_logs_request_id"),
         Index("ix_request_logs_conversation_turn", "conversation_id", "turn_index"),  # not unique: a turn can be retried
+        CheckConstraint(_in("rewrite_kind", REWRITE_KINDS), name="ck_request_logs_rewrite_kind"),
+        CheckConstraint(_in("interpreted_by", INTERPRETERS), name="ck_request_logs_interpreted_by"),
+        # T3-52 data review (kosis_store.log_metrics.review_turns): one outcome over a period, one user over a period.
+        # The (session_id, created_at) index also serves session_id alone, so it replaced the single-column one.
+        Index("ix_request_logs_outcome_created", "outcome", "created_at"),
+        Index("ix_request_logs_session_created", "session_id", "created_at"),
     )
 
     request_id: Mapped[str] = mapped_column(String(32), primary_key=True)  # OTel trace id of the turn (Jaeger search)
@@ -66,7 +81,7 @@ class RequestLog(LogBase):
     conversation_id: Mapped[str] = mapped_column(String(64))
     turn_index: Mapped[int] = mapped_column(Integer)  # kosis.turn.index: 0 for the first question, as in the trace
     prev_request_id: Mapped[str | None] = mapped_column(String(32))  # the request before this one in the conversation
-    session_id: Mapped[uuid.UUID | None] = mapped_column(index=True)  # random browser session id, not a person
+    session_id: Mapped[uuid.UUID | None] = mapped_column()  # random browser session id, not a person
     is_member: Mapped[bool] = mapped_column(Boolean, default=False)
     is_internal: Mapped[bool] = mapped_column(Boolean, default=False)  # team or eval harness traffic
     input_method: Mapped[str] = mapped_column(String(16), default="direct")
@@ -88,11 +103,36 @@ class RequestLog(LogBase):
     input_tokens: Mapped[int] = mapped_column(Integer, default=0)
     output_tokens: Mapped[int] = mapped_column(Integer, default=0)
 
+    # T3-50: how the question was read; NULL when the turn raised before it had a result. The rewritten text itself is in
+    # request_rewrites (one row per rewritten question, so the sub-questions of a multi-query turn are rows)
+    rewrite_kind: Mapped[str | None] = mapped_column(String(16))
+    interpreted_by: Mapped[str | None] = mapped_column(String(8))
+
     # Filled by the multi-turn quality detection (KOS-176) while the text still exists
     rephrase_of: Mapped[str | None] = mapped_column(String(32))
     negative_reaction: Mapped[bool | None] = mapped_column(Boolean)
 
     log_version: Mapped[int] = mapped_column(Integer, default=LOG_VERSION)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+
+class RequestRewrite(Base):
+    """A question the agent rewrote in one turn (T3-50, plans/T3-50.md option B): the standalone question of a
+    carry-over turn (seq 0), or each sub-question of a multi-query turn (seq 0, 1, ...). Turns that kept the question as
+    typed have no row. Harness turns have no row either (they would carry no text)."""
+
+    __tablename__ = "request_rewrites"
+    __table_args__ = (
+        CheckConstraint(_in("kind", REWRITE_TEXT_KINDS), name="ck_request_rewrites_kind"),
+        CheckConstraint("seq >= 0", name="ck_request_rewrites_seq"),
+    )
+
+    request_id: Mapped[str] = mapped_column(String(32), ForeignKey("request_logs.request_id", ondelete="CASCADE"),
+                                            primary_key=True)
+    seq: Mapped[int] = mapped_column(SmallInteger, primary_key=True)
+    kind: Mapped[str] = mapped_column(String(16))
+    text: Mapped[str | None] = mapped_column(Text)  # masked; NULL after retention
+    text_len: Mapped[int | None] = mapped_column(Integer)  # kept after the text is gone
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
 
 
@@ -155,6 +195,8 @@ class UiEvent(Base):
     reason: Mapped[str | None] = mapped_column(Text)  # feedback only: masked, NULL after the retention period
     is_internal: Mapped[bool] = mapped_column(Boolean, default=False)
     log_version: Mapped[int] = mapped_column(Integer, default=LOG_VERSION)
+
+
 
 
 class IngestReject(Base):

@@ -37,7 +37,7 @@ TASK.md를 고치면 `.claude/hooks/linear_sync.py`가 `T3-xx` 제목으로 Line
 - 모든 답에 출처: `KOSIS / 조사명 / 통계표명 (+링크)`. 표 ID는 툴 호출 전 과정에서 보존한다.
 - 자료가 없으면 지어내지 말고 없다고 말한다 (범위 밖·기간/주기 불일치 포함).
 - 노드·툴 입출력은 Pydantic 계약을 유지한다: 공용 `kosis_ai.schemas`(실전 1), 검색 `kosis_rag.schemas`(실전 2). 깨는 변경은 plan에 명시하고 승인받는다.
-- 툴 (T3-01): `search_tables`(실전 2) · `summarize_stat`(실전 1) · `make_chart`(T3-02, Vega-Lite spec) · `combine_values`(T3-28, 표가 다른 두 하위 답의 숫자를 코드가 합침).
+- 툴 (T3-01): `search_tables`(실전 2) · `summarize_stat`(실전 1) · `make_chart`(T3-02, 실전 1 차트 모듈로 ChartSpec을 요청 종류로 다시 그림, Vega-Lite 없음) · `combine_values`(T3-28, 표가 다른 두 하위 답의 숫자를 코드가 합침).
 - 오케스트레이션: LangGraph StateGraph(대화 상태 유지, checkpointer). 메인 흐름은 supervisor 없는 **단계별 ReAct 판단**이다(T3-03 옵션 B, `graph/react.py`):
   understand(매 턴 Qwen이 먼저 판단, 규칙 판단 없음 — LLM 없거나 장애면 search: template 즉시 답변 | clarify 되묻기 | rewrite | search, 지시어·이월이면 직전 표 재사용)
   → rewrite(재작성 문장은 원문 낱말·숫자만, Qwen 충분성 판단, 불충분이면 1회만 더) → search(`search_tables` 툴 = 실전 2 검색 그래프 전체, 2차 리랭커·gate가 "답할 수 있음" 검수, no_item 거절이면 재작성·재검색 1회)
@@ -50,13 +50,14 @@ TASK.md를 고치면 `.claude/hooks/linear_sync.py`가 `T3-xx` 제목으로 Line
 ## 3. 디렉터리
 
 ```
-backend/app/       FastAPI (main.py: /chat/stream SSE, build_agent() = 서비스·agent 평가 진입점) · config.py(셸 환경 → 설정 객체). 로직은 src/
+backend/app/       FastAPI (main.py: /chat/stream SSE, build_agent() = 서비스·agent 평가 진입점) · server.py(서버 실행·종료 처리: 미처리 예외·SIGTERM 때 DB 연결 정리) · config.py(셸 환경 → 설정 객체). 로직은 src/
 src/kosis_agent/   에이전트 (docs/research/KOSIS-RAG-Retrieval-Agent-Architecture.md 6장 구조, T3-23)
   graph/           실행 순서·분기: main_graph.py(워크플로 조립) · state.py(AgentState · ChatResult · checkpointer) · context.py(지시어·이월·차트 요청 해석: 규칙 우선, 판단 못 한 턴만 LLM, T3-27)
   retrieval/       search.py(search_tables 툴 = 실전 2 SearchModule) · README.md(검색 알고리즘이 실전 2 어디 있는지 지도)
-  services/        statistics.py(summarize_stat 툴 = 실전 1) · chart.py(ChartSpec → Vega-Lite, make_chart 툴) · parquet_repository.py(T3-17)
+  services/        statistics.py(summarize_stat 툴 = 실전 1) · chart.py(실전 1 차트 모듈 껍데기: ChartSpec 데이터, make_chart 툴) · parquet_repository.py(T3-17)
   observability/   tracing.py(노드·툴·LLM OTel span 콜백, 서비스·평가 공용)
   runtime.py       툴이 노드 안에서 돌 때의 규칙(stream writer, 안쪽 그래프 checkpointer 분리)
+src/kosis_store/   저장 층(테이블·로그·정리 배치)과 API 요청·응답 스키마(도메인별 chat/ · feedback/ · events/ · tools/의 schemas.py). 스키마는 API만 import한다(migrate 이미지에는 에이전트 코드가 없음)
 evals/             계층별 평가 모듈 (실전 2에서 복사해 이어감, T3-00): tasks/(계층마다 실행·리포트, T3-29) · datasets/(gitignored) · evaluators/(agent/ = 툴·상태·수치·답변 품질) · runners/ · reports/. 에이전트 지표는 T3-06에서 여기에 추가
 frontend/          Next.js 16 (App Router) + TypeScript + Tailwind + shadcn/ui + Vercel AI SDK. 실전 2 UI에서 시작 (T3-11)
 vendor/phase1/     실전 1 submodule — kosis_ai(src/), kosis_chat/, eval/, configs/model.yaml. 직접 수정 금지

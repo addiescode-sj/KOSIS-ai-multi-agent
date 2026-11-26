@@ -1,11 +1,11 @@
 import { Suspense } from "react";
 
-import { SavedChat } from "@/components/chat/entries";
+import { SavedChatHydration } from "@/components/chat/saved/saved-chat-hydration";
 
 export default function Page({ params }: PageProps<"/chat/[id]">) {
   return (
     <Suspense>
-      <SavedChat params={params} />
+      <SavedChatHydration params={params} />
     </Suspense>
   );
 }

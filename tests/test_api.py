@@ -11,7 +11,7 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 from backend.app import telemetry
-from backend.app.main import app, chat_stream, ChatRequest, get_graph, get_tools, tokens
+from backend.app.main import app, chat_stream, ChatRequest, get_graph, get_table_keys, get_tools, tokens
 from kosis_agent.graph.main_graph import build_graph
 from kosis_agent.graph.state import new_checkpointer
 from kosis_agent.retrieval.search import make_search_tables_tool
@@ -41,6 +41,7 @@ def client():
     tools = {t.name: t for t in (make_search_tables_tool(FakeSearch("found")),
                                  make_summarize_stat_tool(STAT_LLM, summarize=summarize), make_chart_tool())}
     app.dependency_overrides.update({get_graph: lambda: graph, get_tools: lambda: tools,
+                                     get_table_keys: lambda: frozenset({"101_DT_1B8000H"}),
                                      telemetry.get_tracer: lambda: provider.get_tracer("test")})
     try:
         yield TestClient(app), memory
@@ -97,7 +98,10 @@ def test_chat_answers_like_the_stream(client):
     http, _ = client
     body = http.post("/chat", json={"question": "2030년 출생아 수"}).json()
     streamed = _events(http.post("/chat/stream", json={"question": "2030년 출생아 수"}).text)[-1][1]
-    assert body["result"] == streamed and len(body["trace_id"]) == 32 and body["thread_id"]
+    # T3-51: each answer carries its own request_id (= its trace id); everything else is the same
+    assert body["result"]["request_id"] == body["trace_id"] and streamed["request_id"] != body["trace_id"]
+    assert {**body["result"], "request_id": None} == {**streamed, "request_id": None}
+    assert len(body["trace_id"]) == 32 and body["thread_id"]
 
 
 def test_the_root_span_ends_when_the_client_goes_away():
@@ -115,13 +119,72 @@ def test_tool_endpoints_call_the_tools_and_leave_a_trace_each(client):
     found = http.post("/tools/search_tables", json={"question": "출생아 수"}).json()
     assert found["route"] == "found" and found["picked"][0]["key"] == "101_DT_1B8000H"
     stat = http.post("/tools/summarize_stat", json={"question": "q", "table_key": "101_DT_1B8000H"}).json()
-    assert stat["answer"]["text"] == ANSWER and stat["vega_lite"] is None
+    assert stat["answer"]["text"] == ANSWER and "vega_lite" not in stat
     chart = http.post("/tools/make_chart", json={"table_key": "101_DT_1B8000H"}).json()
-    assert chart["vega_lite"] is None
+    assert chart["chart"] is None and chart["note"]
     roots = [s for s in memory.get_finished_spans() if s.parent is None]
-    assert [s.name for s in roots] == ["POST /tools/search_tables", "POST /tools/summarize_stat",
-                                       "POST /tools/make_chart"]
+    assert [s.name for s in roots] == ["POST /dev/tools/search_tables", "POST /dev/tools/summarize_stat",
+                                       "POST /dev/tools/make_chart"]  # T3-51: developer paths under /dev/
     assert len({s.context.trace_id for s in roots}) == 3
+
+
+def test_an_unregistered_table_key_is_422_not_a_refusal(client):
+    """api.md 0 (T3-55): a key outside the registry is an input error; no tool runs, no trace is left."""
+    http, memory = client
+    for path, body in [("/dev/tools/summarize_stat", {"question": "q", "table_key": "999_NOPE"}),
+                       ("/tools/summarize_stat", {"question": "q", "table_key": "999_NOPE"}),
+                       ("/dev/tools/make_chart", {"table_key": "999_NOPE"})]:
+        res = http.post(path, json=body)
+        assert res.status_code == 422 and res.json()["error"]["code"] == "unknown_table"
+    assert memory.get_finished_spans() == ()
+    assert http.post("/dev/tools/summarize_stat", json={"question": "q", "table_key": "101_DT_1B8000H"}).status_code == 200
+
+
+def test_every_non_sse_error_has_the_contract_shape(client):
+    """api.md 0 (T3-55): {"error": {"code", "message"}} with the status kept: 404 of a thread or an unknown path,
+    405, the 503 of an agent that cannot load. Input validation keeps FastAPI's 422 {"detail": [...]}."""
+    http, _ = client
+    assert http.get("/dev/threads/nope").json()["error"]["code"] == "not_found"
+    unknown = http.get("/no/such/path")
+    assert unknown.status_code == 404 and unknown.json() == {"error": {"code": "not_found", "message": "Not Found"}}
+    wrong = http.put("/health")
+    assert wrong.status_code == 405 and wrong.json()["error"]["code"] == "method_not_allowed"
+    assert "detail" in http.post("/dev/chat", json={}).json()  # validation: FastAPI's body, still 422
+
+    def broken():
+        from backend.app.main import ApiError
+        raise ApiError(503, "unavailable", "x")
+    app.dependency_overrides[get_graph] = broken
+    down = http.post("/dev/chat", json={"question": "q"})
+    assert down.status_code == 503 and down.json()["error"]["code"] == "unavailable"
+
+
+def test_the_agent_load_failure_is_a_503_in_the_contract_shape(monkeypatch):
+    from backend.app import main
+
+    def fail(checkpointer=None):
+        raise RuntimeError("no vector store")
+    monkeypatch.setattr(main, "_build", fail)
+    monkeypatch.setattr(main, "_agent", None)
+    monkeypatch.setattr(main, "get_checkpointer", lambda: None)
+    res = TestClient(app).post("/dev/tools/search_tables", json={"question": "q"})
+    assert res.status_code == 503 and res.json()["error"]["code"] == "unavailable"
+    assert "RuntimeError" in res.json()["error"]["message"]
+
+
+def test_a_dev_chat_failure_is_a_500_in_the_contract_shape(client):
+    http, _ = client
+
+    class Broken:
+        def get_state(self, config):
+            raise ValueError("no checkpointer")
+
+        def invoke(self, *a, **kw):
+            raise RuntimeError("boom")
+    app.dependency_overrides[get_graph] = lambda: Broken()
+    res = http.post("/dev/chat", json={"question": "q"})
+    assert res.status_code == 500 and res.json()["error"]["code"] == "internal_error"
+    assert "RuntimeError: boom" in res.json()["error"]["message"]
 
 
 def test_thread_state_after_a_turn_and_404_before(client):
@@ -146,6 +209,11 @@ def test_service_tracing_never_touches_the_global_provider():
 
 def test_the_openapi_docs_list_every_endpoint():
     paths = TestClient(app).get("/openapi.json").json()["paths"]
-    assert set(paths) == {"/health", "/chat/stream", "/chat", "/tools/search_tables", "/tools/summarize_stat",
-                          "/tools/make_chart", "/threads/{thread_id}", "/events", "/ops/log-counts"}  # T3-48 log intake
+    dev = {"/dev/chat", "/dev/tools/search_tables", "/dev/tools/summarize_stat", "/dev/tools/make_chart",
+           "/dev/threads/{thread_id}"}
+    legacy = {"/chat", "/tools/search_tables", "/tools/summarize_stat", "/tools/make_chart", "/threads/{thread_id}"}
+    assert set(paths) == {"/health", "/chat/stream", "/events", "/ops/log-counts",  # T3-48 log intake
+                          "/feedback", "/chat/{thread_id}",  # T3-51 contract (docs/service/api.md)
+                          "/auth/kakao/login", "/auth/kakao/callback", "/auth/logout", "/auth/me"} | dev | legacy  # T3-54
+    assert all(op.get("deprecated") for p in legacy for m, op in paths[p].items() if (p, m) != ("/chat", "get"))
     assert "text/event-stream" in json.dumps(paths["/chat/stream"])

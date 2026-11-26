@@ -23,6 +23,7 @@ from kosis_store.log_metrics import purge_feedback_reasons
 from kosis_store.log_models import (LOG_VERSION, DailySessionUsage, DailyUsage, IngestReject, LogBase, RequestLog,
                                     UiEvent)
 from kosis_store.masking import mask
+from kosis_store.service_models import Feedback
 from tests.test_agent_graph import STAT_LLM, FakeSearch
 from tests.test_api import summarize
 
@@ -187,7 +188,8 @@ def test_every_turn_becomes_one_row(store):
     sid = str(uuid.uuid4())
     meta = http.post("/chat/stream", json={"question": "2030년 출생아 수 010-1234-5678", "thread_id": "t1",
                                            "session_id": sid}).text
-    http.post("/chat", json={"question": "2031년은?", "thread_id": "t1", "input_method": "clarify_option"})
+    http.post("/chat", json={"question": "2031년은?", "thread_id": "t1", "input_method": "clarify_option",
+                             "session_id": sid})  # T3-51: only the session that started t1 continues it
     turns += 2
     http, provider, collector = _service(store, _graph("refuse"))
     http.post("/chat/stream", json={"question": "오늘 날씨", "thread_id": "t2"})
@@ -262,15 +264,25 @@ def test_tool_calls_and_untraced_turns_write_nothing(store):
 def test_events_endpoint_stores_passing_events_once_and_counts_the_rest(store):
     http, provider, collector = _service(store, _graph())
     event = _event(ts=datetime.now(timezone.utc).isoformat())
-    body = http.post("/events", json=[event, event, _event(event_type="question_submit")]).json()
-    again = http.post("/events", json=[event]).json()  # a resent batch
+    body = http.post("/events", json={"events": [event, event, _event(event_type="question_submit")]}).json()
+    again = http.post("/events", json={"events": [event]}).json()  # a resent batch
     collector.force_flush()
     assert (body, again) == ({"accepted": 1, "rejected": 1}, {"accepted": 1, "rejected": 0})
     with session_scope(store) as s:
         assert s.scalar(select(func.count()).select_from(UiEvent)) == 1  # the resent event_id was ignored
         reject = s.scalars(select(IngestReject)).one()
         assert (reject.reason, reject.event_type, reject.n) == ("unknown_event_type", "question_submit", 1)
-    assert http.post("/events", json=[_event()] * (MAX_EVENTS_PER_BATCH + 1)).status_code == 422
+    assert http.post("/events", json={"events": [_event()] * (MAX_EVENTS_PER_BATCH + 1)}).status_code == 422
+    assert http.post("/events", json={"events": [_event()] * MAX_EVENTS_PER_BATCH}).status_code == 202
+
+
+def test_events_endpoint_takes_the_contract_body_only(store):
+    """api.md 5 (T3-55): the body is {"events": [...]}; the bare list of T3-48 is an input error now."""
+    http, provider, collector = _service(store, _graph())
+    assert http.post("/events", json=[_event()]).status_code == 422
+    assert http.post("/events", json={"events": []}).json() == {"accepted": 0, "rejected": 0}
+    old_feedback = _feedback(ts=datetime.now(timezone.utc).isoformat())  # old clients: still accepted (compat)
+    assert http.post("/events", json={"events": [old_feedback]}).json() == {"accepted": 1, "rejected": 0}
 
 
 def test_log_counts_endpoint(store):
@@ -299,8 +311,8 @@ def pg():
 
 
 def _turn(conversation, turn, session=None, outcome="answered", internal=False, member=False,
-          at=datetime(2026, 11, 23, 1, 0, tzinfo=timezone.utc)):
-    return RequestLog(request_id=uuid.uuid4().hex, conversation_id=conversation, turn_index=turn, session_id=session,
+          at=datetime(2026, 11, 23, 1, 0, tzinfo=timezone.utc), request_id=None):
+    return RequestLog(request_id=request_id or uuid.uuid4().hex, conversation_id=conversation, turn_index=turn, session_id=session,
                       outcome=outcome, is_internal=internal, is_member=member, created_at=at,
                       question=None if internal else "q")
 
@@ -312,20 +324,28 @@ def _ui(kind, request_id=None, value=None, at=datetime(2026, 11, 23, 1, 0, tzinf
                    request_id=request_id, props=props, is_internal=internal, session_id=session)
 
 
+def _vote(request_id, value, at=datetime(2026, 11, 23, 1, 5, tzinfo=timezone.utc)):
+    return Feedback(id=uuid.uuid4(), request_id=request_id, value=value, category="other", reason="이유",
+                    created_at=at, updated_at=at)
+
+
 @pytest.mark.postgres
 def test_daily_usage_total_and_per_user_match_hand_counts_and_rebuild_the_same(pg):
     s1, s2, s3 = sorted((uuid.uuid4() for _ in range(3)), key=str)
     r1 = "cd" * 16
     rows = [
-        _turn("A", 0, s1, member=True), _turn("A", 1, s1, member=True), _turn("A", 2, s1, member=True),  # 3 turns
-        _turn("B", 0, s2, outcome="aborted"),
+        _turn("A", 0, s1, member=True, request_id=r1), _turn("A", 1, s1, member=True),
+        _turn("A", 2, s1, member=True),  # 3 turns
+        _turn("B", 0, s2, outcome="aborted", request_id="ef" * 16),
         _turn("C", 0, None),  # no session id sent: in the total only
         _turn("H", 0, None, internal=True),  # harness: left out
         _turn("D", 0, s2, at=datetime(2026, 11, 23, 15, 30, tzinfo=timezone.utc)),  # 00:30 on 11/24 KST
         _ui("citation_click", session=s1), _ui("citation_click", session=s1), _ui("copy_answer", session=s2),
-        _ui("feedback", r1, "down", session=s1, at=datetime(2026, 11, 23, 1, 0, tzinfo=timezone.utc)),
-        _ui("feedback", r1, "up", session=s1, at=datetime(2026, 11, 23, 1, 5, tzinfo=timezone.utc)),  # last: up
-        _ui("feedback", "ef" * 16, "down", session=s2),
+        # T3-55: the feedback table, one row per answer (POST /feedback replaced r1's down with up in place)
+        _vote(r1, "up"), _vote("ef" * 16, "down"),
+        _vote("99" * 16, "down"),  # an answer with no question row: not counted anywhere
+        _ui("feedback", r1, "down", session=s1),  # old-client feedback events: accepted, never counted
+        _ui("feedback", "ef" * 16, "up", session=s2),
         _ui("copy_answer", session=s3),  # a user who only copied an answer that day
         _ui("citation_click", internal=True, session=s1),
     ]

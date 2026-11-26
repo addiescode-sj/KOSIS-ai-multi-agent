@@ -27,7 +27,8 @@
              다시 쓴 문장으로 찾는다. 2차 리랭커·gate 결과(route·picked)가 "답할 수 있음/없음" 검수다(LLM 추가 호출 없음).
 - statistics summarize_stat 툴(실전 1). 숫자와 답 문장은 실전 1이 만든다.
 - multi      멀티쿼리 턴(T3-28).
-- chart      make_chart 툴(차트 요청 턴) 또는 실전 1 ChartSpec → Vega-Lite. 답변 다음 순차(Decision: fan-out 안 함).
+- chart      사용자가 차트를 요청했으면 make_chart 툴로 요청한 종류를 그리고, 아니면 실전 1이 준 ChartSpec을
+             그대로 보낸다(툴 아님: 요청하지 않은 툴 호출은 하네스가 extra_call로 감점). Vega-Lite는 없다(KOS-202).
 - review     코드 검수: 출처 줄(chatTemplate = 실전 1 답 + `출처: KOSIS / 조사명 / 통계표명`)이 없으면 코드가 붙이고,
              실전 1 숫자 검증(numbers_verified)과 요청한 차트가 그려졌는지 기록한다. 툴을 부르지 않는다.
 - finalize   outcome과 답 메시지를 정한다. 답 문장은 실전 1·2 문장 또는 코드 고정 문장만 쓴다(LLM 문장 생성 없음).
@@ -52,7 +53,7 @@ from kosis_agent.graph.multiquery import SplitReader, split_question
 from kosis_agent.graph.react import (TEMPLATES, Judge, Steps, UnderstandStep, clarify_text, grounded, safe)
 from kosis_agent.graph.state import AgentState
 from kosis_agent.retrieval.search import make_search_tables_tool
-from kosis_agent.services.chart import CHART_NAMES, make_chart_tool, to_vega_lite
+from kosis_agent.services.chart import CHART_NAMES, chart_payload, make_chart_tool
 from kosis_agent.services.combine import combine_text, make_combine_values_tool
 from kosis_agent.services.statistics import make_summarize_stat_tool
 from kosis_chat.api import summarize_stat_run
@@ -368,11 +369,11 @@ def build_graph(search: Any, stat_llm: StatLLMConfig, *, retry_interval: float =
         else:
             spec, key = state["stat"].chart, state["table_key"]
         if not state["chart_requested"]:
-            return {"chart": to_vega_lite(spec)}
+            return {"chart": chart_payload(spec)}
         args = {"table_key": key, "chart": spec.model_dump(mode="json") if spec else None,
                 "chart_type": state.get("chart_type")}
         out = call_tool(make_chart, args, config).artifact
-        return {"chart": out["vega_lite"], "chart_note": out["note"]}
+        return {"chart": out["chart"], "chart_note": out["note"]}
 
     def after_chart(state: AgentState) -> str:
         return "finalize" if state["chart_only"] else "review"

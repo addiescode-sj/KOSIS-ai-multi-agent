@@ -1,7 +1,9 @@
 """T3-46 e2e golden: label derivation and grading, builder helpers, the e2e scenario path (oracle self-check)."""
 
 import json
+import signal
 
+import pytest
 from kosis_ai.schemas import Fact
 
 from evals.builders.e2e_golden import formula_labels, ratio_question
@@ -134,6 +136,8 @@ def test_formula_grade_reads_plan_steps_as_compute_would():
     assert s["confusion"]["formula"] == [("['cagr'] → 규칙 미결정", 1)]
 
 
+# with_rule_pred times a scenario out with SIGALRM, which Windows does not have (the timeout is off there)
+@pytest.mark.skipif(not hasattr(signal, "SIGALRM"), reason="no SIGALRM on Windows: with_rule_pred has no timeout there")
 def test_rule_pred_guards_large_tables_timeouts_and_resumes(tmp_path):
     # T3-46: a build was force-quit while phase 1 loaded multi-million-row tables -> skip, time out, resume
     import time

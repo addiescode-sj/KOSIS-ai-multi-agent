@@ -42,7 +42,7 @@ class AgentState(MessagesState):
     resolved_question: str  # 실전 1에 넘긴 문장: 이월이면 직전 조건을 채운 독립 질문, 아니면 원문 (T3-27)
     interpreted_by: str  # 이번 턴을 누가 해석했나: rule | llm | none (graph/context.py Reading.by)
     chart_requested: bool  # 사용자가 이번 턴에 차트를 요청함 → make_chart 툴을 부른다 (T3-27)
-    chart_type: str | None  # 요청한 종류 bar | line | pie (없으면 실전 1이 고른 종류)
+    chart_type: str | None  # 요청한 종류 bar | line | pie | stacked (없으면 실전 1이 고른 종류)
     chart_only: bool  # 숫자는 그대로 두고 직전 답을 차트로만 다시 그림
     chart_note: str | None  # 요청한 종류로 못 그렸거나 차트 데이터가 없을 때의 안내
     reused_table: bool  # True면 이번 턴은 검색을 건너뛰고 active_table로 답함
@@ -51,7 +51,7 @@ class AgentState(MessagesState):
     attempts: list[dict]  # 실전 1에 넘긴 표마다 {"key", "outcome", "reason"}, 시도 순서대로
     stat: StatOutput | None  # 이번 턴의 최종 실전 1 결과 = 마지막으로 시도한 표의 결과
     table_key: str | None  # stat을 만든 표 키 (tables.csv 키 "<org_id>_<tbl_id>", tbl_id 아님)
-    chart: dict | None  # stat.chart를 Vega-Lite로 바꾼 것
+    chart: dict | None  # 그린 차트 데이터 (ChartSpec JSON, kosis_chat.chart.module.chart_data)
     outcome: Outcome | None
     degraded: bool  # 2차 리랭커가 실패해 실전 2가 1차 순서로 대신 답함 (plans/agent-graph-refactor.md P4)
     # 멀티쿼리 (T3-28, 이번 턴 상태)
@@ -83,9 +83,37 @@ class AgentState(MessagesState):
 CHECKPOINT_TYPES = (SearchOutput, StatOutput, ChartSpec)
 
 
+def _serde() -> JsonPlusSerializer:
+    return JsonPlusSerializer(allowed_msgpack_modules=list(CHECKPOINT_TYPES))
+
+
 def new_checkpointer() -> InMemorySaver:
-    """대화를 thread_id별로 잇는 메모리 checkpointer. 위 CHECKPOINT_TYPES만 다시 읽도록 허용한다."""
-    return InMemorySaver(serde=JsonPlusSerializer(allowed_msgpack_modules=list(CHECKPOINT_TYPES)))
+    """대화를 thread_id별로 잇는 메모리 checkpointer. 위 CHECKPOINT_TYPES만 다시 읽도록 허용한다.
+    평가(build_agent)와 테스트가 쓴다. 서비스는 postgres_checkpointer를 쓴다(T3-51)."""
+    return InMemorySaver(serde=_serde())
+
+
+def postgres_checkpointer(url: str):
+    """서비스용 checkpointer (T3-51): 대화 상태를 PostgreSQL에 저장해 서버를 다시 켜거나 다른 노드로 가도 이어 묻는다.
+
+    url은 SQLAlchemy 형식(`postgresql+psycopg://…`)도 받는다. 요청 처리기가 동기 함수라 동기 PostgresSaver와
+    psycopg 연결 풀을 쓴다. checkpoint 테이블(checkpoints·checkpoint_blobs·checkpoint_writes·checkpoint_migrations)은
+    LangGraph가 setup()으로 만들고 관리한다(Alembic 밖, migrations/env.py가 autogenerate에서 제외).
+    직렬화 허용 목록은 메모리 checkpointer와 같다(CHECKPOINT_TYPES)."""
+    from langgraph.checkpoint.postgres import PostgresSaver
+    from psycopg.rows import dict_row
+    from psycopg_pool import ConnectionPool
+
+    conninfo = url.replace("postgresql+psycopg://", "postgresql://", 1)
+    pool = ConnectionPool(conninfo, max_size=10, open=True,
+                          kwargs={"autocommit": True, "prepare_threshold": 0, "row_factory": dict_row})
+    try:
+        saver = PostgresSaver(pool, serde=_serde())
+        saver.setup()
+    except BaseException:  # 열지 못하면 재연결을 계속 시도하는 풀을 남기지 않는다
+        pool.close()
+        raise
+    return saver
 
 
 class ChatResult(BaseModel):
@@ -107,7 +135,7 @@ class ChatResult(BaseModel):
     answer_origin: str  # "refusal" (코드 거절 문장: 실전 2 gate 또는 failed) | "stat" (실전 1 StatAnswer.text) | "chart" (차트만 다시 그린 턴의 코드 문장) | "multi" (멀티쿼리 하위 답을 이은 문장)
     table_key: str | None = None  # 답을 만든 tables.csv 키 ("<org_id>_<tbl_id>", tbl_id 아님)
     stat_answer: StatAnswer | None = None
-    chart: dict[str, Any] | None = None  # Vega-Lite v5, 차트가 없으면 None
+    chart: dict[str, Any] | None = None  # 그린 차트 데이터 (ChartSpec JSON, 프런트가 Recharts로 그림. KOS-202), 없으면 None
     outcome: str | None = None  # answered | refused | clarify | failed
     attempted_keys: list[str] = Field(default_factory=list)  # 실전 1에 넘긴 표 키, 시도 순서대로 (대체 표 재시도 포함)
     reused_table: bool = False  # 지시어로 직전 표를 다시 씀 (검색 건너뜀)
@@ -121,6 +149,9 @@ class ChatResult(BaseModel):
     intent: str | None = None  # T3-03 이해 단계 Action: template | clarify | rewrite | search
     trace: list[dict] = Field(default_factory=list)  # T3-03 단계별 Thought·Action
     review: dict | None = None  # T3-03 검수 결과
+    # 이 질문의 요청 ID = OTel trace ID = meta.trace_id (T3-51, docs/service/api.md 2). 피드백을 이 값으로 보낸다.
+    # 그래프가 아니라 요청 처리기(backend/app/main.py)가 채운다. 그래프만 돌린 평가에서는 None.
+    request_id: str | None = None
 
 
 def chat_result(state: dict) -> ChatResult:

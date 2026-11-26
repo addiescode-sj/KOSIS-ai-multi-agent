@@ -7,6 +7,7 @@ import { Chip } from "@/components/ui/chip";
 import { refusalReason, refusalTitle } from "@/lib/chat/answer";
 import { EXAMPLES } from "@/lib/chat/examples";
 import type { ChatResult } from "@/lib/chat/schemas";
+import type { Ask } from "@/types/chat";
 
 import { Notice } from "./notice";
 
@@ -15,7 +16,7 @@ const REASON_ICONS: Record<string, LucideIcon> = {
   not_aggregatable: Sigma, causal: Ban, missing_value: CircleSlash, out_of_scope: SearchX,
 };
 
-export function Refused({ result, onAsk }: { result: ChatResult; onAsk?: (text: string) => void }) {
+export function Refused({ result, onAsk }: { result: ChatResult; onAsk?: Ask }) {
   const reason = refusalReason(result);
   const { title, tone } = refusalTitle(reason);
   const available = result.stat_answer?.refusal?.available;

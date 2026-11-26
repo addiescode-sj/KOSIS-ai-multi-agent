@@ -12,6 +12,8 @@ feedback). Passing events go to ui_events
 (a resent event_id is ignored), failing ones are counted by reason in ingest_rejects, never stored as text.
 
 Text: the handler passes the question already masked (kosis_store.masking). The span attributes are not read for text.
+T3-50: a turn whose question the agent rewrote (carry-over, multi-query) also gets request_rewrites rows, built from the
+ChatResult and masked by kosis_store.log_rows.rewrite_rows; they are queued right after the turn row.
 """
 
 from __future__ import annotations
@@ -28,8 +30,8 @@ from typing import Any
 from opentelemetry.sdk.trace import ReadableSpan, SpanProcessor
 
 from kosis_store.log_models import (FEEDBACK_CHOICES, FEEDBACK_REASON_MAX, LOG_VERSION, UI_EVENT_TYPES, DailyUsage,
-                                    IngestReject, RequestLog, UiEvent)
-from kosis_store.log_rows import ROOT_SPAN, row_from_turn
+                                    IngestReject, RequestLog, RequestRewrite, UiEvent)
+from kosis_store.log_rows import ROOT_SPAN, rewrite_rows, row_from_turn
 from kosis_store.masking import mask
 
 Writer = Callable[[str, list[dict]], None]  # (table name, rows) -> None; raises on failure
@@ -104,10 +106,13 @@ class TurnLogCollector(SpanProcessor):
             with self._lock:
                 spans = self._spans.pop(trace_id, [])
             values = row_from_turn(spans, result, **row)
+            rewrites = rewrite_rows(values["request_id"], result, is_internal=bool(row.get("is_internal")))
         except Exception:  # noqa: BLE001 - logging must not break the answer
             self.counts["skipped_bad_turn"] += 1
             return
         self.submit("request_logs", [values])
+        if rewrites:  # after the turn row (one writer thread keeps the order): the foreign key needs it first
+            self.submit("request_rewrites", rewrites)
 
     # -- screen events
     def add_events(self, events: Iterable[Any], *, is_internal: bool = False,
@@ -226,8 +231,9 @@ def _check_event(event: Any, received_at: datetime, is_internal: bool) -> tuple[
     }, None
 
 
-_MODELS = {"request_logs": RequestLog, "ui_events": UiEvent, "ingest_rejects": IngestReject, "daily_usage": DailyUsage}
-_KEYS = {"request_logs": ["request_id"], "ui_events": ["event_id"]}  # a resent row with the same key is ignored
+_MODELS = {"request_logs": RequestLog, "request_rewrites": RequestRewrite, "ui_events": UiEvent,
+           "ingest_rejects": IngestReject, "daily_usage": DailyUsage}
+_KEYS = {"request_logs": ["request_id"], "request_rewrites": ["request_id", "seq"], "ui_events": ["event_id"]}  # a resent row with the same key is ignored
 
 
 def db_writer(engine) -> Writer:

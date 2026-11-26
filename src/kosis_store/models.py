@@ -1,7 +1,8 @@
 """ORM models (plans/T3-18.md, docs/store.md).
 
-messages.content and messages.result hold the user's question text as typed: no user identifier is stored, a
-conversation is only a random UUID, and conversations are deleted by created_at after the retention period.
+users / login_sessions (T3-54) hold a Kakao member number, a nickname and hashed login tokens. conversations and
+messages are a member's saved turns (questions as typed): deleted by the member, on withdrawal, or 90 days after the
+last question (kosis_store.cleanup). Guests have no rows here.
 eval_runs holds run aggregates only (one evals/reports/ops_history.jsonl line per row): no golden question text,
 answer or item id.
 vector_collection / vector_item are the vector store (T3-47, PostgreSQL + pgvector): table metadata and its
@@ -15,7 +16,8 @@ import uuid
 from datetime import datetime
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import DDL, JSON, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint, event, func
+from sqlalchemy import (DDL, JSON, Boolean, CheckConstraint, DateTime, Float, ForeignKey, Index, Integer, String, Text,
+                        UniqueConstraint, event, func, true)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -33,11 +35,49 @@ event.listen(Base.metadata, "before_create",
              DDL("CREATE EXTENSION IF NOT EXISTS vector").execute_if(dialect="postgresql"))
 
 
-class Conversation(Base):
-    __tablename__ = "conversations"
+class User(Base):
+    """A member (T3-54): Kakao's member number and nickname, and what the member chose on the settings screen. Deleted
+    with everything it owns on withdrawal."""
+
+    __tablename__ = "users"
+    __table_args__ = (
+        CheckConstraint("color IN ('blue', 'green', 'amber', 'rose', 'slate')", name="ck_users_color"),
+        CheckConstraint("retention_days IN (30, 90)", name="ck_users_retention_days"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    kakao_id: Mapped[str] = mapped_column(String(32), unique=True)
+    nickname: Mapped[str] = mapped_column(String(100))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    last_login_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    display_name: Mapped[str | None] = mapped_column(String(20))  # NULL: the Kakao nickname is shown
+    color: Mapped[str] = mapped_column(String(8), default="blue", server_default="blue")
+    save_history: Mapped[bool] = mapped_column(Boolean, default=True, server_default=true())
+    retention_days: Mapped[int] = mapped_column(Integer, default=90, server_default="90")
+
+
+class LoginSession(Base):
+    """One signed-in browser (T3-54). Only the SHA-256 of the cookie's token is stored."""
+
+    __tablename__ = "login_sessions"
+
+    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+
+class Conversation(Base):
+    """A member's conversation (T3-54). user_id is NULL only for rows made before members existed."""
+
+    __tablename__ = "conversations"
+    __table_args__ = (Index("ix_conversations_user_updated", "user_id", "updated_at", "id"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    title: Mapped[str | None] = mapped_column(String(100))  # the start of the first question
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     messages: Mapped[list[Message]] = relationship(
         back_populates="conversation", cascade="all, delete-orphan", passive_deletes=True,
