@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
+from datetime import date
 from typing import Literal
 
 from pydantic import BaseModel, Field, ValidationError, field_validator
@@ -53,10 +54,12 @@ def clarify_text(missing: list[str]) -> str:
 class UnderstandStep(BaseModel):
     thought: str = Field(description="판단 근거 한 줄")
     action: Literal["template", "clarify", "rewrite", "search"] = Field(
-        description="template: 통계와 무관한 질문(인사·잡담 등) · clarify: 통계 질문이지만 무엇을 찾는지 알 수 없음 · "
+        description="template: 숫자·통계를 묻지 않는 말(인사·잡담·기능 문의 등). 통계를 묻는 질문은 KOSIS에 없을 것 같아도 template이 아니다 · "
+                    "clarify: 통계 질문이지만 지표가 전혀 없어 무엇을 찾는지 알 수 없음 · "
                     "rewrite: 통계 질문인데 문장을 다듬어야 검색할 수 있음 · search: 그대로 검색해도 됨")
     kind: Literal["greeting", "not_statistics"] | None = Field(default=None, description="template일 때만: greeting 또는 not_statistics")
-    missing: list[Slot] = Field(default_factory=list, description="clarify일 때 빠진 것: 지표, 지역, 기간 중")
+    missing: list[Slot] = Field(default_factory=list,
+                                description="clarify일 때 반드시 채운다: 질문에 없는 것만 지표, 지역, 기간 중에서")
 
     _missing = field_validator("missing", mode="before")(lambda cls, v: _slots(v))
 
@@ -97,9 +100,14 @@ def _schema(model: type[BaseModel]) -> str:
     return "\n".join(f"- {name}: {f.description}" for name, f in model.model_fields.items())
 
 
-ROLE = ("너는 국가데이터처(KOSIS) 통계표 검색 챗봇의 판단 단계다. 색인에는 인구·출생·사망·혼인·가구·고용·물가·소득 등 "
-        "국가 통계표가 있다. 숫자를 만들거나 질문에 없는 지역·연도·지표를 덧붙이지 마라. "
-        "다른 말 없이 JSON 객체 한 줄로만 답하라. 키:\n")
+def role() -> str:
+    """공통 시스템 문장. 올해 연도는 매 호출 코드가 넣는다 (Qwen이 학습 시점을 현재로 알고 2025년을 미래로 본 실측, 2026-11-24)."""
+    return (f"너는 국가데이터처(KOSIS) 통계표 검색 챗봇의 판단 단계다. 올해는 {date.today().year}년이다. "
+            "색인에는 인구·출생·사망·혼인·가구·고용·물가·소득 등 국가 통계표가 있고, 장래인구추계처럼 먼 미래 연도"
+            "(예: 2070년대)의 추계·전망 표와 시나리오(고위·중위·저위 등)도 있다. "
+            "통계 용어·분류명이 낯설어도 오타나 없는 말로 보지 마라(KOSIS 표 이름·항목은 전문 용어가 많다). "
+            "숫자를 만들거나 질문에 없는 지역·연도·지표를 덧붙이지 마라. "
+            "다른 말 없이 JSON 객체 한 줄로만 답하라. 키:\n")
 
 
 class Judge:
@@ -113,12 +121,13 @@ class Judge:
         self.chat_model = chat_model
 
     def _ask(self, model: type[BaseModel], task: str, human: str) -> BaseModel:
-        reply = self.chat_model.invoke([("system", ROLE + _schema(model) + "\n\n" + task), ("human", human)])
+        reply = self.chat_model.invoke([("system", role() + _schema(model) + "\n\n" + task), ("human", human)])
         return parse_step(str(reply.content), model)
 
     def understand(self, question: str, previous: str | None) -> UnderstandStep:
         task = ("사용자 질문을 보고 다음 행동을 하나 고른다. 직전 질문을 이어 묻는 말(\"그 표로 그래프\", \"부산은?\", \"작년은?\")은 search다. "
-                "애매하면 search를 고른다(검색 단계가 범위 밖 질문을 거절한다).")
+                "그런 표가 있는지·그 연도 값이 있는지는 판단하지 마라. 검색 단계가 표를 찾아 보고 없으면 거절한다. "
+                "지표가 들어 있는 통계 질문은 조건이 아무리 세밀해도 search다. 애매하면 search를 고른다.")
         human = (f"직전 질문: {previous}\n" if previous else "") + f"이번 질문: {question}"
         return self._ask(UnderstandStep, task, human)
 

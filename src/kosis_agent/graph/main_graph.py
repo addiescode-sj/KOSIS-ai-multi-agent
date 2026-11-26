@@ -49,8 +49,7 @@ from langgraph.graph import END, START, StateGraph
 
 from kosis_agent.graph.context import LLMReader, Mode, chart_request, read_turn
 from kosis_agent.graph.multiquery import SplitReader, split_question
-from kosis_agent.graph.react import (TEMPLATES, Judge, Steps, UnderstandStep, clarify_text, grounded, rule_understand,
-                                     safe)
+from kosis_agent.graph.react import (TEMPLATES, Judge, Steps, UnderstandStep, clarify_text, grounded, safe)
 from kosis_agent.graph.state import AgentState
 from kosis_agent.retrieval.search import make_search_tables_tool
 from kosis_agent.services.chart import CHART_NAMES, make_chart_tool, to_vega_lite
