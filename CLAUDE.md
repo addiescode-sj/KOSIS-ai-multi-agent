@@ -37,7 +37,7 @@ TASK.md를 고치면 `.claude/hooks/linear_sync.py`가 `T3-xx` 제목으로 Line
 - 모든 답에 출처: `KOSIS / 조사명 / 통계표명 (+링크)`. 표 ID는 툴 호출 전 과정에서 보존한다.
 - 자료가 없으면 지어내지 말고 없다고 말한다 (범위 밖·기간/주기 불일치 포함).
 - 노드·툴 입출력은 Pydantic 계약을 유지한다: 공용 `kosis_ai.schemas`(실전 1), 검색 `kosis_rag.schemas`(실전 2). 깨는 변경은 plan에 명시하고 승인받는다.
-- 툴 (T3-01): `search_tables`(실전 2) · `summarize_stat`(실전 1) · `make_chart`(T3-02, Vega-Lite spec) · `combine_values`(T3-28, 표가 다른 두 하위 답의 숫자를 코드가 합침).
+- 툴 (T3-01): `search_tables`(실전 2) · `summarize_stat`(실전 1) · `make_chart`(T3-02, 실전 1 차트 모듈로 ChartSpec을 요청 종류로 다시 그림, Vega-Lite 없음) · `combine_values`(T3-28, 표가 다른 두 하위 답의 숫자를 코드가 합침).
 - 오케스트레이션: LangGraph StateGraph(대화 상태 유지, checkpointer). 지금 메인 흐름은 supervisor 없는 **결정적 워크플로**다(T3-23 옵션 A):
   context(지시어면 직전 표 재사용) → search(`search_tables` 툴 = 실전 2 검색 그래프 전체, gate에서 끝남, 고치지 않음) → statistics(`summarize_stat` 툴 = 실전 1)
   → chart → finalize(outcome: answered | refused | clarify | failed). 새 질문에 서로 다른 지표가 둘 이상이면 context → multi(하위 질문마다 search·statistics, 같은 표면 원문 한 번으로 되돌림, `graph/multiquery.py`, T3-28). 거절이면 `refusal_text`로 끝난다. 다음 단계는 코드의 조건부 경로가 정한다.
@@ -52,7 +52,7 @@ backend/app/       FastAPI (main.py: /chat/stream SSE, build_agent() = 서비스
 src/kosis_agent/   에이전트 (docs/research/KOSIS-RAG-Retrieval-Agent-Architecture.md 6장 구조, T3-23)
   graph/           실행 순서·분기: main_graph.py(워크플로 조립) · state.py(AgentState · ChatResult · checkpointer) · context.py(지시어·이월·차트 요청 해석: 규칙 우선, 판단 못 한 턴만 LLM, T3-27)
   retrieval/       search.py(search_tables 툴 = 실전 2 SearchModule) · README.md(검색 알고리즘이 실전 2 어디 있는지 지도)
-  services/        statistics.py(summarize_stat 툴 = 실전 1) · chart.py(ChartSpec → Vega-Lite, make_chart 툴) · parquet_repository.py(T3-17)
+  services/        statistics.py(summarize_stat 툴 = 실전 1) · chart.py(실전 1 차트 모듈 껍데기: ChartSpec 데이터, make_chart 툴) · parquet_repository.py(T3-17)
   observability/   tracing.py(노드·툴·LLM OTel span 콜백, 서비스·평가 공용)
   runtime.py       툴이 노드 안에서 돌 때의 규칙(stream writer, 안쪽 그래프 checkpointer 분리)
 src/kosis_store/   저장 층(테이블·로그·정리 배치)과 API 요청·응답 스키마(도메인별 chat/ · feedback/ · events/ · tools/의 schemas.py). 스키마는 API만 import한다(migrate 이미지에는 에이전트 코드가 없음)

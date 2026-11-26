@@ -1,4 +1,4 @@
-// View model Recharts draws, built from a phase 1 Vega-Lite spec by lib/chat/chart (T3-11 Change 1).
+// View model Recharts draws, built from the backend's chart data (phase 1 ChartSpec) by lib/chat/chart (T3-02, KOS-202).
 
 export type Point = { label: string; value: number | null; display: string; highlight: boolean };
 

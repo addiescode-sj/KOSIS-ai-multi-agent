@@ -268,10 +268,9 @@ def test_a_chart_number_that_is_no_fact_is_chart_data_mismatch():
     wrong = rows[1]
     assert wrong["errors"] == ["chart_data_mismatch"] and wrong["chart_unmatched"] == [999.0]
     assert wrong["chart_data_ok"] is False and agent.aggregate(rows)["chart_turn_pass"] == 0.0
-    # a result that carries its own Vega-Lite is read as is (data.values of the quantitative y field)
-    vega = {"data": {"values": [{"값": 5.0}]}, "mark": "bar", "encoding": {"y": {"field": "값", "type": "quantitative"}}}
-    own = {**_chart((100.0, "f1")), "result": {"kind": "bar", "drawn": True, "vega_lite": vega}}
-    assert grade(CHAT, _oracle_with(1, calls=[own]))[1]["chart_unmatched"] == [5.0]
+    # a chart the tool did not draw is not graded
+    undrawn = {**_chart((100.0, "f1"), (999.0, None)), "result": {"kind": None, "drawn": False, "note": "x"}}
+    assert grade(CHAT, _oracle_with(1, calls=[undrawn]))[1]["chart_data_ok"] is None
     # the facts of the same turn count, and a turn with its own summarize_stat does not draw an older turn's facts
     search, stat = agent.oracle_records(CHAT, CALC)[0]["calls"]
     same_turn = grade(CHAT, _oracle_with(0, calls=[search, stat, _chart((100.0, "f1"))]))[0]
@@ -528,7 +527,8 @@ def test_layer_agent_by_task_over_several_scenario_files(tmp_path):
     assert by_task["multiquery"]["n_turns"] == 1 and by_task["multiquery"]["conversation_success"] == 1.0
     assert "| 멀티턴 (MT-*) | 1 | 1.000 |" in report and "| 멀티쿼리 (MQ-*) | 1 | 1.000 |" in report
     next(r for r in rows if r["sid"] == "MT-R-001")["calls"] = []  # the multi-turn run forgot the chart call: only its task fails
-    (tmp_path / "results.jsonl").write_text("".join(__import__("json").dumps(r, ensure_ascii=False) + "\n" for r in rows))
+    (tmp_path / "results.jsonl").write_text("".join(__import__("json").dumps(r, ensure_ascii=False) + "\n" for r in rows),
+                                            encoding="utf-8")
     _, summary, _ = run_agent(Namespace(**{**base, "oracle": False, "from_run": tmp_path}, scenarios=[mt, mq]))
     assert summary["by_task"]["multiturn"]["conversation_success"] == 0.0
     assert summary["by_task"]["multiquery"]["conversation_success"] == 1.0
