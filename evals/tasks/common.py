@@ -148,8 +148,8 @@ def grade(items: list[CalcItem], answers: list[dict]) -> list[dict]:
         cited = frozenset(f.source_ref for f in answer.result.facts if f.source_ref) if answer is not None else frozenset()
         graded = alternates.alternate_item(item, a.get("used_table"), cited) or item
         # only the graded cells: a whole large table as Python objects took GBs (plans/T3-06.md, exit 137)
-        cells = calculation.read_cells(ROOT / "data" / "values" / f"{graded.table_key}.parquet",
-                                       calculation.grade_refs(graded, answer))
+        cells = calculation.item_cells(graded, answer, lambda key, refs: calculation.read_cells(
+            ROOT / "data" / "values" / f"{key}.parquet", refs))
         g = calculation.grade(graded, answer, cells, a["error"])
         rows.append({**g.model_dump(), "table_key": item.table_key, "graded_table": graded.table_key,
                      **{k: a[k] for k in OPS_FIELDS + TRACE_FIELDS if k in a},
