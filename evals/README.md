@@ -713,3 +713,37 @@ dev.sh는 Docker·PostgreSQL·Jaeger를 띄우고 `uv run --group embed --group 
 - Jaeger(all-in-one)는 메모리 저장이라 재시작하면 trace가 사라진다. 운영에서는 저장소를 붙이거나 매일 온라인 평가를 돌려 기록을 남긴다.
 - 온라인 점수 행은 `eval.online` span으로 원래 서비스 trace에 link된다(`kosis.online.faithfulness` 등, OTLP endpoint가 있을 때).
 
+
+## 11. 전→후 비교 실험 — baseline = main, 짝 bootstrap, 채택 규칙 (T3-60)
+
+아키텍처·프롬프트·모델을 바꿨을 때 채택 여부를 정하는 절차다. 규칙의 근거는 `plans/T3-60.md`에 있다.
+
+**1. 같은 조건으로 두 run을 만든다**
+- baseline은 **실험을 시작한 시점의 main**(SHA 고정)이고, after는 실험 브랜치다.
+- 같은 골든·같은 세션·같은 벡터 색인으로 **순서대로** 돌린다. Colab에서는 `colab/t3_03_e2e_eval_gpu.ipynb`가 이 절차를 그대로 한다.
+- 두 트리는 각자 자기 실전 1·2 pin으로 돈다.
+- 로컬에서 돌릴 때는 main worktree와 실험 브랜치에서 같은 `--scenarios`로 `--layer e2e`를 한 번씩 돌린다.
+- A/A(baseline 한 번 더)는 세션 점검용이다. 같은 코드인데 구간이 0을 벗어나거나 지연 p95가 ±20% 넘게 흔들리면 그 세션의 결과는 쓰지 않는다.
+
+**2. 판정한다**
+```bash
+python -m evals.compare --base evals/reports/<baseline run> --after evals/reports/<after run> [--aa evals/reports/<A/A run>]
+# -> evals/reports/compare-<base>-vs-<after>/compare.md · compare.json (커밋하지 않음). 종료 코드 2 = 비교 거부
+```
+- 문항(sid, turn)마다 baseline·after의 통과(L4 턴 통과)를 짝짓는다.
+- 통과율 차이와 문항별 지연 차이에 **짝 bootstrap 95% 구간**을 낸다. 실전 2 `lab/lab_common.py` `boot()`, T2-40과 같은 방법이고 10,000회·seed 0이다.
+- 골든 해시·split·층·문항 집합이 다르면 비교를 거부한다.
+
+**3. 채택 규칙** (결과를 보기 전에 정한 것, 바꾸려면 plan으로)
+
+| 순서 | 조건 | 판정 |
+|---|---|---|
+| ① 가드레일 | 새로 생긴 위반(근거 없는 숫자·출처 누락·run_failure)이 `quality.py` `COUNT_TOLERANCE`(2)를 넘음 | 기각 |
+| ② 정확도 | 통과율 차이 구간 하한 > 0 / 상한 < 0 / 0 포함 | 개선 / 악화(기각) / 차이 미확인 |
+| ③ 원천 쏠림 | 개선인데 원천 하나에서 3패 이상·0승 | 보류 |
+| ④ 비용·지연 | 개선이면 채택(지연 p95·요청당 비용 +20% 초과는 결과에 기록). 차이 미확인이면 지연·비용이 둘 다 10% 이상 줄 때만 채택, 아니면 기각 | |
+
+- 주 지표는 문항 통과 하나다. 수치·툴 정확도는 보고만 하고 판정에 쓰지 않는다.
+- e2e 골든 120문항 1회로 가릴 수 있는 차이는 바뀐 문항 수에 따라 순이득 약 5~12%p 이상이다. 그보다 작으면 "차이 미확인"이다.
+- "차이 미확인"이나 "보류"가 나온 변경을 결과가 좋아질 때까지 다시 돌리지 않는다. 다시 잴 거면 새 실험(반복 실행·골든 확장)으로 등록하고 그 결과 하나로 판정한다.
+- 판정과 `compare.md` 경로를 그 태스크 plan의 `## Result`와 TASK.md에 남긴다.
