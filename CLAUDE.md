@@ -65,9 +65,9 @@ docs/              제출 문서, current-state.md
 ```
 
 - 실전 1·2 코드 수정이 필요하면 해당 레포에 PR → 여기서 `git submodule update --remote vendor/phase1`(또는 phase2) 후 커밋.
-  `vendor/phase1`은 실전 2가 고정한 커밋과 같게 맞춘다 (`kosis_ai.schemas` 계약 일치).
+  `vendor/phase1`은 실전 2가 고정한 커밋과 같게 맞춘다 (`kosis_ai.schemas` 계약 일치). 예외(T3-56, 사용자 승인): 실전 1 다중 표(T1-30)를 쓰려고 `c44151e`로 올려 실전 2 pin(`e248a45`)보다 앞선다. 실전 2 pin 갱신은 실전 2 레포 PR로 따로 한다.
 - 실전 2 `backend.app`(API 모듈)은 이 레포 `backend.app`에 가려져 import되지 않는다. 실전 2는 `kosis_rag.*` 로직만 import한다.
-- 두 모듈(실전 1 @`9e570a1`, 실전 2 @`f569721`)은 `.env`도 환경변수도 읽지 않는다. 종합(이 레포)은 진입점에서 `.env`를 읽고(`kosis_agent.envfile`, 셸 값 우선), `backend/app/config.py`가 환경변수를 읽어
+- 두 모듈(실전 1 @`c44151e`, 실전 2 @`f569721`)은 `.env`도 환경변수도 읽지 않는다. 종합(이 레포)은 진입점에서 `.env`를 읽고(`kosis_agent.envfile`, 셸 값 우선), `backend/app/config.py`가 환경변수를 읽어
   실전 2 `IndexSpec`·`SearchOptions`·`LLMConfig`와 실전 1 `LLMConfig`(다른 클래스)로 넘긴다. 데이터는 `<KOSIS_WORKSPACE>/data` 하나.
   실전 2 결과의 `picked[0].key`(tables.csv 키)를 실전 1에 넘긴다(`tbl_id` 아님).
 

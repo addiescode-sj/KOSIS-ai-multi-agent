@@ -123,7 +123,7 @@ def alternate_item(item: CalcItem, table_key: str | None, cited: frozenset[str] 
                    values_dir: Path | None = None) -> CalcItem | None:
     """For grading: the item remapped to `table_key` when that table is an alternate (by the rule), else None.
     None for the golden table itself, so L3 (oracle, golden table) and right-table answers grade as before."""
-    if not table_key or table_key == item.table_key or not matchable(item):
+    if not table_key or table_key in item.tables() or len(item.tables()) > 1 or not matchable(item):  # T3-56: one table only
         return None
     path = (values_dir or VALUES) / f"{table_key}.parquet"
     cells = cells_with_values(path, frozenset(float(f.value) for f in cell_facts(item)))

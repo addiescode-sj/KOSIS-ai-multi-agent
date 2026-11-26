@@ -2024,7 +2024,9 @@
               "share",
               "per",
               "cagr",
-              "index"
+              "index",
+              "sum",
+              "avg_change"
             ],
             "title": "Fn"
           },
@@ -3079,6 +3081,16 @@
             "minimum": 1.0,
             "title": "Keep",
             "default": 2
+          },
+          "report": {
+            "type": "string",
+            "enum": [
+              "first",
+              "places",
+              "place"
+            ],
+            "title": "Report",
+            "default": "first"
           }
         },
         "additionalProperties": false,
@@ -3423,6 +3435,13 @@
                 "type": "null"
               }
             ]
+          },
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/Source"
+            },
+            "type": "array",
+            "title": "Sources"
           },
           "numbers_origin": {
             "anyOf": [

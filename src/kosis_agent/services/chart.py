@@ -124,7 +124,8 @@ def _draw_stacked(spec: ChartSpec) -> dict:
     part = spec.title.removesuffix(" 비교").removesuffix(" 비중").strip() or "해당"
     rows = []
     for p in spec.points():
-        rest = round(100 - p.value, 1)
+        # 부분과 같은 정밀도로 둔다: 실전 1 c44151e부터 비중이 소수 둘째 자리라 1자리 반올림이면 합이 100이 안 됨 (T3-56)
+        rest = round(100 - p.value, 6)
         rows.append({"시점": p.label, "구분": part, "값": p.value, "표시": p.display, "순서": 0})
         rows.append({"시점": p.label, "구분": REST_NAME, "값": rest, "표시": format_number(rest, "%", 1), "순서": 1})
     out = _base(spec.title, rows)
