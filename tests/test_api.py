@@ -75,7 +75,7 @@ def test_chat_stream_is_one_trace_with_node_tool_and_phase1_step_spans(client):
     # T3-43: what online evaluation reads back (question, final answer = the streamed result)
     assert root.attributes["kosis.turn.question"] == "2030년 출생아 수" and root.attributes["kosis.turn.answer"] == ANSWER
     by_name = {s.name: s for s in spans}
-    assert {"context", "search", "statistics", "execute_tool search_tables", "execute_tool summarize_stat"} <= set(by_name)
+    assert {"understand", "search", "statistics", "execute_tool search_tables", "execute_tool summarize_stat"} <= set(by_name)
     # phase 1 steps sit under the summarize_stat tool span, at phase 1's own offsets
     tool = by_name["execute_tool summarize_stat"]
     plan, compose = by_name["analyze.llm_plan"], by_name["compose"]
@@ -119,9 +119,9 @@ def test_tool_endpoints_call_the_tools_and_leave_a_trace_each(client):
     found = http.post("/tools/search_tables", json={"question": "출생아 수"}).json()
     assert found["route"] == "found" and found["picked"][0]["key"] == "101_DT_1B8000H"
     stat = http.post("/tools/summarize_stat", json={"question": "q", "table_key": "101_DT_1B8000H"}).json()
-    assert stat["answer"]["text"] == ANSWER and stat["vega_lite"] is None
+    assert stat["answer"]["text"] == ANSWER and "vega_lite" not in stat
     chart = http.post("/tools/make_chart", json={"table_key": "101_DT_1B8000H"}).json()
-    assert chart["vega_lite"] is None
+    assert chart["chart"] is None and chart["note"]
     roots = [s for s in memory.get_finished_spans() if s.parent is None]
     assert [s.name for s in roots] == ["POST /dev/tools/search_tables", "POST /dev/tools/summarize_stat",
                                        "POST /dev/tools/make_chart"]  # T3-51: developer paths under /dev/

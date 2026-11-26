@@ -116,7 +116,7 @@ def run(args) -> tuple[list[dict], dict, str]:
         f"| 근거 없는 숫자가 있는 턴 | {s['unsupported_final_number_turns']} |",
         f"| 출처(조사명·통계표명)가 빠진 턴 | {s['missing_source_turns']} |",
         f"| 차트 턴 통과율 (make_chart를 기대한 턴) | {fmt(s['chart_turn_pass'])} ({s['n_chart_turns']}) |",
-        f"| 차트 데이터 일치 (Vega-Lite 값 ⊆ 사실 값) | {fmt(s['chart_data_accuracy'])} ({s['n_chart_data']}) |",
+        f"| 차트 데이터 일치 (차트 점 값 ⊆ 사실 값) | {fmt(s['chart_data_accuracy'])} ({s['n_chart_data']}) |",
         f"| 차트 자동 선택 일치 (종류 말 없는 턴) | {fmt(s['auto_chart_agreement'])} ({s['n_auto_chart']}) "
         f"{count(s['auto_chart_confusion']) if s['auto_chart_confusion'] else ''} |", "",
         *task_table(s["by_task"]),

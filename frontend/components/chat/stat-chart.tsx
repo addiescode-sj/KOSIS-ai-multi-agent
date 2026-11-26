@@ -9,8 +9,8 @@ import {
 import { toChartView } from "@/lib/chat/chart";
 import type { ChartView, Point } from "@/types/chart";
 
-// Draws ChatResult.chart (phase 1 Vega-Lite) with Recharts through lib/chart.ts (T3-11 Change 1). Bar heights,
-// points and slices are the backend's values; labels and tooltips are its display strings (`표시`) as they are.
+// Draws ChatResult.chart (phase 1 ChartSpec data, KOS-202: no Vega-Lite) with Recharts through lib/chat/chart.ts. Bar
+// heights, points and slices are the backend's values; labels and tooltips are its display strings as they are.
 const HIGHLIGHT = "#2257e8"; // brand-600
 const OTHER = "#bfd3fe"; // brand-200
 const SERIES = ["#2257e8", "#93b4fd", "#1b45c4", "#3b74f6", "#dbe7fe"];
@@ -18,7 +18,7 @@ const AXIS = { stroke: "#e7eaf0", tick: { fill: "#9ca3af", fontSize: 12 }, tickL
 
 type Datum = Point & { mark: string }; // mark: the label shown on the chart ("" when not highlighted)
 
-export function StatChart({ spec }: { spec: Record<string, unknown> }) {
+export function StatChart({ spec }: { spec: unknown }) {
   const view = useMemo(() => toChartView(spec), [spec]);
   return (
     <figure className="space-y-3">

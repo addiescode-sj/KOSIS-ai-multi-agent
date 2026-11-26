@@ -227,7 +227,7 @@ F-JJWJTZ는 "재검색·재연결 중임을 일반 진행과 구분해 보여 �
   "picked": [ { "key": "101_DT_1B81A12", "title": "…", "survey": "…", "url": "https://kosis.kr/…" } ],
   "candidates": [ … ],
   "stat_answer": { … },
-  "chart": { "$schema": "https://vega.github.io/schema/vega-lite/v5.json", … },
+  "chart": { "kind": "line", "title": "…", "unit": "명", "series": [ { "name": "…", "points": [ … ] } ], "fact_ids": [ … ], … },
   "chart_type": null,
   "chart_note": null,
   "resolved_question": null,
@@ -251,8 +251,8 @@ F-JJWJTZ는 "재검색·재연결 중임을 일반 진행과 구분해 보여 �
 | `answer` | 검증기를 통과한 문장, 또는 코드 고정 문장 | F-GVVAVT |
 | `answer_origin` | `stat` 실전 1 문장 · `refusal` 코드 거절 문장 · `chart` 차트만 다시 그린 턴 · `multi` 멀티쿼리 하위 답을 이은 문장 · `general` **[신규]** 역할 기반 일반 답변 | |
 | `picked` | 답이 **실제로 쓴** 표. 출처는 이것만 쓴다(후보 `candidates`는 출처에 넣지 않음). `general`이면 빈 목록 | F-XDXRJB |
-| `chart` | Vega-Lite v5. 차트가 없으면 `null`. 값은 답 문장과 같은 계산 결과에서 나온다 | F-IUDWVF, F-KHTNMQ |
-| `chart_type` · `chart_note` | 사용자가 요청한 차트 종류, 요청대로 못 그렸을 때 안내 | T3-27 |
+| `chart` | 그린 차트 데이터(실전 1 ChartSpec JSON: kind·title·unit·series[].points[]·fact_ids). 프런트가 Recharts로 바로 그린다. 누적막대(`stacked_bar`)는 나머지 계열("그 외", 100 − 비중)이 두 번째 계열로 들어 있다. 차트가 없으면 `null`. 값은 답 문장과 같은 계산 결과에서 나온다. Vega-Lite는 보내지 않는다(KOS-202) | F-IUDWVF, F-KHTNMQ |
+| `chart_type` · `chart_note` | 사용자가 요청한 차트 종류(bar · line · pie · stacked), 요청대로 못 그렸거나 일부만 그렸을 때 안내 | T3-27 |
 | `resolved_question` · `interpreted_by` | 이월 질문을 채운 독립 질문, 해석 방식(`rule`·`llm`·`none`). "앞에서 본 ○○표 기준" 한 줄 표시용 | F-GSBTLX, F-JRXVYZ |
 | `reused_table` | 지시어("그 표")로 직전 표를 다시 씀 | F-GSBTLX |
 | `limits` | **[신규]** `partial`일 때 답하지 못한 부분과 이유 `[{part, reason}]`. 다른 결과면 빈 목록 | F-VJBKPX |

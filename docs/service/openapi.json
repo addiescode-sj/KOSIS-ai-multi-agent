@@ -1605,7 +1605,7 @@
               }
             ],
             "title": "Chart Type",
-            "description": "bar | line | pie. 없으면 실전 1이 고른 종류",
+            "description": "bar | line | pie | stacked. 없으면 그 차트 종류",
             "examples": [
               "bar"
             ]
@@ -1619,7 +1619,7 @@
       },
       "ChartResponse": {
         "properties": {
-          "vega_lite": {
+          "chart": {
             "anyOf": [
               {
                 "additionalProperties": true,
@@ -1629,8 +1629,8 @@
                 "type": "null"
               }
             ],
-            "title": "Vega Lite",
-            "description": "Vega-Lite spec. 차트 데이터가 없으면 null"
+            "title": "Chart",
+            "description": "그린 차트 데이터 (ChartSpec JSON, 누적막대는 나머지 계열 포함). 그리지 않았으면 null"
           },
           "kind": {
             "anyOf": [
@@ -1654,12 +1654,12 @@
               }
             ],
             "title": "Note",
-            "description": "요청한 종류로 못 그렸을 때의 안내"
+            "description": "요청한 종류로 못 그렸거나 일부만 그렸을 때의 안내"
           }
         },
         "type": "object",
         "required": [
-          "vega_lite",
+          "chart",
           "kind",
           "note"
         ],
@@ -1943,6 +1943,37 @@
             ],
             "title": "Combined"
           },
+          "intent": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Intent"
+          },
+          "trace": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Trace"
+          },
+          "review": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Review"
+          },
           "request_id": {
             "anyOf": [
               {
@@ -2024,7 +2055,9 @@
               "share",
               "per",
               "cagr",
-              "index"
+              "index",
+              "sum",
+              "avg_change"
             ],
             "title": "Fn"
           },
@@ -3079,6 +3112,16 @@
             "minimum": 1.0,
             "title": "Keep",
             "default": 2
+          },
+          "report": {
+            "type": "string",
+            "enum": [
+              "first",
+              "places",
+              "place"
+            ],
+            "title": "Report",
+            "default": "first"
           }
         },
         "additionalProperties": false,
@@ -3424,6 +3467,13 @@
               }
             ]
           },
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/Source"
+            },
+            "type": "array",
+            "title": "Sources"
+          },
           "numbers_origin": {
             "anyOf": [
               {
@@ -3660,27 +3710,13 @@
               }
             ],
             "title": "Chart",
-            "description": "실전 1 ChartSpec. `/dev/tools/make_chart`의 `chart`로 그대로 넘긴다"
-          },
-          "vega_lite": {
-            "anyOf": [
-              {
-                "additionalProperties": true,
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Vega Lite",
-            "description": "chart를 기본 종류로 그린 Vega-Lite spec"
+            "description": "실전 1 ChartSpec (종류가 정해진 차트 데이터). `/dev/tools/make_chart`의 `chart`로 그대로 넘긴다"
           }
         },
         "type": "object",
         "required": [
           "answer",
-          "chart",
-          "vega_lite"
+          "chart"
         ],
         "title": "StatResponse"
       },

@@ -111,6 +111,9 @@ class CalcItem(BaseModel):
     question: str = Field(min_length=1)
     table_key: str  # tables.csv key, e.g. "101_DT_1B8000H"
     table_sha256: str  # Parquet hash the facts were checked against
+    # T3-56: a question over two or three tables (phase 1 T1-30); facts name their table by source_ref. [] = table_key
+    # alone, so one-table files serialize byte-identically
+    table_keys: list[str] = Field(default_factory=list, exclude_if=lambda v: not v)
     required_facts: list[Fact] = Field(default_factory=list)
     aux_facts: list[Fact] = Field(default_factory=list)
     allowed_reasons: list[RefusalReason] = Field(default_factory=list)
@@ -118,6 +121,10 @@ class CalcItem(BaseModel):
     clarify_options: list[str] = Field(default_factory=list)
     eda_traps: list[str] = Field(default_factory=list)
     split: Literal["dev", "test"] | None = None  # v2: the split of the L1 item with the same qid
+
+    def tables(self) -> list[str]:
+        """Every table the facts come from: table_keys, else table_key."""
+        return self.table_keys or [self.table_key]
 
 
 class E2EItem(BaseModel):
