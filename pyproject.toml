@@ -40,6 +40,12 @@ dev = [
     "httpx>=0.27",
     "ipykernel>=7.4.0",
     "pytest>=8.0",
+    {include-group = "admin"},
+]
+# Operator app (admin/, T3-57): server-rendered pages and form posts. Its image: uv sync --no-default-groups --group admin
+admin = [
+    "jinja2>=3.1",
+    "python-multipart>=0.0.9",
 ]
 # Query embedder / reranker of the phase 2 search (CPU torch, large): uv sync --group embed
 embed = [

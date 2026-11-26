@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block head %}<meta http-equiv="refresh" content="60">{% endblock %}
+{% block body %}
+<section class="cards">
+  <div class="card unknown" title="Prometheus 설치 뒤 표시">서비스 <b>확인 안 됨</b></div>
+  <div class="card {{ 'up' if db_ok else 'down' }}">DB <b>{{ '정상' if db_ok else '연결 안 됨' }}</b></div>
+  <div class="card unknown" title="Prometheus 설치 뒤 표시">GPU <b>확인 안 됨</b></div>
+  <div class="card unknown" title="Prometheus 설치 뒤 표시">판 <b>확인 안 됨</b></div>
+</section>
+
+<section class="today">
+  <h2>오늘 (00시부터 지금까지)</h2>
+  <ul class="stats">
+    <li>질문 <b>{{ data.questions }}</b></li>
+    <li>오류·실패 <b>{{ data.errors }}</b></li>
+    <li>답 전 이탈 <b>{{ data.aborted }}</b></li>
+    <li>👎 새 글 <b><a href="{{ PREFIX }}/feedback">{{ data.new_down }}</a></b></li>
+    <li>응답 시간 p95 <b>{{ data.p95 | sec }}</b></li>
+  </ul>
+</section>
+
+<div class="two">
+<section>
+  <h2>최근 오류·이탈 질문 (7일)</h2>
+  {% if data.problems %}
+  <table>
+    {% for t in data.problems %}
+    <tr><td>{{ t.created_at | kst }}</td><td>{{ t.outcome | label('outcome') }}{% if t.failed_stage %} · {{ t.failed_stage | label('stage') }}{% endif %}</td>
+        <td><a href="{{ PREFIX }}/questions/{{ t.request_id }}">상세</a></td></tr>
+    {% endfor %}
+  </table>
+  {% else %}<p class="empty">최근 7일에 오류·이탈 질문이 없습니다.</p>{% endif %}
+</section>
+<section>
+  <h2>👎 새 글</h2>
+  {% if data.inbox %}
+  <table>
+    {% for r in data.inbox %}
+    <tr><td>{{ r.received_at | kst }}</td><td>{{ r.choice | label('down', '선택 안 함') }}</td>
+        <td><a href="{{ PREFIX }}/questions/{{ r.request_id }}">처리</a></td></tr>
+    {% endfor %}
+  </table>
+  {% else %}<p class="empty">새 👎가 없습니다.</p>{% endif %}
+</section>
+</div>
+{% endblock %}

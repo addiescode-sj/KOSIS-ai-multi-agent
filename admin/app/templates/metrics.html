@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% from "macros.html" import bars, line, empty %}
+{% block body %}
+<form method="get" class="filter">
+  <input type="hidden" name="tab" value="{{ tab }}">
+  <label>시작 <input type="date" name="start" value="{{ flt.start_day }}"></label>
+  <label>끝 <input type="date" name="end" value="{{ flt.end_day }}"></label>
+  <label>사용자
+    <select name="user">{% for u in ('all', 'member', 'guest') %}<option value="{{ u }}" {% if flt.user == u %}selected{% endif %}>{{ u | label('user') }}</option>{% endfor %}</select>
+  </label>
+  <label><input type="checkbox" name="internal" value="true" {% if flt.include_internal %}checked{% endif %}> 팀·평가 요청 포함</label>
+  <button type="submit">보기</button>
+  <small>지표는 어제까지입니다. 오늘 수치는 홈에 있습니다.</small>
+</form>
+
+<nav class="tabs">
+  {% for t in tabs %}<a href="?{{ qs(tab=t) }}" {% if t == tab %}aria-current="page"{% endif %}>{{ t | label('tab') }}</a>{% endfor %}
+</nav>
+
+{% set m = data.rows %}
+<div class="grid">
+{% if tab == 'summary' %}
+  <section class="card-box"><h3>질문 수 <b>{{ m.question_count[0].n }}</b></h3>{{ line(data.daily.question_count, 'n') }}</section>
+  <section class="card-box"><h3>결과 비율</h3>{{ bars(m.outcome_ratio, 'outcome', 'outcome') }}
+    <small>답 전 이탈은 빼고 셉니다(사용 패턴 탭). 부분 답·일반 답은 지금 "답함"에 들어 있어 실제와 다를 수 있습니다.</small></section>
+  {% set th = m.thumbs_up_ratio[0] %}
+  <section class="card-box"><h3>👍 비율 <b>{{ th.ratio | pct }}</b> <small>👍 {{ th.up }} · 👎 {{ th.down }}</small></h3>{{ line(data.daily.thumbs_up_ratio, 'ratio', True) }}</section>
+  {% set lt = m.latency[0] %}
+  <section class="card-box"><h3>응답 시간</h3><p class="big">p50 {{ lt.p50 | sec }} · p95 {{ lt.p95 | sec }}</p><small>끝까지 답한 질문만(이탈·오류 제외)</small></section>
+{% elif tab == 'quality' %}
+  <section class="card-box"><h3>거절 사유</h3>{{ bars(m.refusal_reasons, 'reason_code', 'reason') }}</section>
+  <section class="card-box"><h3>👎 이유</h3>{{ bars(m.down_reasons, 'choice', 'down') }}
+    <p><a href="{{ PREFIX }}/feedback?status=all&start={{ flt.start_day }}&end={{ flt.end_day }}">👎 답 목록은 처리함에서 →</a></p></section>
+  <section class="card-box"><h3>👍 이유</h3>{{ bars(m.up_reasons, 'choice', 'up') }}</section>
+  <section class="card-box"><h3>실패 단계</h3>{{ bars(m.failed_stages, 'failed_stage', 'stage') }}
+    <small>멀티에이전트의 검색 실패가 지금 "기타"로 집계되어 실제와 다를 수 있습니다.</small></section>
+  <section class="card-box wide"><h3>질문 해석 종류별</h3>
+    {% if m.rewrite_kinds %}
+    <table><tr><th>종류</th><th class="num">질문</th><th class="num">답함</th><th class="num">답함 비율</th><th class="num">👍</th><th class="num">👎</th><th class="num">👍 비율</th></tr>
+    {% for r in m.rewrite_kinds %}<tr><td>{{ r.rewrite_kind | label('rewrite') }}</td><td class="num">{{ r.n }}</td><td class="num">{{ r.answered }}</td><td class="num">{{ r.answered_share | pct }}</td><td class="num">{{ r.up }}</td><td class="num">{{ r.down }}</td><td class="num">{{ r.up_ratio | pct }}</td></tr>{% endfor %}
+    </table>{% else %}{{ empty() }}{% endif %}</section>
+{% elif tab == 'usage' %}
+  <section class="card-box wide"><h3>많이 쓰인 표 20개</h3>
+    {% if m.top_tables %}
+    <table><tr><th>조사명</th><th>표 키</th><th class="num">답한 질문</th></tr>
+    {% for r in m.top_tables %}<tr><td>{{ r.survey_name or '–' }}</td><td><code>{{ r.picked_key }}</code></td><td class="num">{{ r.n }}</td></tr>{% endfor %}
+    </table>{% else %}{{ empty() }}{% endif %}</section>
+  <section class="card-box"><h3>대화당 질문 수</h3>{{ bars(m.turns_per_conversation, 'turns') }}</section>
+  {% set cc = m.citation_click_rate[0] %}
+  <section class="card-box"><h3>출처 클릭률 <b>{{ cc.rate | pct }}</b></h3><small>숫자가 있는 답 {{ cc.with_numbers }}개 중 {{ cc.clicked }}개</small></section>
+  {% set ab = m.abort_rate[0] %}
+  <section class="card-box"><h3>답 전 이탈률 <b>{{ ab.rate | pct }}</b> <small>{{ ab.aborted }} / {{ ab.questions }}</small></h3>{{ line(data.daily.abort_rate, 'rate', True) }}</section>
+{% elif tab == 'cost' %}
+  {% set lu = m.llm_usage[0] %}
+  <section class="card-box"><h3>질문당 LLM 사용</h3>
+    <p class="big">호출 {{ lu.calls if lu.calls is not none else '–' }} · 입력 {{ lu.input_tokens if lu.input_tokens is not none else '–' }} · 출력 {{ lu.output_tokens if lu.output_tokens is not none else '–' }} 토큰</p></section>
+  <section class="card-box"><h3>단계별 시간 · 모델별 토큰</h3><p class="empty">계측 준비 중입니다.{% if grafana %} <a href="{{ grafana }}" rel="noreferrer">Grafana에서 보기 ↗</a>{% endif %}</p></section>
+{% endif %}
+</div>
+{% endblock %}

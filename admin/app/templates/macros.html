@@ -1,0 +1,73 @@
+{% macro empty() %}<p class="empty">이 기간에는 데이터가 없습니다.</p>{% endmacro %}
+
+{# Horizontal bars of (code, n) rows. kind: label kind or none (show the value as is). #}
+{% macro bars(rows, key, kind=None, value='n', name=None) %}
+{% if not rows %}{{ empty() }}{% else %}
+{% set top = rows | map(attribute=value) | max %}
+<table class="bars">
+{% for r in rows %}
+  <tr>
+    <th title="{{ r[key] }}">{% if name %}{{ r[name] or r[key] }}{% elif kind %}{{ r[key] | label(kind) }}{% else %}{{ r[key] }}{% endif %}</th>
+    <td><svg class="bar" viewBox="0 0 100 10" preserveAspectRatio="none" aria-hidden="true"><rect width="{{ (100 * r[value] / top) | round(1) if top else 0 }}" height="10"/></svg></td>
+    <td class="num">{{ r[value] }}{% if r.share is defined and r.share is not none %} · {{ r.share | pct }}{% endif %}</td>
+  </tr>
+{% endfor %}
+</table>
+{% endif %}
+{% endmacro %}
+
+{# A per-day line (SVG). rows: one per day [{day, <field>?}]. ratio: values are 0..1 shares and a day without a value
+   is left out; otherwise a missing value is 0. #}
+{% macro line(rows, field, ratio=False) %}
+{% if not rows %}{{ empty() }}{% else %}
+{% set n = rows | length %}
+{% set pts = [] %}
+{% for r in rows %}
+  {% set v = r[field] if r[field] is defined and r[field] is not none else (none if ratio else 0) %}
+  {% if v is not none %}{% set _ = pts.append((loop.index0, v | float, r.day)) %}{% endif %}
+{% endfor %}
+{% set top = 1.0 if ratio else ((pts | map(attribute=1) | max) if pts else 0) or 1 %}
+<svg class="line" viewBox="0 0 600 150" role="img" aria-label="날짜별 추이">
+  <line class="base" x1="20" y1="115" x2="580" y2="115"/>
+  <polyline points="{% for i, v, d in pts %}{{ (20 + (560 * i / (n - 1)) if n > 1 else 300) | round(1) }},{{ (115 - 95 * v / top) | round(1) }} {% endfor %}"/>
+  {% for i, v, d in pts %}<circle cx="{{ (20 + (560 * i / (n - 1)) if n > 1 else 300) | round(1) }}" cy="{{ (115 - 95 * v / top) | round(1) }}" r="4"><title>{{ d }}: {{ v | pct if ratio else v | int }}</title></circle>{% endfor %}
+  <text x="20" y="142">{{ rows[0].day.strftime('%m-%d') }}</text>
+  <text x="580" y="142" text-anchor="end">{{ rows[-1].day.strftime('%m-%d') }}</text>
+  <text x="580" y="14" text-anchor="end">최대 {{ top | pct if ratio else top | int }}</text>
+</svg>
+{% endif %}
+{% endmacro %}
+
+{% macro pager(page_no, pages, qs, total) %}
+<p class="pager">전체 {{ total }}건 ·
+  {% if page_no > 1 %}<a href="?{{ qs(page_no=page_no - 1) }}">이전</a>{% endif %}
+  {{ page_no }} / {{ pages }}
+  {% if page_no < pages %}<a href="?{{ qs(page_no=page_no + 1) }}">다음</a>{% endif %}
+</p>
+{% endmacro %}
+
+{% macro feedback_mark(value) %}{% if value == 'up' %}👍{% elif value == 'down' %}👎{% else %}–{% endif %}{% endmacro %}
+
+{# The review form of one thumbs-down answer. #}
+{% macro review_form(request_id, review, people, statuses, op, back) %}
+<form method="post" action="{{ PREFIX }}/feedback/{{ request_id }}" class="review">
+  <input type="hidden" name="form_token" value="{{ op.form_token }}">
+  <input type="hidden" name="seen" value="{{ review.updated_at.isoformat() if review else '' }}">
+  <input type="hidden" name="back" value="{{ back }}">
+  <label>상태
+    <select name="status">
+      {% for s in statuses %}<option value="{{ s }}" {% if (review.status if review else 'new') == s %}selected{% endif %}>{{ s | label('status') }}</option>{% endfor %}
+    </select>
+  </label>
+  <label>담당
+    <select name="assignee">
+      <option value="">없음</option>
+      {% for p in people %}<option value="{{ p.id }}" {% if review and review.assignee_id == p.id %}selected{% endif %}>{{ p.name }}</option>{% endfor %}
+    </select>
+  </label>
+  <label>Linear 번호 <input name="issue_key" value="{{ review.issue_key or '' if review else '' }}" placeholder="KOS-201" size="9"></label>
+  <label class="wide">메모 <input name="note" maxlength="200" value="{{ review.note or '' if review else '' }}" placeholder="문제 없음이면 필수 (200자)"></label>
+  <button type="submit">저장</button>
+  <small>수정 요청은 Linear 번호, 문제 없음은 메모가 필요합니다.</small>
+</form>
+{% endmacro %}
