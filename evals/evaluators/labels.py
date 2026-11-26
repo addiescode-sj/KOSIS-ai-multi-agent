@@ -87,7 +87,9 @@ def state_labels(state: dict, question: str, had_table: bool) -> TurnLabels:
                   if s.get("name") == "analyze.rules"), None)
     outcome = state.get("outcome")
     refusal = getattr(answer, "refusal", None)
-    reason = getattr(refusal, "reason", None) or getattr(state.get("search"), "refusal_reason", None)
+    # T3-03: state refusal_reason is this turn's (a template turn has no search; state "search" is the previous turn's)
+    reason = (getattr(refusal, "reason", None) or state.get("refusal_reason")
+              or (getattr(state.get("search"), "refusal_reason", None) if "refusal_reason" not in state else None))
     facts = answer.result.facts if answer is not None and answer.result is not None else []
     labels = TurnLabels(
         reading=reading_of(had_table=had_table, use_previous_table=bool(state.get("reused_table")), chart_only=bool(state.get("chart_only")),
