@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% from "macros.html" import pager, feedback_mark, empty %}
+{% block body %}
+<form method="get" class="filter">
+  <label>시작 <input type="date" name="start" value="{{ flt.start_day }}"></label>
+  <label>끝 <input type="date" name="end" value="{{ flt.end_day }}"></label>
+  <label>결과
+    <select name="outcome"><option value="">전체</option>
+      {% for o in outcomes %}<option value="{{ o }}" {% if outcome == o %}selected{% endif %}>{{ o | label('outcome') }}</option>{% endfor %}</select>
+  </label>
+  <label>사용자
+    <select name="user">{% for u in ('all', 'member', 'guest') %}<option value="{{ u }}" {% if flt.user == u %}selected{% endif %}>{{ u | label('user') }}</option>{% endfor %}</select>
+  </label>
+  <label><input type="checkbox" name="internal" value="true" {% if flt.include_internal %}checked{% endif %}> 팀·평가 요청 포함</label>
+  <button type="submit">보기</button>
+</form>
+
+{% if data.rows %}
+<table class="list">
+  <tr><th>시각</th><th>질문</th><th>결과</th><th>실패 단계</th><th>표</th><th>피드백</th></tr>
+  {% for t in data.rows %}
+  <tr>
+    <td>{{ t.created_at | kst }}</td>
+    <td><a href="{{ PREFIX }}/questions/{{ t.request_id }}">{{ t.question | cut(40, '(평가·팀 요청)' if t.is_internal else '(보관 기간 지남)') }}</a></td>
+    <td>{{ t.outcome | label('outcome') }}{% if t.reason_code %} · {{ t.reason_code | label('reason') }}{% endif %}</td>
+    <td>{{ t.failed_stage | label('stage', '') }}</td>
+    <td title="{{ t.picked_key or '' }}">{{ t.survey_name or '–' }}</td>
+    <td>{{ feedback_mark(t.feedback) }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{{ pager(page_no, pages, qs, data.total) }}
+{% else %}{{ empty() }}{% endif %}
+{% endblock %}

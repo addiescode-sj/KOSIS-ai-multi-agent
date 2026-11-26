@@ -40,3 +40,4 @@ jobs:
           submodules: true
       - run: docker build -f backend/Dockerfile -t kosis-agent-backend .
       - run: docker build -t kosis-agent-frontend frontend
+      - run: docker build -f admin/Dockerfile -t kosis-admin .
