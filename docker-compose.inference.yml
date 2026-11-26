@@ -1,0 +1,47 @@
+# Stage 1 model servers (inference/): the query embedder and the stage 1 re-ranker, one container each.
+#   docker compose -f docker-compose.inference.yml up -d --build
+# With the app stack:  docker compose -f docker-compose.yml -f docker-compose.inference.yml up -d
+# Weights: ./data/models -> /models (read-only). EMBED_CKPT / RERANK_CKPT below are the stage 1 models in use (embedder E2s-e2, re-ranker RR-E2s-e2; 11/25);
+# a .env value of the same name would NOT reach these services (no env_file here), so change them in this file.
+# GPU: needs the NVIDIA Container Toolkit. On a CPU-only machine delete the two `deploy:` blocks and build with
+#   --build-arg TORCH_INDEX=https://download.pytorch.org/whl/cpu
+x-inference: &inference
+  build:
+    context: .
+    dockerfile: inference/Dockerfile
+  image: kosis-inference:latest
+  volumes:
+    - ./data/models:/models:ro
+  restart: unless-stopped
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: nvidia
+            count: 1
+            capabilities: [gpu]
+
+services:
+  embedder:
+    <<: *inference
+    environment:
+      INFER_MODEL: embed
+      EMBED_CKPT: /models/embedder/E2s-e2.pt
+      TEXT_FORMAT: n2-L60
+      INFER_DEVICE: cuda  # fail at start instead of falling back to CPU when no GPU reaches the container (CPU-only: delete)
+      PORT: "8001"
+    ports:
+      # all interfaces: the backend on another machine of the same LAN calls http://<this machine IP>:8001 (no auth:
+      # allow only the LAN in the firewall)
+      - "8001:8001"
+
+  reranker:
+    <<: *inference
+    environment:
+      INFER_MODEL: rerank
+      RERANK_CKPT: /models/reranker/RR-E2s-e2.pt
+      TEXT_FORMAT: n2-L60
+      INFER_DEVICE: cuda  # fail at start instead of falling back to CPU when no GPU reaches the container (CPU-only: delete)
+      PORT: "8002"
+    ports:
+      - "8002:8002"

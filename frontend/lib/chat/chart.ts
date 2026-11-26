@@ -1,144 +1,99 @@
-// Phase 1 Vega-Lite spec (ChatResult.chart, kosis_chat/chart/vega.py `to_vega` at 907b703) → a view model Recharts draws
-// (T3-11 Change 1). Values, display strings (`표시`) and highlights are the backend's rows as they are: nothing here
-// formats or computes a number. A spec this file cannot read becomes a table of its rows, or a fixed sentence.
-//
-// Kinds are told apart by row fields first (plans/T3-11.md Change 1):
-//   rows with 대상 → grid (top-level mark bar = grouped_bar, line = multi_line) · 구분 + 시점 → stacked_bar (T3-02,
-//   services/chart.py `_draw_stacked`) · 비중 → pie · 시점 → line
-//   · layer[1].transform → timeline · otherwise bar (horizontal when layer[0].encoding.y is 이름).
+// ChatResult.chart (the drawn chart as data: phase 1 ChartSpec JSON, kosis_chat/chart/module.py chart_data) → a view
+// model Recharts draws (T3-02, KOS-202: no Vega-Lite). The kind is the backend's; values, display strings and
+// highlights are the backend's points as they are: nothing here formats or computes a number (a stacked bar's rest
+// to 100% comes as its second series). A chart of a kind this file does not know becomes a table of its points; one
+// that does not parse becomes a fixed sentence.
 
 import type { ChartView, Point } from "../../types/chart.ts";
 
-type Row = Record<string, unknown>;
-type Encoding = Record<string, { field?: string; title?: string | null; sort?: unknown } | undefined>;
-type Spec = {
-  title?: unknown;
-  data?: { values?: unknown };
-  mark?: unknown;
-  encoding?: Encoding;
-  layer?: { mark?: unknown; encoding?: Encoding; transform?: unknown }[];
-};
+import { ChartSpec } from "./schemas.ts";
 
-export function toChartView(input: Record<string, unknown>): ChartView {
-  const spec = input as Spec;
-  const title = typeof spec.title === "string" ? spec.title : "";
-  const values = spec.data?.values;
-  if (!Array.isArray(values) || values.length === 0 || !values.every(isRow)) return { kind: "none", title };
-  const rows = values as Row[];
-  const has = (field: string) => rows.some((r) => field in r);
-  const first = spec.layer?.[0]?.encoding ?? spec.encoding ?? {};
+type SpecPoint = ChartSpec["series"][number]["points"][number];
 
-  if (has("대상")) {
-    const mark = markType(spec.mark);
-    if (mark !== "bar" && mark !== "line") return table(title, rows);
-    const ordered = mark === "line" && spec.encoding?.x?.sort === null ? firstSeen(rows.map((r) => str(r["시점"]))) : sortedPeriods(rows);
-    const names = firstSeen(rows.map((r) => str(r["대상"])));
-    const series = names.map((name) => ({
-      name,
-      points: ordered.map((period) => {
-        const row = rows.find((r) => str(r["대상"]) === name && str(r["시점"]) === period);
-        return row ? point(row, period) : null;
-      }),
-    }));
-    return { kind: mark === "bar" ? "grouped_bar" : "multi_line", title, unitTitle: titleOf(spec.encoding?.y), periods: ordered, series };
+export function toChartView(input: unknown): ChartView {
+  const parsed = ChartSpec.safeParse(input);
+  if (!parsed.success) {
+    const title = isRecord(input) && typeof input.title === "string" ? input.title : "";
+    return { kind: "none", title };
   }
-  if (has("구분") && has("시점") && !has("이름")) {
-    if (markType(spec.mark) !== "bar") return table(title, rows);
-    // stack order: the 순서 the backend wrote (part 0, rest 1); periods in data order (x sort null)
-    const parts = firstSeen([...rows].sort((a, b) => num(a["순서"]) - num(b["순서"])).map((r) => str(r["구분"])));
-    const periods = firstSeen(rows.map((r) => str(r["시점"])));
-    const series = parts.map((name) => ({
-      name,
-      points: periods.map((period) => {
-        const row = rows.find((r) => str(r["구분"]) === name && str(r["시점"]) === period);
-        return row ? point(row, period) : null;
-      }),
-    }));
-    return { kind: "stacked_bar", title, unitTitle: titleOf(spec.encoding?.y), periods, series };
+  const spec = parsed.data;
+  const title = spec.title;
+  const unitTitle = spec.unit ? `값 (${spec.unit})` : "값";
+  const all = spec.series.flatMap((s) => s.points);
+  const pt = (p: SpecPoint, label = p.label): Point => ({ label, value: p.value, display: p.display, highlight: p.highlight });
+  switch (spec.kind) {
+    case "bar": {
+      const horizontal = spec.orientation !== "vertical";
+      return { kind: "bar", title, unitTitle, horizontal, points: orderBars(all, spec.sort ?? "-x", horizontal).map((p) => pt(p)) };
+    }
+    case "timeline": // bars in period order, as the backend lists them
+      return { kind: "timeline", title, unitTitle, points: all.map((p) => pt(p)) };
+    case "line": {
+      const ordered = [...all].sort((a, b) => compareText(str(a.period ?? a.label), str(b.period ?? b.label)));
+      return { kind: "line", title, unitTitle, points: ordered.map((p) => pt(p, str(p.period ?? p.label))) };
+    }
+    case "pie":
+      return { kind: "pie", title, points: all.map((p) => pt(p)) };
+    case "grouped_bar":
+    case "multi_line":
+    case "stacked_bar": {
+      const seen = firstSeen(all.map((p) => p.label));
+      const periods = spec.kind === "grouped_bar" ? seen.sort(compareText) : seen;
+      const series = spec.series.map((s) => ({
+        name: s.name,
+        points: periods.map((period) => {
+          const p = s.points.find((q) => q.label === period);
+          if (!p) return null;
+          // a stacked bar colours by part (the share, then its rest), not by highlight
+          return spec.kind === "stacked_bar" ? { ...pt(p, period), highlight: false } : pt(p, period);
+        }),
+      }));
+      return { kind: spec.kind, title, unitTitle, periods, series };
+    }
+    default:
+      return table(title, spec.series);
   }
-  if (!rows.every((r) => "이름" in r && "값" in r)) return table(title, rows);
-  if (has("비중")) {
-    const ordered = [...rows].sort((a, b) => num(a["순서"]) - num(b["순서"]));
-    return { kind: "pie", title, points: ordered.map((r) => point(r, str(r["이름"]))) };
-  }
-  if (has("시점")) {
-    const ordered = [...rows].sort((a, b) => compareText(str(a["시점"]), str(b["시점"]))); // ordinal axis, no sort → ascending
-    return { kind: "line", title, unitTitle: titleOf(first.y), points: ordered.map((r) => point(r, str(r["시점"]))) };
-  }
-  if (!spec.layer?.length || markType(spec.layer[0].mark) !== "bar") return table(title, rows);
-  if (spec.layer[1]?.transform) {
-    return { kind: "timeline", title, unitTitle: titleOf(first.y), points: rows.map((r) => point(r, str(r["이름"]))) };
-  }
-  const horizontal = first.y?.field === "이름";
-  const nameAxis = horizontal ? first.y : first.x;
-  const ordered = sortRows(rows, nameAxis?.sort, first);
-  return { kind: "bar", title, unitTitle: titleOf(horizontal ? first.x : first.y), horizontal, points: ordered.map((r) => point(r, str(r["이름"]))) };
 }
 
-// Vega-Lite `sort` on the name axis: null keeps the data order, a list orders by name, "x" / "-y" sorts by the
-// field encoded on that channel (ascending / descending).
-function sortRows(rows: Row[], sort: unknown, encoding: Encoding): Row[] {
-  if (sort === null) return rows;
+// Bars in the order the backend asks for: a name list, else "-x" / "x" (by value for horizontal bars, by name for
+// vertical ones); points without a value stay last
+function orderBars<P extends { label: string; value: number | null }>(points: P[], sort: string | string[], horizontal: boolean): P[] {
   if (Array.isArray(sort)) {
-    const at = (r: Row) => {
-      const i = sort.indexOf(str(r["이름"]));
+    const at = (p: P) => {
+      const i = sort.indexOf(p.label);
       return i < 0 ? sort.length : i;
     };
-    return [...rows].sort((a, b) => at(a) - at(b));
+    return [...points].sort((a, b) => at(a) - at(b));
   }
-  if (typeof sort === "string" && /^-?[xy]$/.test(sort)) {
-    const field = encoding[sort.replace("-", "")]?.field ?? "이름";
+  if (/^-?[xy]$/.test(sort)) {
+    const onValue = (sort.replace("-", "") === "x") === horizontal;
     const sign = sort.startsWith("-") ? -1 : 1;
-    const missing = (r: Row) => r[field] == null;
-    // rows without a value (symbol cells) stay last in either direction
-    return [...rows].sort((a, b) => Number(missing(a)) - Number(missing(b)) || sign * compareValues(a[field], b[field]));
+    const missing = (p: P) => (onValue ? p.value == null : false);
+    const key = (p: P) => (onValue ? p.value : p.label);
+    return [...points].sort((a, b) => Number(missing(a)) - Number(missing(b)) || sign * compareValues(key(a), key(b)));
   }
-  return [...rows].sort((a, b) => compareText(str(a["이름"]), str(b["이름"])));
+  return [...points].sort((a, b) => compareText(a.label, b.label));
 }
 
-function point(row: Row, label: string): Point {
-  const value = typeof row["값"] === "number" ? row["값"] : null;
-  const display = typeof row["표시"] === "string" ? row["표시"] : value === null ? "" : String(value);
-  return { label, value, display, highlight: row["강조"] === "예" };
-}
-
-// Fallback: the rows themselves, with the label columns and the display string the backend wrote
-function table(title: string, rows: Row[]): ChartView {
-  if (typeof console !== "undefined") console.warn("chart: unrecognised Vega-Lite spec, showing its rows as a table");
-  const has = (f: string) => rows.some((r) => f in r);
-  const columns = ["대상", "시점", "이름"].filter(has).concat(has("표시") ? ["표시"] : has("값") ? ["값"] : []);
-  if (!columns.length) return { kind: "none", title };
-  return { kind: "table", title, columns: columns.map((c) => (c === "표시" ? "값" : c)), rows: rows.map((r) => columns.map((c) => str(r[c]))) };
-}
-
-function sortedPeriods(rows: Row[]): string[] {
-  return firstSeen(rows.map((r) => str(r["시점"]))).sort(compareText);
+// Fallback for a kind this file does not draw: the points themselves, with the display string the backend wrote
+function table(title: string, series: ChartSpec["series"]): ChartView {
+  if (typeof console !== "undefined") console.warn("chart: unknown chart kind, showing its points as a table");
+  const many = series.length > 1;
+  const columns = many ? ["대상", "이름", "값"] : ["이름", "값"];
+  const rows = series.flatMap((s) => s.points.map((p) => (many ? [s.name, p.label, p.display] : [p.label, p.display])));
+  return rows.length ? { kind: "table", title, columns, rows } : { kind: "none", title };
 }
 
 function firstSeen(items: string[]): string[] {
   return [...new Set(items)];
 }
 
-function markType(mark: unknown): string | null {
-  if (typeof mark === "string") return mark;
-  if (mark && typeof mark === "object" && typeof (mark as { type?: unknown }).type === "string") return (mark as { type: string }).type;
-  return null;
-}
-
-function titleOf(axis: { title?: string | null } | undefined): string | null {
-  return typeof axis?.title === "string" ? axis.title : null;
-}
-
-function isRow(v: unknown): v is Row {
+function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
 function str(v: unknown): string {
   return v == null ? "" : String(v);
-}
-
-function num(v: unknown): number {
-  return typeof v === "number" ? v : Number.MAX_SAFE_INTEGER;
 }
 
 function compareText(a: string, b: string): number {

@@ -20,7 +20,7 @@ alternate-table attempt, set aside and counted in alt_attempts; T3-23):
   allowed), a combine_values result or a default condition of the conversation so far, else
   unsupported_final_number; the answer must cite survey and table name of each answered summarize_stat, else
   missing_source.
-- charts (T3-37): every number a make_chart call draws (Vega-Lite data.values) must be a fact value of the turn's
+- charts (T3-37): every number a make_chart call draws (the drawn ChartSpec's points) must be a fact value of the turn's
   summarize_stat answers (a chart-only turn: the conversation's latest ones), else chart_data_mismatch; where the user
   named no chart type, expect.auto_chart must be the family of the drawn kind, else wrong_chart_type.
 A turn passes with no error; a conversation succeeds when every turn passes; pass^k = share of scenarios whose
@@ -62,7 +62,7 @@ ERRORS = {  # error -> what it means (report legend)
     "wrong_numbers": "summarize_stat 답이 L3 채점에서 PASS가 아님",
     "unsupported_final_number": "최종 답 문장에 질문·사실 값·합산 결과에 없는 숫자 (반올림·만·천·억 단위 허용)",
     "missing_source": "답한 summarize_stat의 출처(조사명·통계표명)가 최종 답에 없음",
-    "chart_data_mismatch": "차트(Vega-Lite data.values)에 summarize_stat 사실 값이 아닌 숫자가 그려짐",
+    "chart_data_mismatch": "차트(그린 ChartSpec 점)에 summarize_stat 사실 값이 아닌 숫자가 그려짐",
     "wrong_chart_type": "차트 종류 말이 없는 턴에서 그린 차트 계열(막대·꺾은선·원형)이 기대 종류와 다름",
 }
 TASK_PREFIXES = {"MT-": "multiturn", "MQ-": "multiquery",  # sid prefixes the builders write (builders/multiturn, multiquery)
@@ -222,7 +222,7 @@ def oracle_stat(item: CalcItem) -> dict:
 def oracle_chart(args: dict, auto_chart: str | None, facts: list[Fact]) -> tuple[dict, dict]:
     """make_chart args and result a perfect agent leaves (T3-37): the result has the tool's content shape
     (services/chart.py) and the `chart` arg is a phase 1 ChartSpec drawing exactly the latest answer's facts, so the
-    grader's rebuilt Vega-Lite holds fact values only. No facts (a structure run): nothing to draw from, no spec."""
+    grader's rebuilt chart holds fact values only. No facts (a structure run): nothing to draw from, no spec."""
     kind = args.get("chart_type") or auto_chart or "bar"
     drawn = [f for f in facts if f.value is not None]
     if drawn:

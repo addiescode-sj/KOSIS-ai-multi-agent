@@ -42,7 +42,7 @@ class AgentState(MessagesState):
     resolved_question: str  # 실전 1에 넘긴 문장: 이월이면 직전 조건을 채운 독립 질문, 아니면 원문 (T3-27)
     interpreted_by: str  # 이번 턴을 누가 해석했나: rule | llm | none (graph/context.py Reading.by)
     chart_requested: bool  # 사용자가 이번 턴에 차트를 요청함 → make_chart 툴을 부른다 (T3-27)
-    chart_type: str | None  # 요청한 종류 bar | line | pie (없으면 실전 1이 고른 종류)
+    chart_type: str | None  # 요청한 종류 bar | line | pie | stacked (없으면 실전 1이 고른 종류)
     chart_only: bool  # 숫자는 그대로 두고 직전 답을 차트로만 다시 그림
     chart_note: str | None  # 요청한 종류로 못 그렸거나 차트 데이터가 없을 때의 안내
     reused_table: bool  # True면 이번 턴은 검색을 건너뛰고 active_table로 답함
@@ -51,7 +51,7 @@ class AgentState(MessagesState):
     attempts: list[dict]  # 실전 1에 넘긴 표마다 {"key", "outcome", "reason"}, 시도 순서대로
     stat: StatOutput | None  # 이번 턴의 최종 실전 1 결과 = 마지막으로 시도한 표의 결과
     table_key: str | None  # stat을 만든 표 키 (tables.csv 키 "<org_id>_<tbl_id>", tbl_id 아님)
-    chart: dict | None  # stat.chart를 Vega-Lite로 바꾼 것
+    chart: dict | None  # 그린 차트 데이터 (ChartSpec JSON, kosis_chat.chart.module.chart_data)
     outcome: Outcome | None
     degraded: bool  # 2차 리랭커가 실패해 실전 2가 1차 순서로 대신 답함 (plans/agent-graph-refactor.md P4)
     # 멀티쿼리 (T3-28, 이번 턴 상태)
@@ -60,6 +60,20 @@ class AgentState(MessagesState):
     split_by: str | None  # 누가 나눴나 rule | llm
     sub_results: list[dict] | None  # 하위 질문마다 {"question", "table_key", "outcome", "reason", "text", "answer"}
     combined: dict | None  # combine_values 툴 결과 {"op", "value", "unit", "inputs", "reason"}
+    # ReAct 단계 판단 (T3-03, graph/react.py)
+    pending_clarify: str | None  # 대화 상태: 이해 단계가 되물은 원 질문. 다음 턴 답과 합쳐 재작성한 뒤 비운다
+    intent: str  # 이해 단계 Action: template | clarify | rewrite | search
+    template: str | None  # 템플릿 즉시 답변 종류 greeting | not_statistics
+    missing: list[str]  # 되묻기에서 빠졌다고 본 슬롯 (지표·지역·기간)
+    rewrite_source: str | None  # 재작성 입력 (원 질문, 되묻기 답)
+    rewrite_feedback: str | None  # 직전 재작성의 실패 이유 (충분성 판단 · 검색 거절 Observation)
+    rewrite_tries: int  # 이번 턴 재작성 횟수 (최대 2 = 1회 재시도)
+    rewritten: bool  # 검색에 재작성 문장을 쓰는가
+    researched: bool  # 검색 거절 후 재작성·재검색을 이미 했는가 (1회)
+    review: dict | None  # 검수 결과 {"source", "chart", "numbers_verified"}
+    answer_text: str | None  # 검수 뒤 답 문장 (출처 줄이 없으면 코드가 붙인 것)
+    refusal_reason: str | None  # 이번 턴 거절 이유 (gate 이유 또는 템플릿 종류). 직전 턴 검색 결과와 섞이지 않게 따로 둔다
+    trace: list[dict]  # 단계별 {"step", "action", "by", "thought"} (턴마다 비움)
 
 
 # 체크포인트에서 다시 읽어도 되는 타입 목록. AgentState에 넣는 Pydantic 모델을 여기에 적는다.
@@ -121,7 +135,7 @@ class ChatResult(BaseModel):
     answer_origin: str  # "refusal" (코드 거절 문장: 실전 2 gate 또는 failed) | "stat" (실전 1 StatAnswer.text) | "chart" (차트만 다시 그린 턴의 코드 문장) | "multi" (멀티쿼리 하위 답을 이은 문장)
     table_key: str | None = None  # 답을 만든 tables.csv 키 ("<org_id>_<tbl_id>", tbl_id 아님)
     stat_answer: StatAnswer | None = None
-    chart: dict[str, Any] | None = None  # Vega-Lite v5, 차트가 없으면 None
+    chart: dict[str, Any] | None = None  # 그린 차트 데이터 (ChartSpec JSON, 프런트가 Recharts로 그림. KOS-202), 없으면 None
     outcome: str | None = None  # answered | refused | clarify | failed
     attempted_keys: list[str] = Field(default_factory=list)  # 실전 1에 넘긴 표 키, 시도 순서대로 (대체 표 재시도 포함)
     reused_table: bool = False  # 지시어로 직전 표를 다시 씀 (검색 건너뜀)
@@ -132,6 +146,9 @@ class ChatResult(BaseModel):
     chart_note: str | None = None  # 요청대로 못 그렸을 때의 안내
     sub_results: list[dict] | None = None  # 멀티쿼리 턴의 하위 답 (T3-28, graph AgentState.sub_results)
     combined: dict | None = None  # 하위 답 두 개를 코드가 합친 결과 (combine_values)
+    intent: str | None = None  # T3-03 이해 단계 Action: template | clarify | rewrite | search
+    trace: list[dict] = Field(default_factory=list)  # T3-03 단계별 Thought·Action
+    review: dict | None = None  # T3-03 검수 결과
     # 이 질문의 요청 ID = OTel trace ID = meta.trace_id (T3-51, docs/service/api.md 2). 피드백을 이 값으로 보낸다.
     # 그래프가 아니라 요청 처리기(backend/app/main.py)가 채운다. 그래프만 돌린 평가에서는 None.
     request_id: str | None = None
@@ -139,10 +156,18 @@ class ChatResult(BaseModel):
 
 def chat_result(state: dict) -> ChatResult:
     """마지막 AgentState → ChatResult. 답 문장은 실전 1·2가 만든 것(또는 코드 고정 문장)을 그대로 옮긴다."""
-    search: SearchOutput = state["search"]
     stat: StatOutput | None = state.get("stat")
+    react = {"intent": state.get("intent"), "trace": state.get("trace") or [], "review": state.get("review")}
+    # 검색 전에 끝난 턴(템플릿 즉시 답변 · 이해 단계 되묻기 · 재작성 2회 불충분): 직전 턴 검색 결과를 보이지 않는다.
+    # 재작성이 충분하면 intent는 search로 바뀌므로, 끝에 rewrite가 남은 턴은 검색 전에 끝난 턴이다.
+    if state.get("intent") in ("template", "clarify", "rewrite"):
+        return ChatResult(question=state.get("question") or "", route="skip", no_answer=True,
+                          no_answer_reason=state.get("refusal_reason"), answer=state["messages"][-1].content,
+                          answer_origin="refusal", outcome=state.get("outcome"),
+                          resolved_question=state.get("resolved_question"), **react)
+    search: SearchOutput = state["search"]
     base = {"question": state.get("question") or search.question, "route": search.route,
-            "candidates": search.candidates, "picked": search.picked, "outcome": state.get("outcome"),
+            "candidates": search.candidates, "picked": search.picked, "outcome": state.get("outcome"), **react,
             "attempted_keys": [a["key"] for a in state.get("attempts") or []],
             "reused_table": bool(state.get("reused_table")), "degraded": bool(state.get("degraded")),
             "resolved_question": state.get("resolved_question"), "interpreted_by": state.get("interpreted_by"),
@@ -163,7 +188,7 @@ def chat_result(state: dict) -> ChatResult:
         **base,
         no_answer=answer.outcome != "answered",
         no_answer_reason=answer.refusal.reason if answer.refusal else None,
-        answer=answer.text,
+        answer=state.get("answer_text") or answer.text,  # T3-03 검수 뒤 문장 (출처 줄이 없으면 코드가 붙임)
         answer_origin="stat",
         table_key=state.get("table_key"),
         stat_answer=answer,
