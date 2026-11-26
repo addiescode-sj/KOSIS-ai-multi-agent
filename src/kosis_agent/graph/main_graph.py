@@ -1,32 +1,40 @@
-"""메인 그래프 (T3-23 결정적 워크플로 + T3-27 이월·차트 요청). 다음에 무엇을 할지는 아래 조건부 경로(코드)가 정한다.
+"""메인 그래프 (T3-03 옵션 B: 단계별 ReAct 판단). 단계 경계마다 Thought → Action을 한 번 정하고(graph/react.py),
+조건부 경로는 그 Action 값만 읽는다. Observation은 실제 툴 결과다.
 
-    START → context ─(차트만 다시: "그 표로 막대그래프")──────────────────────────────┐
-                ├─(하위 질문 둘 이상: "출생아 수와 외국인주민 수")→ multi ─(같은 표)→ chart ─→ finalize
-                │                                                       └─(표가 다름)→ finalize
-                ├─(직전 표 재사용: 지시어 "그 표에서…", 이월 "부산은?"·"아니 2023년으로")─┐   │
-                └─(새 질문)→ search ─(refuse · 넘길 표 없음)→ finalize                 │   │
-                                └─(found)→ statistics ←───────────────────────────────┘   │
-                                             ├─(표 불일치 거절 · 예산 남음)→ statistics      │
-                                             ├─(이월 턴인데 직전 표가 표 불일치로 거절)→ search(다시 쓴 문장)
-                                             ├─(답함)→ chart → finalize ←──────────────────┘
-                                             └─(되묻기 · 질문 문제 · 예산 끝)→ finalize
+    START → understand ─(template: 인사·통계 무관)──────────────────────────────────────→ finalize
+                ├─(clarify: 무엇을 찾는지 모름 → 다음 턴 답을 받아 rewrite)───────────────→ finalize
+                ├─(rewrite: 되묻기 답 · 다듬어야 검색 가능)→ rewrite ⟲(불충분 · 1회) ─(2회 불충분)→ finalize(clarify)
+                │                                              └─(충분)→ search
+                ├─(chart_only: "그 표로 막대그래프")→ chart ─────────────────────────────────→ finalize
+                ├─(multi: 하위 질문 둘 이상)→ multi ─(같은 표)→ chart → review → finalize
+                │                                    └─(표가 다름)────────────────────────→ finalize
+                ├─(reuse: 지시어·이월)→ statistics
+                └─(search)→ search ─(gate 거절 no_item · 재작성 전 · 판단 켜짐)→ rewrite → search (1회)
+                               ├─(gate 거절 · 넘길 표 없음 = 답할 수 없음)→ finalize (툴 추가 호출 없음)
+                               └─(답할 수 있음)→ statistics ─(답함)→ chart → review → finalize
+                                                   ├─(표 불일치 · 예산 남음)→ statistics
+                                                   ├─(이월 턴, 직전 표 표 불일치)→ search(다시 쓴 문장)
+                                                   └─(되묻기 · 거절 · 예산 끝)→ finalize
     finalize → END   (outcome: answered | refused | clarify | failed)
 
 노드별 역할:
-- context    이번 턴 상태를 비우고, 이번 질문을 직전 대화에 비춰 해석한다(graph/context.py read_turn):
-             직전 표를 다시 쓸지, 실전 1에 넘길 문장(이월이면 조건을 채운 독립 질문), 차트 요청.
-             규칙이 먼저 판단하고, 규칙이 판단하지 못한 턴만 LLM 한 번(interpreter="hybrid", LLM이 있을 때).
-- search     search_tables 툴(실전 2 검색 그래프 전체)을 사용자 원문으로 부른다.
-- statistics summarize_stat 툴(실전 1)을 표 하나로 부른다. 표 불일치로 거절되면 다음 후보 표로 다시 들어온다.
-- multi      멀티쿼리 턴(T3-28): 하위 질문마다 search_tables → summarize_stat을 부른다. 모두 같은 표를 찾으면 원문
-             한 번으로 실전 1에 묻는다(같은 표 비교는 실전 1 compare가 답함). 계산 요청이면 combine_values 툴(코드 계산).
+- understand 이번 턴 상태를 비우고 질의를 이해한다. 매 턴 Qwen이 먼저 판단한다(Judge.understand, 규칙 판단 없음).
+             search·rewrite면 그다음 직전 표 재사용(read_turn 이월·지시어)과 분해(split_question)를 본다. 되묻기 다음 턴이면 rewrite로 보낸다(pending_clarify).
+             옵션 B면 규칙이 나눈 멀티쿼리를 Qwen이 한 번 검토한다(Judge.split: 같은 지표 비교면 합침).
+- rewrite    검색에 쓸 한 문장으로 다시 쓴다(Judge.rewrite, 원문·이전 문장 낱말만 → grounded). 옵션 B면 Qwen이 충분성을
+             판단해(Judge.sufficiency) 불충분하면 1회 더 쓴다. 판단 LLM이 없으면 되묻기 답을 원 질문 뒤에 붙인 문장을 쓴다.
+- search     search_tables 툴(실전 2 검색 그래프 전체, 2차 리랭커·gate 포함). 새 질문은 사용자 원문으로, 재작성·이월 턴만
+             다시 쓴 문장으로 찾는다. 2차 리랭커·gate 결과(route·picked)가 "답할 수 있음/없음" 검수다(LLM 추가 호출 없음).
+- statistics summarize_stat 툴(실전 1). 숫자와 답 문장은 실전 1이 만든다.
+- multi      멀티쿼리 턴(T3-28).
 - chart      사용자가 차트를 요청했으면 make_chart 툴로 요청한 종류를 그리고, 아니면 실전 1이 준 ChartSpec을
              그대로 보낸다(툴 아님: 요청하지 않은 툴 호출은 하네스가 extra_call로 감점). Vega-Lite는 없다(KOS-202).
-- finalize   outcome과 답 메시지를 정한다. 답 문장은 실전 1·2가 만든 것이나 코드 고정 문장만 쓴다(LLM 문장 생성 없음).
+- review     코드 검수: 출처 줄(chatTemplate = 실전 1 답 + `출처: KOSIS / 조사명 / 통계표명`)이 없으면 코드가 붙이고,
+             실전 1 숫자 검증(numbers_verified)과 요청한 차트가 그려졌는지 기록한다. 툴을 부르지 않는다.
+- finalize   outcome과 답 메시지를 정한다. 답 문장은 실전 1·2 문장 또는 코드 고정 문장만 쓴다(LLM 문장 생성 없음).
 
-노드는 실전 1·2를 직접 부르지 않고 LangChain 툴을 거친다. 그래서 `execute_tool <name>` span이 생기고, T3-06 agent
-계층이 툴 이름·인자·결과로 그래프를 채점할 수 있다(plans/agent-graph-refactor.md P2). 실전 1·2 그래프는 각 툴 안에서
-통째로 돈다. 상태 스키마가 서로 다른 그래프를 노드 안에서 부르는 것은 LangGraph가 안내하는 방식이다.
+노드는 실전 1·2를 직접 부르지 않고 LangChain 툴을 거친다(`execute_tool <name>` span = agent 계층 채점 근거).
+판단 단계(understand·rewrite·review)는 툴이 아니다. 툴로 만들면 agent 채점이 extra_call로 감점한다.
 """
 
 from __future__ import annotations
@@ -42,6 +50,7 @@ from langgraph.graph import END, START, StateGraph
 
 from kosis_agent.graph.context import LLMReader, Mode, chart_request, read_turn
 from kosis_agent.graph.multiquery import SplitReader, split_question
+from kosis_agent.graph.react import (TEMPLATES, Judge, Steps, UnderstandStep, clarify_text, grounded, safe)
 from kosis_agent.graph.state import AgentState
 from kosis_agent.retrieval.search import make_search_tables_tool
 from kosis_agent.services.chart import CHART_NAMES, chart_payload, make_chart_tool
@@ -63,6 +72,11 @@ CONDITION_FIELDS = ("period_start", "period_end", "regions", "dimensions")
 # 나머지 이유(causal: 인과 질문, unit_mismatch, not_aggregatable, missing_value: 셀이 '-'·'X')는 질문이나 셀 자체의
 # 문제라서, 표를 바꿔도 같은 답이 나오거나 다른 정의의 숫자를 섞게 된다. 그래서 다시 시도하지 않는다.
 TABLE_MISMATCH = frozenset({"no_period", "no_item", "class_mismatch", "out_of_scope"})
+
+# 실전 2 gate가 이 이유로 거절하면 재작성 후 1회 다시 검색한다. out_of_scope(주제가 색인 밖)는 다시 써도 범위 밖이라
+# 재검색하지 않는다(틀린 표를 found로 고르는 위험만 생김, plans/T3-23.md Result).
+RESEARCH_REASONS = frozenset({"no_item"})
+MAX_REWRITES = 2  # 재작성 1회 + 재시도 1회 (Decision: 모든 재시도 최대 1회)
 
 # 검색은 found인데 실전 1에 넘길 표가 하나도 없을 때의 답 (코드 고정 문장)
 NO_TABLE_TEXT = "질문에 맞는 통계표를 고르지 못했어요. 지표·지역·기간을 조금 더 구체적으로 물어봐 주세요."
@@ -98,29 +112,31 @@ def default_parser(search: Any) -> Callable[[str], ParsedQuery]:
     return lambda question: parse_query(question, sigungu=sigungu)
 
 
+def step(state: AgentState, name: str, action: str, by: str, thought: str = "") -> list[dict]:
+    """이번 턴 trace에 단계 하나를 더한 전체 목록(reducer 없이 노드가 전체 값을 돌려준다: 턴마다 understand가 비움)."""
+    return [*(state.get("trace") or []), {"step": name, "action": action, "by": by, "thought": thought}]
+
+
 def build_graph(search: Any, stat_llm: StatLLMConfig, *, retry_interval: float = 0.0,
                 summarize: Callable[..., StatOutput] = summarize_stat_run, checkpointer: Any = None,
                 alt_table_budget: int = 0, parse: Callable[[str], ParsedQuery] | None = None,
-                interpreter: Mode = "hybrid", llm: LLMReader | None = None, splitter: SplitReader | None = None):
+                interpreter: Mode = "hybrid", llm: LLMReader | None = None, splitter: SplitReader | None = None,
+                judge: Judge | None = None, steps: Steps = "b"):
     """메인 그래프를 compile한다.
 
     In: search = kosis_rag.api.SearchModule (테스트·stat_oracle에서는 .stream(SearchInput)만 있는 가짜);
         stat_llm = 실전 1의 LLMConfig (실전 2 LLMConfig와 다른 클래스·필드);
         retry_interval = 실전 1의 HCX 429 재시도 대기 초; summarize = 실전 1 summarize_stat_run (테스트에서는 가짜);
         checkpointer = LangGraph checkpointer (None이면 턴 사이 상태를 잇지 않음, graph/state.new_checkpointer 권장);
-        alt_table_budget = 첫 표가 표 불일치로 거절됐을 때 더 시도할 후보 표 수. 기본 0(끔) = 1단계와 같은 경로.
-            기본을 끈 이유: T3-22 실제 검색 순위를 재생한 측정(plans/T3-23.md Result)에서 재시도 2건 중 1건이
-            정답 표가 아닌 표로 "답함"이 됐다(거절 → 틀린 표의 숫자). 데이터 정확성이 먼저라서, HCX·실시간 검색으로
-            충분한 표본을 잰 뒤에 켤지 정한다.
+        alt_table_budget = 첫 표가 표 불일치로 거절됐을 때 더 시도할 후보 표 수. 기본 0(끔, plans/T3-23.md Result).
         parse = 질문 → ParsedQuery (None이면 default_parser(search)). summarize_stat의 조건 인자를 채운다.
-        interpreter = 이월 해석 방식 rules | hybrid | llm (graph/context.py). llm = LLMReader(make_llm_reader로 만듦).
-            llm이 None이면 hybrid는 rules와 같다(LLM 단계 없음).
-        splitter = 멀티쿼리 분해의 LLM 단계(graph/multiquery.py make_llm_splitter). 규칙이 판단 보류한 턴만 부른다.
-            None이면 규칙으로만 나눈다.
+        interpreter·llm = 이월 해석(graph/context.py). splitter = 멀티쿼리 분해의 LLM 단계(graph/multiquery.py).
+        judge = ReAct 단계 판단(graph/react.Judge, Qwen). None이면 판단 단계는 규칙만 쓴다.
+        steps = off(판단 LLM 안 씀) | a(이해 + 검색 거절 후 재작성) | b(a + 재작성 충분성 판단 + 분해 검토, 기본).
     Out: AgentState 위의 compiled graph. stream_mode "custom"으로 돌리면 실전 2 노드마다 (노드 이름, trace 항목),
         그다음 실전 1 시도마다 ("stat", {"seconds", "key", "spans"})가 온다.
-    Errors: 실전 1의 LLMKeyMissing·RuntimeError와 실전 2의 예외는 그대로 올라간다(SSE `error`). 실전 1의
-        LookupError(표 키가 tables.csv에 없음)는 summarize_stat 툴이 out_of_scope 거절로 바꾸므로, 다음 후보 표로 넘어간다.
+    Errors: 실전 1의 LLMKeyMissing·RuntimeError와 실전 2의 예외는 그대로 올라간다(SSE `error`). 판단 LLM의 장애는
+        규칙 경로로 대신한다(react.safe).
     """
     if alt_table_budget < 0:
         raise ValueError("alt_table_budget cannot be negative")
@@ -129,57 +145,135 @@ def build_graph(search: Any, stat_llm: StatLLMConfig, *, retry_interval: float =
     make_chart = make_chart_tool()
     combine_values = make_combine_values_tool()
     parse = parse or default_parser(search)
+    judge = judge if steps != "off" else None
 
-    def context_node(state: AgentState) -> dict:
-        """이번 턴 상태를 비우고, 이번 질문을 해석한다(직전 표 재사용 · 실전 1에 넘길 문장 · 차트 요청)."""
+    def understand_node(state: AgentState) -> dict:
+        """Thought → Action: template | clarify | rewrite | search(·reuse·chart·multi). 이번 턴 상태를 비운다."""
         question = state["messages"][-1].content
+        fresh = {"question": question, "resolved_question": question, "interpreted_by": "none", "reused_table": False,
+                 "carried_over": False, "fallback_searched": False, "chart_requested": chart_request(question)[0],
+                 "chart_type": chart_request(question)[1], "chart_only": False, "chart_note": None, "attempts": [],
+                 "stat": None, "table_key": None, "chart": None, "outcome": None, "degraded": False,
+                 "sub_questions": [], "combine_op": None, "split_by": None, "sub_results": None, "combined": None,
+                 "intent": "search", "template": None, "missing": [], "rewrite_source": None, "rewrite_feedback": None,
+                 "rewrite_tries": 0, "rewritten": False, "researched": False, "review": None, "answer_text": None,
+                 "refusal_reason": None, "pending_clarify": None, "trace": []}
+        if pending := state.get("pending_clarify"):  # 되묻기 다음 턴: 원 질문 + 이번 답으로 다시 쓴다
+            source = f"원래 질문: {pending}\n되묻기에 대한 답: {question}"
+            return {**fresh, "intent": "rewrite", "rewrite_source": source,
+                    "trace": [{"step": "understand", "action": "rewrite", "by": "rule", "thought": "되묻기에 대한 답"}]}
+        # ReAct가 매 턴 먼저 판단한다(규칙 판단 없음). LLM이 없거나 장애면 search(= ReAct 전 동작, 범위 밖은 gate가 거절)
+        got = safe(lambda: judge.understand(question, state.get("active_question"))) if judge else None
+        decided, by = (got, "llm") if got is not None else (UnderstandStep(thought="판단 없음 → 검색", action="search"), "none")
+        trace = [{"step": "understand", "action": decided.action, "by": by, "thought": decided.thought}]
+        if decided.action == "template":
+            kind = decided.kind or "not_statistics"
+            # 거절 이유는 실전 2 gate와 같은 out_of_scope(색인 밖). 종류는 template에 둔다
+            return {**fresh, "intent": "template", "template": kind, "refusal_reason": "out_of_scope", "trace": trace}
+        if decided.action == "clarify":
+            return {**fresh, "intent": "clarify", "missing": list(decided.missing), "trace": trace}
+        # search·rewrite: 직전 표를 다시 쓰는 턴(지시어·이월·차트만, T3-27)인지 본다
         reading = read_turn(question, active_table=state.get("active_table"),
                             active_question=state.get("active_question"), parse=parse, mode=interpreter, llm=llm)
-        # 종류 말 없이 "그래프로도 보여줘"도 차트 요청이다(chart_type None = 실전 1이 고른 종류)
         wants_chart = reading.chart_only or reading.chart_type is not None or chart_request(question)[0]
-        # 이월 턴 = 직전 표를 쓰되 질문을 다시 쓴 턴("부산은?" → 조건을 채운 독립 질문). 지시어 턴("그 표에서 …")은
-        # 원문을 그대로 쓰므로 여기에 들지 않는다. 이월 턴만 "직전 표가 못 답하면 다시 쓴 문장으로 검색"을 한다.
-        carried = (reading.use_previous_table and not reading.chart_only
-                   and reading.resolved_question != question)
-        # 멀티쿼리 분해는 새 질문 턴에서만 한다(이월·지시어·차트 턴은 직전 표 하나로 답함)
-        split = None if reading.use_previous_table else split_question(question, parse, splitter)
-        subs = split.sub_questions if split and len(split.sub_questions) > 1 else []
-        return {"question": question, "resolved_question": reading.resolved_question, "interpreted_by": reading.by,
-                "reused_table": reading.use_previous_table, "carried_over": carried, "fallback_searched": False,
-                "chart_requested": wants_chart,
-                "chart_type": reading.chart_type, "chart_only": reading.chart_only, "chart_note": None,
-                "attempts": [], "stat": None, "table_key": None, "chart": None, "outcome": None, "degraded": False,
-                "sub_questions": subs, "combine_op": split.op if subs else None,
-                "split_by": split.by if subs else None, "sub_results": None, "combined": None}
+        # 이월 턴 = 직전 표를 쓰되 질문을 다시 쓴 턴. 지시어 턴("그 표에서 …")은 원문을 그대로 쓴다.
+        carried = reading.use_previous_table and not reading.chart_only and reading.resolved_question != question
+        base = {**fresh, "resolved_question": reading.resolved_question, "interpreted_by": reading.by,
+                "reused_table": reading.use_previous_table, "carried_over": carried, "chart_requested": wants_chart,
+                "chart_type": reading.chart_type, "chart_only": reading.chart_only}
+        if reading.use_previous_table:
+            action = "chart_only" if reading.chart_only else "reuse"
+            trace.append({"step": "context", "action": action, "by": reading.by, "thought": "직전 표를 다시 씀"})
+            return {**base, "intent": "search", "trace": trace}
+        if decided.action == "rewrite":
+            return {**base, "intent": "rewrite", "rewrite_source": f"질문: {question}", "trace": trace}
+        split = split_question(question, parse, splitter)
+        subs = split.sub_questions if len(split.sub_questions) > 1 else []
+        if subs and split.by == "rule" and steps == "b" and judge is not None:
+            # 규칙 분해 오류는 대부분 같은 표 비교를 과분해한 것(plans/T3-46.md: rag → rewrite 14)이라 한 번 검토한다
+            review = safe(lambda: judge.split(question, subs))
+            if review is not None:
+                trace.append({"step": "split", "action": review.action, "by": "llm", "thought": review.thought})
+                if review.action == "merge":
+                    subs = []
+        return {**base, "sub_questions": subs, "combine_op": split.op if subs else None,
+                "split_by": split.by if subs else None, "trace": trace}
 
-    def after_context(state: AgentState) -> str:
+    def after_understand(state: AgentState) -> str:
+        if state["intent"] in ("template", "clarify"):
+            return "finalize"
+        if state["intent"] == "rewrite":
+            return "rewrite"
         if state["chart_only"]:
             return "chart"
         if state.get("sub_questions"):
             return "multi"
         return "statistics" if state["reused_table"] else "search"
 
-    def search_node(state: AgentState, config: RunnableConfig) -> dict:
-        """표를 찾는다. 2차 리랭커가 실패했으면 degraded로 표시한다.
+    def rewrite_node(state: AgentState) -> dict:
+        """Action Input = 검색에 쓸 한 문장. 원문·이전 문장 낱말만(grounded). 옵션 B면 충분성을 판단한다."""
+        source, feedback = state["rewrite_source"], state.get("rewrite_feedback")
+        tries = state.get("rewrite_tries", 0) + 1
+        fallback = source.split("\n")[-1].split(": ", 1)[-1]  # LLM 없이: 되묻기 답이면 원 질문 + 답, 아니면 원문
+        if "되묻기에 대한 답" in source:
+            fallback = " ".join(line.split(": ", 1)[-1] for line in source.split("\n"))
+        got = safe(lambda: judge.rewrite(source, feedback)) if judge else None
+        if got is not None and grounded(got.question, source, parse):
+            question, by, thought = got.question, "llm", got.thought
+        else:
+            question, by, thought = fallback, "rule", "원문(·되묻기 답)을 그대로 이어 씀"
+        trace = step(state, "rewrite", "rewrite", by, thought)
+        update = {"resolved_question": question, "rewritten": True, "rewrite_tries": tries}
+        verdict = safe(lambda: judge.sufficiency(question)) if (judge and steps == "b") else None
+        if verdict is None or verdict.action == "sufficient":
+            trace.append({"step": "sufficiency", "action": "sufficient", "by": "llm" if verdict else "none",
+                          "thought": verdict.thought if verdict else ""})
+            return {**update, "intent": "search", "trace": trace}
+        trace.append({"step": "sufficiency", "action": "retry", "by": "llm", "thought": verdict.thought})
+        return {**update, "intent": "rewrite", "missing": list(verdict.missing),
+                "rewrite_feedback": f"불충분: {verdict.thought}", "trace": trace}
 
-        - 새 질문: 사용자 원문으로 찾는다(해석기가 다시 쓴 문장이 아님. LLM의 영향을 이월 턴으로 좁힘).
+    def after_rewrite(state: AgentState) -> str:
+        if state["intent"] == "search":
+            return "search"
+        return "rewrite" if state["rewrite_tries"] < MAX_REWRITES else "finalize"
+
+    def search_node(state: AgentState, config: RunnableConfig) -> dict:
+        """표를 찾는다. 2차 리랭커·gate 결과가 "답할 수 있음/없음" 검수다. 2차 리랭커가 실패했으면 degraded.
+
+        - 새 질문: 사용자 원문으로 찾는다(LLM의 영향을 재작성·이월 턴으로 좁힘).
+        - 재작성 턴: rewrite가 만든 문장(grounded)으로 찾는다.
         - 이월 턴인데 직전 표가 표 불일치로 거절함(after_statistics → 여기): 다시 쓴 독립 질문으로 찾는다.
-          "부산은?"을 그대로 검색하면 실시간 검색은 거절한다(2026-11-09 실측). 다시 쓴 문장은 이전 질문의 지표·기간에
-          지역만 바꾼 완전한 질문이라 맞는 표를 찾을 수 있다. 이 뒤로는 일반 턴처럼 후보 표에서 고른다.
         """
         fallback = bool(state.get("carried_over") and state["attempts"])
-        question = state["resolved_question"] if fallback else state["question"]
+        question = state["resolved_question"] if (fallback or state.get("rewritten")) else state["question"]
         out: SearchOutput = call_tool(search_tables, {"question": question}, config).artifact
         degraded = any(s.get("node") == "rerank2" and s.get("stage2_error") for s in out.spans)
-        update = {"search": out, "degraded": degraded}
+        answerable = out.route == "found" and bool(candidate_keys(out))
+        thought = (f"표 {len(out.picked)}개 선택: " + ", ".join(t.key for t in out.picked[:3]) if answerable
+                   else f"gate 거절: {out.refusal_reason or '넘길 표 없음'}")
+        update = {"search": out, "degraded": degraded, "refusal_reason": out.refusal_reason,
+                  "researched": bool(state.get("researched") or state.get("rewritten")),
+                  "trace": step(state, "verify", "answerable" if answerable else "unanswerable", "rerank2", thought)}
         if fallback:  # 이제부터 직전 표가 아니라 새 검색 후보에서 고른다(이미 시도한 직전 표는 next_table이 건너뜀)
             update.update(reused_table=False, fallback_searched=True)
         return update
 
     def after_search(state: AgentState) -> str:
-        # 시도하지 않은 후보가 있을 때만 실전 1로 간다. 이월 턴의 다시 검색이 직전 표만 찾으면, 직전 표의 거절로 끝낸다.
         out = state["search"]
-        return "statistics" if out.route == "found" and next_table(state) is not None else "finalize"
+        if out.route == "found" and next_table(state) is not None:
+            return "statistics"
+        if (out.route == "refuse" and out.refusal_reason in RESEARCH_REASONS and judge is not None
+                and not state.get("researched") and not state.get("carried_over")):
+            return "rewrite_after_search"  # Observation(거절 이유)을 보고 1회만 다시 쓴다
+        return "finalize"  # 답할 수 없음: 툴을 더 부르지 않고 끝낸다
+
+    def research_node(state: AgentState) -> dict:
+        """검색 거절 Observation을 재작성 입력으로 넘긴다(재작성 → 재검색 1회)."""
+        out = state["search"]
+        names = ", ".join(t.table_name for t in out.candidates[:3]) or "없음"
+        return {"rewrite_source": f"질문: {state['question']}", "rewrite_tries": 0, "researched": True,
+                "rewrite_feedback": f"검색 결과 맞는 표 없음({out.refusal_reason}). 가까운 후보: {names}"}
 
     def next_table(state: AgentState) -> str | None:
         """다음에 실전 1에 넘길 표 키. 지시어 턴은 직전 표 하나만 쓴다(사용자가 가리킨 표를 몰래 바꾸지 않음)."""
@@ -196,17 +290,18 @@ def build_graph(search: Any, stat_llm: StatLLMConfig, *, retry_interval: float =
         return call_tool(summarize_stat, args, config).artifact
 
     def multi_node(state: AgentState, config: RunnableConfig) -> dict:
-        """멀티쿼리 턴: 하위 질문마다 검색하고, 표가 다르면 하위 질문마다 실전 1에 묻는다.
+        """멀티쿼리 턴: 하위 질문마다 검색하고, 표가 다르면 하위 질문마다 실전 1에 묻는다 (T3-28과 같음).
 
         - 같은 표 되돌림: 하위 질문이 모두 같은 표를 찾으면 나누지 않은 것으로 보고 원문 한 번으로 묻는다.
         - 하위 질문 하나가 검색 거절·실전 1 거절이면 나머지는 답하고, 그 하위 질문에는 거절 문장을 붙인다(지어내지 않음).
-        - 대체 표 재시도·이월 다시 검색은 하지 않는다(하위 질문마다 첫 표 하나).
         """
         subs = state["sub_questions"]
         searches: list[SearchOutput] = [call_tool(search_tables, {"question": q}, config).artifact for q in subs]
         keys = [(candidate_keys(o) or [None])[0] if o.route == "found" else None for o in searches]
         degraded = any(s.get("node") == "rerank2" and s.get("stage2_error") for o in searches for s in o.spans)
-        base = {"search": searches[-1], "degraded": degraded}
+        base = {"search": searches[-1], "degraded": degraded,
+                "trace": step(state, "verify", "answerable" if any(keys) else "unanswerable", "rerank2",
+                              f"하위 질문 {len(subs)}개의 표: {keys}")}
         if keys[0] is not None and len(set(keys)) == 1:  # 같은 표: 원문 한 번
             stat = ask(state["question"], keys[0], config)
             answer = stat.answer
@@ -243,21 +338,19 @@ def build_graph(search: Any, stat_llm: StatLLMConfig, *, retry_interval: float =
         return "finalize"  # ponytail: 멀티쿼리 답에는 차트를 그리지 않는다. 하위 답마다 차트가 필요해지면 추가
 
     def statistics_node(state: AgentState, config: RunnableConfig) -> dict:
-        """표 하나로 실전 1에 답을 받는다. 숫자는 실전 1의 코드가 계산한다.
+        """표 하나로 실전 1에 답을 받는다. 숫자와 답 문장은 실전 1의 코드가 만든다.
 
-        툴 인자 = 질문 + 표 키 + 조건 4개(기간·시도·분류). 질문은 해석된 문장(resolved_question)이다: 이월 턴이면
-        "부산은?"이 아니라 "2025년 부산광역시에서 태어난 아이는 몇 명이에요?"를 넘긴다(실전 1은 문장에서 조건을 읽음).
-        조건 인자는 그 문장을 실전 2와 같은 규칙으로 읽은 값이라, 이월이 맞는 조건을 담았는지가 인자에 드러난다.
+        질문은 해석된 문장(resolved_question): 이월 턴이면 조건을 채운 독립 질문, 재작성 턴이면 다시 쓴 문장.
         """
         key = next_table(state)
         question = state.get("resolved_question") or state["question"]
         stat = ask(question, key, config)
         answer = stat.answer
-        attempts = [*state["attempts"], {"key": key, "outcome": answer.outcome,
-                                         "reason": answer.refusal.reason if answer.refusal else None}]
-        # 턴은 마지막으로 시도한 표에서 끝난다. 대체 표로 다시 들어오면 그 표의 결과로 덮어쓴다.
-        # 평가 하네스도 "마지막 summarize_stat 호출"을 이 턴의 표·답으로 채점하므로 둘이 같은 기준이다.
-        return {"attempts": attempts, "stat": stat, "table_key": key}
+        reason = answer.refusal.reason if answer.refusal else None
+        attempts = [*state["attempts"], {"key": key, "outcome": answer.outcome, "reason": reason}]
+        # 턴은 마지막으로 시도한 표에서 끝난다. 평가 하네스도 "마지막 summarize_stat 호출"을 이 턴의 표·답으로 채점한다.
+        return {"attempts": attempts, "stat": stat, "table_key": key,
+                "trace": step(state, "answer", answer.outcome, "phase1", reason or "")}
 
     def after_statistics(state: AgentState) -> str:
         last = state["attempts"][-1]
@@ -266,8 +359,7 @@ def build_graph(search: Any, stat_llm: StatLLMConfig, *, retry_interval: float =
         mismatch = last["outcome"] == "refused" and last["reason"] in TABLE_MISMATCH
         if mismatch and state.get("carried_over") and not state.get("fallback_searched"):
             return "search"  # 이월 턴: 직전 표에 그 지역·기간이 없음 → 다시 쓴 문장으로 검색 (search_node)
-        retry = (last["outcome"] == "refused" and last["reason"] in TABLE_MISMATCH
-                 and len(state["attempts"]) <= alt_table_budget and next_table(state) is not None)
+        retry = mismatch and len(state["attempts"]) <= alt_table_budget and next_table(state) is not None
         return "statistics" if retry else "finalize"
 
     def chart_node(state: AgentState, config: RunnableConfig) -> dict:
@@ -283,9 +375,32 @@ def build_graph(search: Any, stat_llm: StatLLMConfig, *, retry_interval: float =
         out = call_tool(make_chart, args, config).artifact
         return {"chart": out["chart"], "chart_note": out["note"]}
 
+    def after_chart(state: AgentState) -> str:
+        return "finalize" if state["chart_only"] else "review"
+
+    def review_node(state: AgentState) -> dict:
+        """코드 검수(툴 없음): 답이 chatTemplate(실전 1 답 + 출처 줄)을 따르는가, 요청한 차트가 그려졌는가."""
+        answer = state["stat"].answer
+        text, checks = answer.text, {"numbers_verified": answer.numbers_verified}
+        source = answer.source
+        cited = source is not None and source.survey_nm in text and source.tbl_nm in text
+        checks["source"] = cited
+        if source is not None and not cited:  # 출처는 코드가 만든 citation()을 붙인다(LLM 아님)
+            text = f"{text}\n\n출처: {source.citation()}"
+        # 시각화할 수 없는 경우(차트 데이터 없음)는 통과로 본다. 요청했는데 못 그렸으면 chart_note가 이유를 말한다.
+        checks["chart"] = state.get("chart") is not None or state["stat"].chart is None
+        ok = checks["source"] and checks["chart"]
+        thought = "" if ok else ", ".join(k for k in ("source", "chart") if not checks[k]) + " 보완"
+        return {"answer_text": text, "review": checks, "trace": step(state, "review", "pass" if ok else "fixed", "code", thought)}
+
     def finalize_node(state: AgentState) -> dict:
         """outcome과 답 메시지를 정한다. 답한 표는 다음 턴의 "그 표"(active_table)가 되고, 해석된 질문과 차트 데이터는
         다음 턴의 이월·차트 요청에 쓰인다(active_question · active_chart)."""
+        if state.get("intent") == "template":
+            return {"outcome": "refused", "messages": [AIMessage(TEMPLATES[state["template"]])]}
+        if state.get("intent") in ("clarify", "rewrite"):  # 이해 단계 되묻기 · 재작성 2회 불충분
+            return {"outcome": "clarify", "pending_clarify": state["question"],
+                    "messages": [AIMessage(clarify_text(state.get("missing") or []))]}
         stat: StatOutput | None = state.get("stat")
         if (results := state.get("sub_results")) is not None:  # 멀티쿼리 턴: 하위 답을 순서대로 잇는다
             parts = [r["text"] for r in results]
@@ -312,20 +427,27 @@ def build_graph(search: Any, stat_llm: StatLLMConfig, *, retry_interval: float =
         return {"outcome": stat.answer.outcome, "active_table": state["table_key"],
                 "active_question": state.get("resolved_question") or state["question"],
                 "active_chart": stat.chart if stat.chart is not None else None,
-                "messages": [AIMessage(stat.answer.text)]}
+                "messages": [AIMessage(state.get("answer_text") or stat.answer.text)]}
 
     graph = StateGraph(AgentState)
-    graph.add_node("context", context_node)
+    graph.add_node("understand", understand_node)
+    graph.add_node("rewrite", rewrite_node)
     graph.add_node("search", search_node)
+    graph.add_node("rewrite_after_search", research_node)
     graph.add_node("statistics", statistics_node)
     graph.add_node("multi", multi_node)
     graph.add_node("chart", chart_node)
+    graph.add_node("review", review_node)
     graph.add_node("finalize", finalize_node)
-    graph.add_edge(START, "context")
-    graph.add_conditional_edges("context", after_context, ["search", "statistics", "chart", "multi"])
+    graph.add_edge(START, "understand")
+    graph.add_conditional_edges("understand", after_understand,
+                                ["finalize", "rewrite", "chart", "multi", "statistics", "search"])
+    graph.add_conditional_edges("rewrite", after_rewrite, ["search", "rewrite", "finalize"])
+    graph.add_conditional_edges("search", after_search, ["statistics", "rewrite_after_search", "finalize"])
+    graph.add_edge("rewrite_after_search", "rewrite")
     graph.add_conditional_edges("multi", after_multi, ["chart", "finalize"])
-    graph.add_conditional_edges("search", after_search, ["statistics", "finalize"])
     graph.add_conditional_edges("statistics", after_statistics, ["statistics", "search", "chart", "finalize"])
-    graph.add_edge("chart", "finalize")
+    graph.add_conditional_edges("chart", after_chart, ["review", "finalize"])
+    graph.add_edge("review", "finalize")
     graph.add_edge("finalize", END)
     return graph.compile(checkpointer=checkpointer)

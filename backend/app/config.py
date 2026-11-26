@@ -148,6 +148,30 @@ def splitter_llm(cfg):
     return make_llm_splitter(model) if model is not None else None
 
 
+def agent_steps() -> str:
+    """T3-03 ReAct step judgments: AGENT_STEPS off | a | b (default b, src/kosis_agent/graph/react.py)."""
+    steps = (_env("AGENT_STEPS") or "b").strip().lower()
+    if steps not in ("off", "a", "b"):
+        raise ValueError(f"AGENT_STEPS must be off, a or b, not {steps!r}")
+    return steps
+
+
+def agent_judge():
+    """T3-03 step judge on an OpenAI-compatible chat model: AGENT_MODEL / AGENT_BASE_URL / AGENT_API_KEY, each
+    defaulting to the stage 2 re-ranker's STAGE2_MODEL / STAGE2_BASE_URL / STAGE2_API_KEY (the self-hosted Qwen).
+    None (rules only) without a model and base URL, or with AGENT_STEPS=off."""
+    model = _env("AGENT_MODEL") or _env("STAGE2_MODEL")
+    base_url = _env("AGENT_BASE_URL") or _env("STAGE2_BASE_URL")
+    if not model or not base_url or agent_steps() == "off":
+        return None
+    from langchain_openai import ChatOpenAI
+
+    from kosis_agent.graph.react import Judge
+
+    key = _env("AGENT_API_KEY") or _env("STAGE2_API_KEY") or "EMPTY"  # self-hosted servers often take any key
+    return Judge(ChatOpenAI(model=model, api_key=key, base_url=base_url, temperature=0, timeout=30, max_retries=1))
+
+
 def vector_store() -> VectorStoreConfig:
     """The vector store (T3-47): DATABASE_URL - the same PostgreSQL as the conversation store; its SQLAlchemy form
     postgresql+psycopg:// is accepted - and VECTOR_COLLECTION, the dense collection (was CHROMA_COLLECTION).

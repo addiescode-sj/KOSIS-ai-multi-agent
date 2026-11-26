@@ -148,7 +148,7 @@ BUSY = {409: {"description": "회원 대화의 앞 질문에 답하는 중", "mo
 def _build(checkpointer: Any = None) -> tuple[Any, dict[str, BaseTool]]:
     """The graph and the tools its nodes call, over one phase 2 SearchModule (loaded once). checkpointer None = an
     in-memory one (evaluation); the service passes get_checkpointer()."""
-    from backend.app.config import agent_config, interpreter_llm, splitter_llm
+    from backend.app.config import agent_config, agent_judge, agent_steps, interpreter_llm, splitter_llm
     from kosis_rag.api import SearchModule
 
     cfg = agent_config()
@@ -156,7 +156,7 @@ def _build(checkpointer: Any = None) -> tuple[Any, dict[str, BaseTool]]:
     graph = build_graph(search, cfg.stat_llm, retry_interval=cfg.stat_retry_interval,
                         checkpointer=checkpointer if checkpointer is not None else new_checkpointer(),
                         alt_table_budget=cfg.alt_table_budget, interpreter=cfg.interpreter, llm=interpreter_llm(cfg),
-                        splitter=splitter_llm(cfg))
+                        splitter=splitter_llm(cfg), judge=agent_judge(), steps=agent_steps())
     tools = [make_search_tables_tool(search),
              make_summarize_stat_tool(cfg.stat_llm, retry_interval=cfg.stat_retry_interval), make_chart_tool()]
     return graph, {t.name: t for t in tools}

@@ -103,6 +103,32 @@ def grade_refs(item: CalcItem, answer: StatAnswer | None) -> frozenset[str]:
     return frozenset(f.source_ref for f in facts if f.source_ref)
 
 
+def item_cells(item: CalcItem, answer: StatAnswer | None, cells_of) -> dict[str, Cell]:
+    """grade()'s cells over every table of the item (T3-56): cells_of(table_key, refs) per table, merged.
+    A ref names its table by tbl_id, so each table returns only its own refs."""
+    refs = grade_refs(item, answer)
+    return {ref: cell for key in item.tables() for ref, cell in cells_of(key, refs).items()}
+
+
+def merge_answers(answers: list[StatAnswer]) -> StatAnswer | None:
+    """The answered summarize_stat answers of one turn as one answer (T3-56: a multi-table item graded against the
+    per-table sub-answers). Fact ids get a per-answer prefix (derivations rewritten) so f1 of two answers stay apart."""
+    answered = [a for a in answers if a is not None and a.outcome == "answered" and a.result is not None]
+    if len(answered) < 2:
+        return answered[0] if answered else next((a for a in answers if a is not None), None)
+    facts, parts = [], []
+    for i, a in enumerate(answered):
+        ids = {f.id for f in a.result.facts}
+        rename = lambda m, ids=ids, i=i: f"s{i}_{m.group(0)}" if m.group(0) in ids else m.group(0)  # noqa: E731
+        facts += [f.model_copy(update={"id": f"s{i}_{f.id}",
+                                       "derivation": _IDENT.sub(rename, f.derivation) if f.derivation else None})
+                  for f in a.result.facts]
+        parts += [p.model_copy(update={"fact_id": f"s{i}_{p.fact_id}"}) if p.kind == "fact" else p for p in a.parts]
+    first = answered[0]
+    return first.model_copy(update={"result": first.result.model_copy(update={"facts": facts}), "parts": parts,
+                                    "text": "\n\n".join(a.text for a in answered if a.text)})
+
+
 def evaluate(expr: str, values: dict[str, float]) -> float:
     """A derivation such as '(f2 / f1 - 1) * 100' over fact values: + - * / ** and parentheses only."""
 
