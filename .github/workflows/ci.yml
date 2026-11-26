@@ -34,7 +34,7 @@ jobs:
   images:
     runs-on: ubuntu-latest
     needs: verify
-    # T3-56: a PR only checks that the three images build; a push to main also stores them in GHCR as sha-<commit>.
+    # T3-59: a PR only checks that the three images build; a push to main also stores them in GHCR as sha-<commit>.
     # Deploying is outside this repo (kosis-infra): the server deploys main's newest commit only when all three exist.
     permissions:
       contents: read
