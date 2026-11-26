@@ -105,5 +105,5 @@ def test_calc_builders_write_one_format(tmp_path, monkeypatch):
     monkeypatch.setattr(multiturn, "OUT_PARAPHRASE", tmp_path / "p.jsonl")  # never touch the real dataset
     multiturn.write([], [item], tmp_path / "a.jsonl", tmp_path / "b.jsonl", out)
     assert out.read_text(encoding="utf-8") == item.model_dump_json(exclude_defaults=True) + "\n"
-    assert set(CalcItem.model_fields) == {"qid", "kind", "type", "question", "table_key", "table_sha256", "required_facts",
+    assert set(CalcItem.model_fields) == {"qid", "kind", "type", "question", "table_key", "table_keys", "table_sha256", "required_facts",
                                           "aux_facts", "allowed_reasons", "default_applied", "clarify_options", "eda_traps", "split"}

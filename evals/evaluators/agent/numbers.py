@@ -61,15 +61,21 @@ def table_key(call: dict | None) -> str | None:
     return (call.get("args") or {}).get("table_key")
 
 
-def grade_one(item: CalcItem, call: dict | None, error: str | None, cells_of: Callable[[str, frozenset[str]], dict],
+def grade_one(item: CalcItem, call: dict | list[dict] | None, error: str | None,
+              cells_of: Callable[[str, frozenset[str]], dict],
               alternate_of: AlternateOf = alternates.alternate_item) -> dict:
     """L3 grade of one summarize_stat call: against the golden table, or against the table it answered from when
-    that table is an alternate (via_alternate = passed there; graded_table names it)."""
-    answer = _as_answer(call) if call else None
+    that table is an alternate (via_alternate = passed there; graded_table names it).
+    T3-56: a multi-table item takes the turn's summarize_stat calls (a list), graded as one merged answer."""
+    if isinstance(call, list):
+        answer = calculation.merge_answers([_as_answer(c) for c in call])
+        call = call[-1] if call else None
+    else:
+        answer = _as_answer(call) if call else None
     cited = frozenset(f.source_ref for f in answer.result.facts if f.source_ref) if answer is not None else frozenset()
     alt = alternate_of(item, table_key(call), cited) if answer is not None else None
     graded = alt or item
-    g = calculation.grade(graded, answer, cells_of(graded.table_key, calculation.grade_refs(graded, answer)), error, cite=False)
+    g = calculation.grade(graded, answer, calculation.item_cells(graded, answer, cells_of), error, cite=False)
     out = {"verdict": g.verdict, "errors": g.errors}
     if alt is not None:
         out |= {"graded_table": alt.table_key, "via_alternate": g.verdict == "PASS"}
@@ -86,8 +92,10 @@ def grade_numbers(expect: TurnExpect, record: dict, calls: list[dict], calc: dic
     calc_grade = None
     stats = [c for c in calls if c["name"] == "summarize_stat"]
     if expect.calc_qid:
+        item = calc[expect.calc_qid]
         last_ok = next((c for c in reversed(stats) if c.get("status", "ok") == "ok"), None)  # = stat_answer(calls)
-        calc_grade = grade_one(calc[expect.calc_qid], last_ok, record.get("error"), cells_of, alternate_of)
+        ok = [c for c in stats if c.get("status", "ok") == "ok"]
+        calc_grade = grade_one(item, ok if len(item.tables()) > 1 else last_ok, record.get("error"), cells_of, alternate_of)
         if calc_grade["verdict"] != "PASS":
             errors.append("wrong_numbers")
     sub_grades = []
