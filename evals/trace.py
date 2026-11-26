@@ -176,7 +176,7 @@ def blame_search(row: dict, gold: set[str], k: int) -> dict | None:
     """L1 counterpart of blame() for one scored row (keys, answerable, no_answer_pred, search_spans): the node a
     Hit@k miss is lost at, or gate for a wrong no-answer call; None when the row is right.
 
-    The L1 no-answer call is the evaluator's tau on the top score, not the graph's gate, so the reason shows both.
+    The L1 no-answer call is the search's own refusal (evaluators.retrieval.refused: the gate route), no tau.
     """
     nodes = row.get("search_spans") or []
     if row["answerable"] and not any(key in gold for key in row["keys"][:k]):
@@ -187,7 +187,7 @@ def blame_search(row: dict, gold: set[str], k: int) -> dict | None:
         route = gate["attributes"].get("route") if gate else None
         what = "답 있는 질문을 거절" if row["answerable"] else "답 없는 질문에 표 안내"
         return {"stage": "no_answer", "label": NO_ANSWER_LABEL, "span": "gate" if gate else None,
-                "reason": f"{what} (tau 판정 no_answer={row['no_answer_pred']}, 그래프 gate route={route})"}
+                "reason": f"{what} (거절 판정 no_answer={row['no_answer_pred']}, 그래프 gate route={route})"}
     return None
 
 

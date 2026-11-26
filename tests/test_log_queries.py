@@ -2,6 +2,8 @@
 
 Made-up rows only (no golden question). Two KST days (11/20, 11/21), members and guests, one harness turn, a pressed-
 again feedback, feedback on an answer with no question row. "Today" is 11/23 for the filter check.
+T3-55: feedback is read from the feedback table (POST /feedback, one row per answer); feedback screen events in
+ui_events are old-client compat and never counted.
 """
 
 from __future__ import annotations
@@ -16,6 +18,7 @@ from sqlalchemy import create_engine
 from kosis_store.db import session_scope
 from kosis_store.log_metrics import (METRICS, TABS, MetricFilter, down_answers, purge_questions, query, tab)
 from kosis_store.log_models import LogBase, RequestLog, UiEvent
+from kosis_store.service_models import Feedback
 
 D20, D21, TODAY = date(2026, 11, 20), date(2026, 11, 21), date(2026, 11, 23)
 R = {n: f"{n:02d}" * 16 for n in range(1, 10)}  # request ids r1..r9 (32 hex)
@@ -38,6 +41,13 @@ def _event(kind, request_id, *, value=None, choice=None, reason=None, minute=0, 
                    request_id=request_id, props=props, reason=reason, is_internal=False)
 
 
+def _feedback(request_id, value, category, *, reason=None, day=20, pressed_again=False):
+    """The feedback table's one row of an answer (POST /feedback upserts it: updated_at is the last press)."""
+    ts = datetime(2026, 11, day, 9, 0, tzinfo=timezone.utc)
+    return Feedback(id=uuid.uuid4(), request_id=request_id, value=value, category=category, reason=reason,
+                    created_at=ts, updated_at=ts.replace(minute=2) if pressed_again else ts)
+
+
 def _rows():
     return [
         _turn(1, "A", 0, member=True, picked_key="K1", survey_name="S1", has_numbers=True, latency_ms=1000,
@@ -54,12 +64,14 @@ def _rows():
               at=_at(21, 2)),
         _turn(8, "H", 0, internal=True, picked_key="K9", has_numbers=True, latency_ms=9000),  # harness
         _turn(9, "B", 1, outcome="clarify", reason_code="ambiguous", latency_ms=800),
-        _event("feedback", R[1], value="down", choice="wrong_number", minute=1),
-        _event("feedback", R[1], value="up", choice="accurate", minute=2),  # pressed again: up counts
-        _event("feedback", R[3], value="down", choice="wrong_table", reason="표가 달라요 [전화번호]"),
-        _event("feedback", R[7], value="down", choice="wrong_number", day=21),
-        _event("feedback", R[8], value="down", choice="hard"),  # on the harness turn
-        _event("feedback", "ab" * 16, value="down", choice="hard"),  # no question row: never counted
+        _feedback(R[1], "up", "accurate_number", pressed_again=True),  # down first, then up: the row holds up
+        _feedback(R[3], "down", "wrong_table", reason="표가 달라요 [전화번호]"),
+        _feedback(R[7], "down", "wrong_number", day=21),
+        _feedback(R[8], "down", "hard"),  # on the harness turn
+        _feedback("ab" * 16, "down", "hard"),  # no question row: never counted
+        # old-client feedback screen events: accepted, never read by the metrics
+        _event("feedback", R[3], value="up", choice="accurate", minute=5),
+        _event("feedback", R[5], value="down", choice="wrong_number"),
         _event("citation_click", R[1]), _event("citation_click", R[1], minute=3), _event("citation_click", R[7], day=21),
     ]
 
@@ -100,7 +112,7 @@ def test_every_tab_metric_matches_hand_counts_for_one_day(pg):
     assert (got["latency"][0]["p50"], got["latency"][0]["p95"]) == (2000, pytest.approx(3800))
     assert got["refusal_reasons"] == [{"reason_code": "no_period", "n": 1}]
     assert got["down_reasons"] == [{"choice": "wrong_table", "n": 1}]
-    assert got["up_reasons"] == [{"choice": "accurate", "n": 1}]
+    assert got["up_reasons"] == [{"choice": "accurate_number", "n": 1}]
     assert got["failed_stages"] == [{"failed_stage": "other", "n": 1}, {"failed_stage": "stat", "n": 1}]
     assert got["top_tables"] == [{"picked_key": "K1", "survey_name": "S1", "n": 1},
                                  {"picked_key": "K2", "survey_name": "S2", "n": 1}]

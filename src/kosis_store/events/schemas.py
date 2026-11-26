@@ -1,8 +1,15 @@
-"""Response body of POST /events (docs/service/api.md 5). The events themselves: docs/log-schema.md 4."""
+"""Bodies of POST /events (docs/service/api.md 5). The events themselves: docs/log-schema.md 4."""
 
 from __future__ import annotations
 
 from pydantic import BaseModel, Field
+
+from kosis_store.log_collector import MAX_EVENTS_PER_BATCH
+
+
+class EventsRequest(BaseModel):
+    events: list[dict] = Field(max_length=MAX_EVENTS_PER_BATCH,
+                               description=f"화면 이벤트 목록(최대 {MAX_EVENTS_PER_BATCH}개). 형식은 docs/log-schema.md 4장")
 
 
 class EventsResponse(BaseModel):

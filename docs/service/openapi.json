@@ -150,7 +150,14 @@
             }
           },
           "503": {
-            "description": "에이전트를 열 수 없음 (데이터·벡터 DB·키 확인)"
+            "description": "에이전트를 열 수 없음 (데이터·벡터 DB·키 확인)",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           },
           "409": {
             "description": "회원 대화의 앞 질문에 답하는 중",
@@ -233,7 +240,7 @@
             }
           },
           "422": {
-            "description": "선택지 조합 오류(`error`) 또는 입력 형식 오류(`detail`)",
+            "description": "선택지 조합 오류(`invalid_feedback`), 끝나지 않은 답(`failed_answer`), 또는 입력 형식 오류(`detail`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -338,7 +345,7 @@
           "chat"
         ],
         "summary": "내 대화 다시 열기 (회원)",
-        "description": "저장된 질문과 그때의 `result`(답·차트·출처)를 순서대로.",
+        "description": "저장된 질문과 그때의 `result`(답·차트·출처)를 순서대로. 각 턴의 `feedback`은 그 답에 내가 남긴 마지막 피드백\n`{value, category}`, 없으면 null.",
         "operationId": "read_chat_chat__thread_id__get",
         "parameters": [
           {
@@ -554,7 +561,14 @@
             }
           },
           "503": {
-            "description": "에이전트를 열 수 없음 (데이터·벡터 DB·키 확인)"
+            "description": "에이전트를 열 수 없음 (데이터·벡터 DB·키 확인)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           },
           "409": {
             "description": "회원 대화의 앞 질문에 답하는 중",
@@ -567,7 +581,14 @@
             }
           },
           "500": {
-            "description": "실행 중 오류 (trace에 기록됨)"
+            "description": "실행 중 오류 (trace에 기록됨)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           },
           "422": {
             "description": "Validation Error",
@@ -939,7 +960,14 @@
             }
           },
           "503": {
-            "description": "에이전트를 열 수 없음 (데이터·벡터 DB·키 확인)"
+            "description": "에이전트를 열 수 없음 (데이터·벡터 DB·키 확인)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           },
           "409": {
             "description": "회원 대화의 앞 질문에 답하는 중",
@@ -952,7 +980,14 @@
             }
           },
           "500": {
-            "description": "실행 중 오류 (trace에 기록됨)"
+            "description": "실행 중 오류 (trace에 기록됨)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           },
           "422": {
             "description": "Validation Error",
@@ -973,7 +1008,7 @@
           "ops"
         ],
         "summary": "화면 이벤트 수집 (T3-48)",
-        "description": "출처 클릭·답 복사·스트림 중단·피드백(👍/👎, 이유는 가려서 저장)을 받는다. 검사에 걸린 이벤트는 사유별 건수만 남긴다.\n저장은 백그라운드라 실패해도 202를 돌려준다(화면 동작에 영향 없음). 로그 쓰기가 꺼져 있으면 검사만 한다.",
+        "description": "본문 `{\"events\": [...]}`(최대 100개). 출처 클릭·답 복사·스트림 중단을 받는다. 검사에 걸린 이벤트는 사유별 건수만\n남긴다. 저장은 백그라운드라 실패해도 202를 돌려준다(화면 동작에 영향 없음). 로그 쓰기가 꺼져 있으면 검사만 한다.\n`feedback` 이벤트는 옛 클라이언트 호환으로 받기만 하고 지표에는 쓰지 않는다. 피드백은 `POST /feedback`으로 보낸다.",
         "operationId": "events_events_post",
         "parameters": [
           {
@@ -1014,14 +1049,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "type": "array",
-                "items": {
-                  "type": "object",
-                  "additionalProperties": true
-                },
-                "maxItems": 100,
-                "description": "화면 이벤트 목록. 형식은 docs/log-schema.md 4장",
-                "title": "Batch"
+                "$ref": "#/components/schemas/EventsRequest"
               }
             }
           }
@@ -1080,7 +1108,14 @@
             }
           },
           "503": {
-            "description": "에이전트를 열 수 없음 (데이터·벡터 DB·키 확인)"
+            "description": "에이전트를 열 수 없음 (데이터·벡터 DB·키 확인)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           },
           "422": {
             "description": "Validation Error",
@@ -1126,7 +1161,14 @@
             }
           },
           "503": {
-            "description": "에이전트를 열 수 없음 (데이터·벡터 DB·키 확인)"
+            "description": "에이전트를 열 수 없음 (데이터·벡터 DB·키 확인)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           },
           "422": {
             "description": "Validation Error",
@@ -1147,7 +1189,7 @@
           "dev"
         ],
         "summary": "옛 주소 → /dev/tools/summarize_stat",
-        "description": "statistics 노드가 부르는 `summarize_stat` 툴. 숫자는 원자료에서 코드가 계산한다. 표 키가 tables.csv에 없으면\n`answer.outcome = refused` (out_of_scope).",
+        "description": "statistics 노드가 부르는 `summarize_stat` 툴. 숫자는 원자료에서 코드가 계산한다. 표 키가 레지스트리(tables.csv)에\n없으면 422 `unknown_table`.",
         "operationId": "summarize_stat_tools_summarize_stat_post",
         "requestBody": {
           "content": {
@@ -1171,17 +1213,17 @@
             }
           },
           "503": {
-            "description": "에이전트를 열 수 없음 (데이터·벡터 DB·키 확인)"
-          },
-          "422": {
-            "description": "Validation Error",
+            "description": "에이전트를 열 수 없음 (데이터·벡터 DB·키 확인)",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
+          },
+          "422": {
+            "description": "레지스트리에 없는 표 키(`unknown_table`) 또는 입력 형식 오류(`detail`)"
           }
         },
         "deprecated": true
@@ -1193,7 +1235,7 @@
           "dev"
         ],
         "summary": "표 하나로 수치 답 (실전 1)",
-        "description": "statistics 노드가 부르는 `summarize_stat` 툴. 숫자는 원자료에서 코드가 계산한다. 표 키가 tables.csv에 없으면\n`answer.outcome = refused` (out_of_scope).",
+        "description": "statistics 노드가 부르는 `summarize_stat` 툴. 숫자는 원자료에서 코드가 계산한다. 표 키가 레지스트리(tables.csv)에\n없으면 422 `unknown_table`.",
         "operationId": "summarize_stat_dev_tools_summarize_stat_post",
         "requestBody": {
           "content": {
@@ -1217,17 +1259,17 @@
             }
           },
           "503": {
-            "description": "에이전트를 열 수 없음 (데이터·벡터 DB·키 확인)"
-          },
-          "422": {
-            "description": "Validation Error",
+            "description": "에이전트를 열 수 없음 (데이터·벡터 DB·키 확인)",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
+          },
+          "422": {
+            "description": "레지스트리에 없는 표 키(`unknown_table`) 또는 입력 형식 오류(`detail`)"
           }
         }
       }
@@ -1238,7 +1280,7 @@
           "dev"
         ],
         "summary": "옛 주소 → /dev/tools/make_chart",
-        "description": "chart 노드가 부르는 `make_chart` 툴. 요청한 종류로 그릴 수 없으면 다른 종류로 그리고 `note`에 이유를 적는다.",
+        "description": "chart 노드가 부르는 `make_chart` 툴. 요청한 종류로 그릴 수 없으면 원래 종류로 그리고 `note`에 이유를 적는다.\n표 키가 레지스트리에 없으면 422 `unknown_table`.",
         "operationId": "make_chart_tools_make_chart_post",
         "requestBody": {
           "content": {
@@ -1262,17 +1304,17 @@
             }
           },
           "503": {
-            "description": "에이전트를 열 수 없음 (데이터·벡터 DB·키 확인)"
-          },
-          "422": {
-            "description": "Validation Error",
+            "description": "에이전트를 열 수 없음 (데이터·벡터 DB·키 확인)",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
+          },
+          "422": {
+            "description": "레지스트리에 없는 표 키(`unknown_table`) 또는 입력 형식 오류(`detail`)"
           }
         },
         "deprecated": true
@@ -1283,8 +1325,8 @@
         "tags": [
           "dev"
         ],
-        "summary": "차트 다시 그리기",
-        "description": "chart 노드가 부르는 `make_chart` 툴. 요청한 종류로 그릴 수 없으면 다른 종류로 그리고 `note`에 이유를 적는다.",
+        "summary": "Vega-Lite 차트",
+        "description": "chart 노드가 부르는 `make_chart` 툴. 요청한 종류로 그릴 수 없으면 원래 종류로 그리고 `note`에 이유를 적는다.\n표 키가 레지스트리에 없으면 422 `unknown_table`.",
         "operationId": "make_chart_dev_tools_make_chart_post",
         "requestBody": {
           "content": {
@@ -1308,17 +1350,17 @@
             }
           },
           "503": {
-            "description": "에이전트를 열 수 없음 (데이터·벡터 DB·키 확인)"
-          },
-          "422": {
-            "description": "Validation Error",
+            "description": "에이전트를 열 수 없음 (데이터·벡터 DB·키 확인)",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
+          },
+          "422": {
+            "description": "레지스트리에 없는 표 키(`unknown_table`) 또는 입력 형식 오류(`detail`)"
           }
         }
       }
@@ -1355,10 +1397,24 @@
             }
           },
           "503": {
-            "description": "에이전트를 열 수 없음 (데이터·벡터 DB·키 확인)"
+            "description": "에이전트를 열 수 없음 (데이터·벡터 DB·키 확인)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           },
           "404": {
-            "description": "저장된 대화 없음"
+            "description": "저장된 대화 없음",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           },
           "422": {
             "description": "Validation Error",
@@ -1404,10 +1460,24 @@
             }
           },
           "503": {
-            "description": "에이전트를 열 수 없음 (데이터·벡터 DB·키 확인)"
+            "description": "에이전트를 열 수 없음 (데이터·벡터 DB·키 확인)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           },
           "404": {
-            "description": "저장된 대화 없음"
+            "description": "저장된 대화 없음",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           },
           "422": {
             "description": "Validation Error",
@@ -2136,6 +2206,17 @@
             "type": "string",
             "format": "date-time",
             "title": "Created At"
+          },
+          "feedback": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TurnFeedback"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "이 답에 내가 남긴 마지막 피드백. 없으면 null"
           }
         },
         "type": "object",
@@ -2181,6 +2262,25 @@
         ],
         "title": "ErrorResponse",
         "description": "SSE가 아닌 엔드포인트의 오류 (docs/service/api.md 0)."
+      },
+      "EventsRequest": {
+        "properties": {
+          "events": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "maxItems": 100,
+            "title": "Events",
+            "description": "화면 이벤트 목록(최대 100개). 형식은 docs/log-schema.md 4장"
+          }
+        },
+        "type": "object",
+        "required": [
+          "events"
+        ],
+        "title": "EventsRequest"
       },
       "EventsResponse": {
         "properties": {
@@ -3846,6 +3946,36 @@
           "messages"
         ],
         "title": "ThreadState"
+      },
+      "TurnFeedback": {
+        "properties": {
+          "value": {
+            "type": "string",
+            "enum": [
+              "up",
+              "down"
+            ],
+            "title": "Value"
+          },
+          "category": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Category",
+            "description": "선택지 코드 (docs/service/api.md 3). 고르지 않고 닫았으면 null"
+          }
+        },
+        "type": "object",
+        "required": [
+          "value",
+          "category"
+        ],
+        "title": "TurnFeedback"
       },
       "ValidationError": {
         "properties": {

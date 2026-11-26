@@ -2,10 +2,11 @@ import { HelpCircle } from "lucide-react";
 
 import { Chip } from "@/components/ui/chip";
 import type { ChatResult } from "@/lib/chat/schemas";
+import type { Ask } from "@/types/chat";
 
 import { Notice } from "./notice";
 
-export function Clarify({ result, onAsk }: { result: ChatResult; onAsk?: (text: string) => void }) {
+export function Clarify({ result, onAsk }: { result: ChatResult; onAsk?: Ask }) {
   const options = result.stat_answer?.clarify_options ?? [];
   return (
     <>
@@ -14,7 +15,7 @@ export function Clarify({ result, onAsk }: { result: ChatResult; onAsk?: (text: 
       </Notice>
       {options.length > 0 && (
         <div className="flex flex-wrap gap-2">
-          {options.map((o) => <Chip key={o} onClick={onAsk && (() => onAsk(o))}>{o}</Chip>)}
+          {options.map((o) => <Chip key={o} onClick={onAsk && (() => onAsk(o, "clarify_option"))}>{o}</Chip>)}
         </div>
       )}
       <p className="text-xs text-mute">선택지에 없으면 아래 입력창에 조건을 직접 적어 주세요.</p>

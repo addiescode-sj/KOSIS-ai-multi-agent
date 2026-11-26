@@ -49,7 +49,7 @@ def test_adjudicate_never_relabels_an_unanswerable_item():
     assert warnings and "q2" in warnings[0]
 
 
-def test_l1_from_run_regrades_saved_rankings_with_the_runs_tau(tmp_path):
+def test_l1_from_run_regrades_saved_rankings_with_the_searchs_own_refusals(tmp_path):
     golden = tmp_path / "golden.jsonl"
     golden.write_text("".join(i.model_dump_json() + "\n" for i in items()), encoding="utf-8")
     run = tmp_path / "run"
@@ -58,13 +58,17 @@ def test_l1_from_run_regrades_saved_rankings_with_the_runs_tau(tmp_path):
     rows = [{"qid": "q1", "split": "test", "qtype": "concept", "answerable": True, "keys": ["u", "a"], "top_score": 0.9,
              "error": None, "search_spans": []},
             {"qid": "q2", "split": "test", "qtype": "no_answer", "answerable": False, "keys": ["z"], "top_score": 0.1,
-             "error": None, "search_spans": []}]
+             "error": None, "search_spans": [{"name": "gate", "attributes": {"route": "refuse"}}]}]
     (run / "results.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
     judged = tmp_path / "pool.csv"
     judged.write_text("qid,key,slot\nq1,a,1\n", encoding="utf-8")
     args = SimpleNamespace(golden=golden, from_run=run, retriever="ignored", k=5, tau=None, pool=judged,
                            split="test", stage="t")
     shown, summary, report = l1_retrieval.run(args)
-    assert args.retriever == "staged" and summary["tau"] == 0.5 and summary["no_answer"]["tp"] == 1
+    # no tau (2026-11-19): q2 is refused by the gate, the run's old tau is ignored
+    assert args.retriever == "staged" and "tau" not in summary and summary["no_answer"]["tp"] == 1
+    acc = summary["accuracy"]["all"]
+    assert (acc["n"], acc["correct"], acc["acc_ans"], acc["acc_una"]) == (2, 1, 0.0, 1.0)
+    assert summary["outcomes"] == {"wrong_table": 1, "refused": 1} and "전체 정답률" in report
     assert summary["metrics"]["all"]["hit@1"] == 0 and summary["metrics"]["all"]["hit@1_upper"] == 1
     assert "0.000 ~ 1.000" in report and "과거 실행 재채점" in report

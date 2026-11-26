@@ -3,9 +3,10 @@
 Every metric reads two common tables, so the filter is written once:
 - `turns`: request_logs in the KST date range of the filter, for all users / members / guests, harness and team
   traffic left out unless asked for.
-- `last_feedback`: the last feedback event of each answer (POL-007: a second press replaces the first), ordered by
-  (client_ts, received_at, event_id) over all time, joined to `turns`. The date, member flag and internal flag are the
-  question's, so "all" = members + guests.
+- `last_feedback`: the feedback table (POST /feedback, T3-55), one row per answer: a second press replaces the first
+  in place (POL-007), so the row is the last value the server received. Joined to `turns`; the date, member flag and
+  internal flag are the question's, so "all" = members + guests. `category` is read AS `choice` (the result keys stay).
+  Feedback screen events in ui_events are accepted for old clients only and are not read here.
 
 PostgreSQL only (DISTINCT ON, percentile_cont). Dates are KST; the range is turned into UTC times [start, end) so the
 created_at index is used. Numbers are computed here; screens and BI tools only read the results.
@@ -34,9 +35,7 @@ _TURNS = """turns AS (
       AND (:user = 'all' OR is_member = (:user = 'member'))
 )"""
 _LAST_FEEDBACK = """fb AS (
-    SELECT DISTINCT ON (request_id) request_id, props->>'value' AS value, props->>'choice' AS choice, reason
-    FROM ui_events WHERE event_type = 'feedback' AND request_id IS NOT NULL
-    ORDER BY request_id, client_ts DESC, received_at DESC, event_id DESC
+    SELECT request_id, value, category AS choice, reason FROM feedback
 ), last_feedback AS (
     SELECT t.*, fb.value, fb.choice, fb.reason AS feedback_reason FROM fb JOIN turns t USING (request_id)
 )"""
@@ -204,19 +203,18 @@ def down_answers(session: Session, flt: MetricFilter, *, page: int = 1, size: in
 # ---------------------------------------------------------------- data review (T3-52)
 # Review lists read request_logs directly (no `turns` CTE), so the outcome / session condition reaches the table scan and
 # the composite indexes of migration 0006 serve it: (outcome, created_at) for one outcome over a period, (session_id,
-# created_at) for one user's questions over a period. Each row gets its last feedback with one lookup on
-# ix_ui_events_request_id (same order as the T3-49 rule), so only the feedback of the listed questions is read. A
-# dedicated feedback index was measured and left out: it slowed the T3-49 metric queries (plans/T3-52.md Result).
+# created_at) for one user's questions over a period. Each row gets its feedback with one lookup on the unique
+# feedback.request_id index (one row per answer, T3-55), so only the feedback of the listed questions is read.
 _REVIEW_FILTER = """created_at >= :start AND created_at < :end
       AND (:include_internal OR NOT is_internal)
       AND (:user = 'all' OR is_member = (:user = 'member'))"""
 _REVIEW_COLUMNS = """t.request_id, t.created_at, t.conversation_id, t.turn_index, t.session_id, t.is_member, t.outcome,
            t.reason_code, t.failed_stage, t.picked_key, t.survey_name, t.question, t.rewrite_kind,
-           f.value AS feedback, f.choice AS feedback_choice"""
+           f.value AS feedback, f.category AS feedback_choice"""
+# a lateral subquery, so only value and category come in (feedback.created_at / session_id would make the unaliased
+# WHERE of _REVIEW_FILTER ambiguous)
 _REVIEW_FEEDBACK = """LEFT JOIN LATERAL (
-        SELECT e.props->>'value' AS value, e.props->>'choice' AS choice FROM ui_events e
-        WHERE e.request_id = t.request_id AND e.event_type = 'feedback' AND e.request_id IS NOT NULL
-        ORDER BY e.client_ts DESC, e.received_at DESC, e.event_id DESC LIMIT 1) f ON true"""
+        SELECT fb.value, fb.category FROM feedback fb WHERE fb.request_id = t.request_id) f ON true"""
 
 
 def _review_where(outcome: str | None, session_id) -> tuple[str, dict]:

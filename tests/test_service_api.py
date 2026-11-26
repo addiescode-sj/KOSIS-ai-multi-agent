@@ -167,6 +167,42 @@ def test_s9_feedback_right_after_the_answer(svc):
                          headers={"X-Session-Id": ME}).status_code == 200
 
 
+def _logged(svc: Service, request_id: str, outcome: str) -> None:
+    """What the user log writes for a finished question (request_logs, off the request thread)."""
+    from kosis_store.log_models import RequestLog
+
+    with session_scope(svc.store.engine) as s:
+        s.add(RequestLog(request_id=request_id, conversation_id="c", turn_index=0, outcome=outcome,
+                         reason_code="no_period" if outcome == "refused" else None,
+                         created_at=datetime.now(timezone.utc)))
+
+
+@pytest.mark.parametrize("outcome", ["failed", "error"])
+def test_feedback_on_an_answer_that_did_not_finish_is_422(svc, outcome):
+    """api.md 10 proposal 5 (T3-55): a failed answer (or a stream that ended in error) takes no feedback."""
+    rid = svc.ask()[1]["meta"]["trace_id"]
+    _logged(svc, rid, outcome)
+    res = svc.http.post("/feedback", json={"request_id": rid, "value": "down", "category": "wrong_number"},
+                        headers={"X-Session-Id": ME})
+    assert res.status_code == 422 and res.json()["error"]["code"] == "failed_answer"
+    with session_scope(svc.store.engine) as s:
+        assert s.scalar(select(Feedback)) is None
+
+
+def test_feedback_is_taken_when_the_outcome_is_known_or_not_yet(svc):
+    """Refused / clarify answers take feedback; when the log row is not written yet (or the log is off) the outcome is
+    unknown and the feedback is accepted. Someone else's failed answer is still a 404 first."""
+    refused, unknown = svc.ask()[1]["meta"]["trace_id"], svc.ask()[1]["meta"]["trace_id"]
+    _logged(svc, refused, "refused")
+    for rid in (refused, unknown):
+        assert svc.http.post("/feedback", json={"request_id": rid, "value": "up", "category": "easy"},
+                             headers={"X-Session-Id": ME}).status_code == 200
+    failed = svc.ask()[1]["meta"]["trace_id"]
+    _logged(svc, failed, "failed")
+    assert svc.http.post("/feedback", json={"request_id": failed, "value": "up"},
+                         headers={"X-Session-Id": OTHER}).status_code == 404
+
+
 def test_old_body_session_and_no_session_keep_working(svc):
     """The frontend has not moved to X-Session-Id yet: the body field and no session at all still continue."""
     thread = svc.ask(session=None)[1]["meta"]["thread_id"]

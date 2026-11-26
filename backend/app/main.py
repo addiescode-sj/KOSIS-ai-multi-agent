@@ -30,9 +30,10 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Iterator
 
-from fastapi import Body, Depends, FastAPI, Header, HTTPException, Request
+from fastapi import Depends, FastAPI, Header, Request
 from fastapi.responses import JSONResponse, Response
 from fastapi.sse import EventSourceResponse, ServerSentEvent
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from langchain_core.messages import HumanMessage
 from langchain_core.tools import BaseTool
 from opentelemetry.trace import Span, Tracer
@@ -49,10 +50,10 @@ from kosis_agent.services.statistics import make_summarize_stat_tool
 from kosis_rag.schemas.io import SearchOutput
 from kosis_store.auth.schemas import MeResponse, MeUpdate
 from kosis_store.chat.schemas import (ChatRequest, ChatResponse, ConversationDetail, ConversationItem,
-                                      ConversationList, ConversationTurn, ThreadMessage, ThreadState)
-from kosis_store.events.schemas import EventsResponse
+                                      ConversationList, ConversationTurn, ThreadMessage, ThreadState, TurnFeedback)
+from kosis_store.events.schemas import EventsRequest, EventsResponse
 from kosis_store.feedback.schemas import FeedbackRequest, FeedbackResponse
-from kosis_store.log_collector import MAX_EVENTS_PER_BATCH, TurnLogCollector
+from kosis_store.log_collector import TurnLogCollector
 from kosis_store.masking import mask
 from kosis_store.schemas import ErrorResponse
 from kosis_store.service_models import FEEDBACK_CATEGORIES
@@ -109,6 +110,21 @@ def _api_error(_: Request, e: ApiError) -> JSONResponse:
     return JSONResponse({"error": {"code": e.code, "message": e.message}}, status_code=e.status)
 
 
+# codes of the HTTP errors raised outside ApiError (unknown paths, wrong methods, a library's HTTPException)
+HTTP_CODES = {400: "bad_request", 401: "login_required", 403: "forbidden", 404: "not_found",
+              405: "method_not_allowed", 409: "conflict", 429: "too_many_requests", 500: "internal_error",
+              503: "unavailable"}
+
+
+@app.exception_handler(StarletteHTTPException)
+def _http_error(_: Request, e: StarletteHTTPException) -> JSONResponse:
+    """Every other HTTP error in the same shape as ApiError (api.md 0); the status code is kept. Input validation
+    keeps FastAPI's 422 body ({"detail": [...]}, api.md 0)."""
+    message = e.detail if isinstance(e.detail, str) else "요청을 처리하지 못했습니다."
+    return JSONResponse({"error": {"code": HTTP_CODES.get(e.status_code, f"http_{e.status_code}"), "message": message}},
+                        status_code=e.status_code, headers=getattr(e, "headers", None))
+
+
 @app.middleware("http")
 async def _dev_routes_gate(request: Request, call_next):
     """KOSIS_DISABLE_DEV_ROUTES=1 (deployment): /dev/* and the old developer paths answer 404 (api.md 1, 8)."""
@@ -124,7 +140,8 @@ _agent: tuple[Any, dict[str, BaseTool]] | None = None
 _store: ServiceStore | None = None
 _checkpointer: Any = None
 _lock = threading.Lock()
-UNAVAILABLE = {503: {"description": "에이전트를 열 수 없음 (데이터·벡터 DB·키 확인)"}}
+UNAVAILABLE = {503: {"description": "에이전트를 열 수 없음 (데이터·벡터 DB·키 확인)", "model": ErrorResponse}}
+UNKNOWN_TABLE = {422: {"description": "레지스트리에 없는 표 키(`unknown_table`) 또는 입력 형식 오류(`detail`)"}}
 BUSY = {409: {"description": "회원 대화의 앞 질문에 답하는 중", "model": ErrorResponse}}
 
 
@@ -206,12 +223,41 @@ def _loaded() -> tuple[Any, dict[str, BaseTool]]:
             try:
                 _agent = _build(checkpointer)
             except Exception as e:  # noqa: BLE001 - any load failure means the agent is unavailable
-                raise HTTPException(503, f"agent not available: {e}") from e
+                log.warning("agent not available: %s", e)
+                raise ApiError(503, "unavailable",
+                               f"에이전트를 열 수 없습니다. 잠시 뒤 다시 시도해 주세요. ({type(e).__name__})") from e
         return _agent
 
 
 def get_graph():
     return _loaded()[0]
+
+
+_table_keys: frozenset[str] | None = None
+
+
+def get_table_keys() -> frozenset[str] | None:
+    """FastAPI dependency: the keys of the table registry (tables.csv), read once. None when it cannot be read: the
+    tools then answer as before (summarize_stat refuses an unknown key as out_of_scope)."""
+    global _table_keys
+    if _table_keys is None:
+        import csv
+
+        from kosis_ai import paths
+
+        try:
+            with (paths.data_dir() / "tables.csv").open(encoding="utf-8-sig", newline="") as f:
+                _table_keys = frozenset(r["key"] for r in csv.DictReader(f) if r.get("key"))
+        except (OSError, KeyError, LookupError) as e:
+            log.warning("table registry not read: %s", type(e).__name__)
+            return None
+    return _table_keys
+
+
+def _registered(table_key: str, keys: frozenset[str] | None) -> None:
+    """api.md 0: a table key that is not in the registry is a 422, not a refusal."""
+    if keys is not None and table_key not in keys:
+        raise ApiError(422, "unknown_table", f"등록되지 않은 표 키입니다: {table_key}")
 
 
 def get_tools() -> dict[str, BaseTool]:
@@ -487,7 +533,8 @@ def chat_stream(req: ChatRequest, graph=Depends(get_graph), tracer: Tracer = Dep
 
 @app.post("/feedback", tags=["feedback"], summary="피드백 저장 (👍/👎 · 선택지 · 이유)", response_model=FeedbackResponse,
           responses={404: {"description": "없거나 남의 요청, 또는 24시간 지남", "model": ErrorResponse},
-                     422: {"description": "선택지 조합 오류(`error`) 또는 입력 형식 오류(`detail`)", "content": {
+                     422: {"description": "선택지 조합 오류(`invalid_feedback`), 끝나지 않은 답(`failed_answer`), "
+                                          "또는 입력 형식 오류(`detail`)", "content": {
                          "application/json": {"schema": {"anyOf": [{"$ref": "#/components/schemas/ErrorResponse"},
                                                                    {"$ref": "#/components/schemas/HTTPValidationError"}]}}}},
                      429: {"description": "같은 IP 분당 10회 초과", "model": ErrorResponse}})
@@ -511,10 +558,25 @@ def feedback(req: FeedbackRequest, request: Request, store: ServiceStore = Depen
         mine = owner[0] == session and _now() - owner[1] <= FEEDBACK_WINDOW
     if not mine:
         raise ApiError(404, "not_found", "피드백을 남길 답을 찾을 수 없습니다.")
+    if _outcome(store, req.request_id) in NO_FEEDBACK_OUTCOMES:
+        raise ApiError(422, "failed_answer", "답을 마치지 못한 응답에는 피드백을 남길 수 없습니다.")
     reason = mask(req.reason.strip()) if req.reason and req.reason.strip() else None
     feedback_id, updated = store.save_feedback(req.request_id, session, req.value, req.category, reason, _now(),
                                                owner[2])
     return FeedbackResponse(feedback_id=feedback_id, updated=updated)
+
+
+# api.md 10 proposal 5: an answer that did not finish takes no feedback (failed result, or the stream ended in error)
+NO_FEEDBACK_OUTCOMES = ("failed", "error")
+
+
+def _outcome(store: Any, request_id: str) -> str | None:
+    """The question's logged outcome; None when it is not known (log off, row not written yet, store error): accepted."""
+    try:
+        return store.request_outcome(request_id)
+    except Exception as e:  # noqa: BLE001 - the check is a guard, not a reason to refuse
+        log.warning("outcome not checked: %s", type(e).__name__)
+        return None
 
 
 FEEDBACK_PER_MINUTE = 10
@@ -585,15 +647,23 @@ def list_chats(cursor: str | None = None, member: Member = Depends(require_membe
          responses={**LOGIN_REQUIRED, 404: {"description": "없거나 남의 대화", "model": ErrorResponse}})
 def read_chat(thread_id: str, member: Member = Depends(require_member),
               store: ServiceStore = Depends(get_store)) -> ConversationDetail:
-    """저장된 질문과 그때의 `result`(답·차트·출처)를 순서대로."""
+    """저장된 질문과 그때의 `result`(답·차트·출처)를 순서대로. 각 턴의 `feedback`은 그 답에 내가 남긴 마지막 피드백
+    `{value, category}`, 없으면 null."""
     found = store.conversation(thread_id, member.id)
     if found is None:
         raise ApiError(404, "not_found", "대화를 찾을 수 없습니다.")
     conv, messages = found
     questions = {m.turn: m.content for m in messages if m.role == "user"}
+    answers = [m for m in messages if m.role == "assistant"]
+    votes = store.feedback_of([rid for m in answers if (rid := (m.result or {}).get("request_id"))], member.id)
+
+    def vote(m) -> TurnFeedback | None:
+        found = votes.get((m.result or {}).get("request_id"))
+        return TurnFeedback(value=found[0], category=found[1]) if found else None
+
     return ConversationDetail(id=conv.id, title=conv.title or "", turns=[
-        ConversationTurn(turn=m.turn, question=questions.get(m.turn, ""), result=m.result or {}, created_at=m.created_at)
-        for m in messages if m.role == "assistant"])
+        ConversationTurn(turn=m.turn, question=questions.get(m.turn, ""), result=m.result or {}, created_at=m.created_at,
+                         feedback=vote(m)) for m in answers])
 
 
 # ---------------------------------------------------------------- login (docs/service/api.md 6)
@@ -682,9 +752,9 @@ def withdraw(member: Member = Depends(require_member), store: ServiceStore = Dep
 
 
 @app.post("/dev/chat", tags=["dev"], summary="에이전트 답변 (한 번에)", response_model=ChatResponse,
-          responses={**UNAVAILABLE, **BUSY, 500: {"description": "실행 중 오류 (trace에 기록됨)"}})
+          responses={**UNAVAILABLE, **BUSY, 500: {"description": "실행 중 오류 (trace에 기록됨)", "model": ErrorResponse}})
 @app.post("/chat", tags=["dev"], summary="옛 주소 → /dev/chat", response_model=ChatResponse, deprecated=True,
-          responses={**UNAVAILABLE, **BUSY, 500: {"description": "실행 중 오류 (trace에 기록됨)"}})
+          responses={**UNAVAILABLE, **BUSY, 500: {"description": "실행 중 오류 (trace에 기록됨)", "model": ErrorResponse}})
 def chat(req: ChatRequest, graph=Depends(get_graph), tracer: Tracer = Depends(telemetry.get_tracer),
          collector: TurnLogCollector | None = Depends(telemetry.get_collector),
          store: ServiceStore = Depends(get_store), turn: Turn = Depends(begin_turn),
@@ -712,7 +782,7 @@ def chat(req: ChatRequest, graph=Depends(get_graph), tracer: Tracer = Depends(te
         return ChatResponse(thread_id=thread, trace_id=request_id, expired=opened.expired, result=result)
     except Exception as e:
         _fail(root, e)
-        raise HTTPException(500, f"{type(e).__name__}: {e}  (trace_id {request_id})") from e
+        raise ApiError(500, "internal_error", f"{type(e).__name__}: {e}  (trace_id {request_id})") from e
     finally:
         root.end()
         _end_turn(store, turn, graph)
@@ -721,15 +791,15 @@ def chat(req: ChatRequest, graph=Depends(get_graph), tracer: Tracer = Depends(te
 
 
 @app.post("/events", tags=["ops"], summary="화면 이벤트 수집 (T3-48)", response_model=EventsResponse, status_code=202)
-def events(batch: list[dict] = Body(..., max_length=MAX_EVENTS_PER_BATCH,
-                                    description="화면 이벤트 목록. 형식은 docs/log-schema.md 4장"),
-           collector: TurnLogCollector | None = Depends(telemetry.get_collector),
+def events(body: EventsRequest, collector: TurnLogCollector | None = Depends(telemetry.get_collector),
            x_internal: str | None = Header(default=None),
            x_kosis_internal: str | None = Header(default=None)) -> EventsResponse:
-    """출처 클릭·답 복사·스트림 중단·피드백(👍/👎, 이유는 가려서 저장)을 받는다. 검사에 걸린 이벤트는 사유별 건수만 남긴다.
-    저장은 백그라운드라 실패해도 202를 돌려준다(화면 동작에 영향 없음). 로그 쓰기가 꺼져 있으면 검사만 한다."""
+    """본문 `{"events": [...]}`(최대 100개). 출처 클릭·답 복사·스트림 중단을 받는다. 검사에 걸린 이벤트는 사유별 건수만
+    남긴다. 저장은 백그라운드라 실패해도 202를 돌려준다(화면 동작에 영향 없음). 로그 쓰기가 꺼져 있으면 검사만 한다.
+    `feedback` 이벤트는 옛 클라이언트 호환으로 받기만 하고 지표에는 쓰지 않는다. 피드백은 `POST /feedback`으로 보낸다."""
     from kosis_store.log_collector import check_events
 
+    batch = body.events
     internal = _internal(x_internal, x_kosis_internal)
     if collector is None:
         rows, rejects = check_events(batch, _now(), is_internal=internal)
@@ -749,38 +819,41 @@ def search_tables(req: SearchRequest, tools=Depends(get_tools),
 
 
 @app.post("/dev/tools/summarize_stat", tags=["dev"], summary="표 하나로 수치 답 (실전 1)", response_model=StatResponse,
-          responses=UNAVAILABLE)
+          responses={**UNAVAILABLE, **UNKNOWN_TABLE})
 @app.post("/tools/summarize_stat", tags=["dev"], summary="옛 주소 → /dev/tools/summarize_stat",
-          response_model=StatResponse, responses=UNAVAILABLE, deprecated=True)
-def summarize_stat(req: StatRequest, tools=Depends(get_tools),
-                   tracer: Tracer = Depends(telemetry.get_tracer)) -> StatResponse:
-    """statistics 노드가 부르는 `summarize_stat` 툴. 숫자는 원자료에서 코드가 계산한다. 표 키가 tables.csv에 없으면
-    `answer.outcome = refused` (out_of_scope)."""
+          response_model=StatResponse, responses={**UNAVAILABLE, **UNKNOWN_TABLE}, deprecated=True)
+def summarize_stat(req: StatRequest, tools=Depends(get_tools), tracer: Tracer = Depends(telemetry.get_tracer),
+                   keys: frozenset[str] | None = Depends(get_table_keys)) -> StatResponse:
+    """statistics 노드가 부르는 `summarize_stat` 툴. 숫자는 원자료에서 코드가 계산한다. 표 키가 레지스트리(tables.csv)에
+    없으면 422 `unknown_table`."""
+    _registered(req.table_key, keys)
     out = _run_tool(tracer, "summarize_stat", tools, {"question": req.question, "table_key": req.table_key})
     chart = out.chart.model_dump(mode="json") if out.chart is not None else None
     return StatResponse(answer=out.answer, chart=chart)
 
 
-@app.post("/dev/tools/make_chart", tags=["dev"], summary="차트 다시 그리기", response_model=ChartResponse,
-          responses=UNAVAILABLE)
+@app.post("/dev/tools/make_chart", tags=["dev"], summary="Vega-Lite 차트", response_model=ChartResponse,
+          responses={**UNAVAILABLE, **UNKNOWN_TABLE})
 @app.post("/tools/make_chart", tags=["dev"], summary="옛 주소 → /dev/tools/make_chart", response_model=ChartResponse,
-          responses=UNAVAILABLE, deprecated=True)
-def make_chart(req: ChartRequest, tools=Depends(get_tools),
-               tracer: Tracer = Depends(telemetry.get_tracer)) -> ChartResponse:
-    """chart 노드가 부르는 `make_chart` 툴. 요청한 종류로 그릴 수 없으면 다른 종류로 그리고 `note`에 이유를 적는다."""
+          responses={**UNAVAILABLE, **UNKNOWN_TABLE}, deprecated=True)
+def make_chart(req: ChartRequest, tools=Depends(get_tools), tracer: Tracer = Depends(telemetry.get_tracer),
+               keys: frozenset[str] | None = Depends(get_table_keys)) -> ChartResponse:
+    """chart 노드가 부르는 `make_chart` 툴. 요청한 종류로 그릴 수 없으면 원래 종류로 그리고 `note`에 이유를 적는다.
+    표 키가 레지스트리에 없으면 422 `unknown_table`."""
+    _registered(req.table_key, keys)
     return ChartResponse(**_run_tool(tracer, "make_chart", tools, req.model_dump()))
 
 
 @app.get("/dev/threads/{thread_id}", tags=["dev"], summary="대화 상태", response_model=ThreadState,
-         responses={**UNAVAILABLE, 404: {"description": "저장된 대화 없음"}})
+         responses={**UNAVAILABLE, 404: {"description": "저장된 대화 없음", "model": ErrorResponse}})
 @app.get("/threads/{thread_id}", tags=["dev"], summary="옛 주소 → /dev/threads/{thread_id}", response_model=ThreadState,
-         responses={**UNAVAILABLE, 404: {"description": "저장된 대화 없음"}}, deprecated=True)
+         responses={**UNAVAILABLE, 404: {"description": "저장된 대화 없음", "model": ErrorResponse}}, deprecated=True)
 def thread_state(thread_id: str, graph=Depends(get_graph)) -> ThreadState:
     """checkpointer에 저장된 이 대화의 메시지와 지금 보고 있는 표. 세션 검사가 없으므로 배포에서는 막는다."""
     state = _snapshot(graph, thread_id)
     messages = state.get("messages") or []
     if not messages:
-        raise HTTPException(404, f"no conversation {thread_id!r}")
+        raise ApiError(404, "not_found", f"저장된 대화가 없습니다: {thread_id}")
     return ThreadState(thread_id=thread_id, turns=sum(isinstance(m, HumanMessage) for m in messages),
                        active_table=state.get("active_table"),
                        messages=[ThreadMessage(role="user" if isinstance(m, HumanMessage) else "assistant",

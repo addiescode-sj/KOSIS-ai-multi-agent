@@ -9,7 +9,7 @@ import { cn } from "cn";
 import { AccountCard } from "@/components/account/account-card";
 import { AccountMenu } from "@/components/account/account-menu";
 import { AuthNotice } from "@/components/account/auth-notice";
-import { GuestLoginCard } from "@/components/account/guest-login-card";
+import { LOGIN_PROMPT, LoginPrompt, LoginPromptLayout } from "@/components/account/login-prompt";
 import { KakaoLoginButton } from "@/components/account/kakao-login-button";
 import { useAuth } from "@/lib/auth/use-me";
 
@@ -72,7 +72,7 @@ export function AppShell({ title, sub, actions, query, children }: {
           </Link>
         </nav>
         <div className="border-t border-line p-4">
-          {auth.status === "member" ? <AccountCard /> : auth.status === "error" ? <AuthNotice message={auth.message} /> : <GuestLoginCard />}
+          {auth.status === "member" ? <AccountCard /> : auth.status === "error" ? <AuthNotice message={auth.message} /> : <LoginPrompt layout={LoginPromptLayout.SIDEBAR} message={LOGIN_PROMPT.GUEST_TAB} />}
         </div>
       </aside>
       <div className="flex min-w-0 flex-1 flex-col">
