@@ -21,7 +21,7 @@
 - multi      멀티쿼리 턴(T3-28): 하위 질문마다 search_tables → summarize_stat을 부른다. 모두 같은 표를 찾으면 원문
              한 번으로 실전 1에 묻는다(같은 표 비교는 실전 1 compare가 답함). 계산 요청이면 combine_values 툴(코드 계산).
 - chart      사용자가 차트를 요청했으면 make_chart 툴로 요청한 종류를 그리고, 아니면 실전 1이 준 ChartSpec을
-             그대로 Vega-Lite로 바꾼다(툴 아님: 요청하지 않은 툴 호출은 하네스가 extra_call로 감점).
+             그대로 보낸다(툴 아님: 요청하지 않은 툴 호출은 하네스가 extra_call로 감점). Vega-Lite는 없다(KOS-202).
 - finalize   outcome과 답 메시지를 정한다. 답 문장은 실전 1·2가 만든 것이나 코드 고정 문장만 쓴다(LLM 문장 생성 없음).
 
 노드는 실전 1·2를 직접 부르지 않고 LangChain 툴을 거친다. 그래서 `execute_tool <name>` span이 생기고, T3-06 agent
@@ -44,7 +44,7 @@ from kosis_agent.graph.context import LLMReader, Mode, chart_request, read_turn
 from kosis_agent.graph.multiquery import SplitReader, split_question
 from kosis_agent.graph.state import AgentState
 from kosis_agent.retrieval.search import make_search_tables_tool
-from kosis_agent.services.chart import CHART_NAMES, make_chart_tool, to_vega_lite
+from kosis_agent.services.chart import CHART_NAMES, chart_payload, make_chart_tool
 from kosis_agent.services.combine import combine_text, make_combine_values_tool
 from kosis_agent.services.statistics import make_summarize_stat_tool
 from kosis_chat.api import summarize_stat_run
@@ -277,11 +277,11 @@ def build_graph(search: Any, stat_llm: StatLLMConfig, *, retry_interval: float =
         else:
             spec, key = state["stat"].chart, state["table_key"]
         if not state["chart_requested"]:
-            return {"chart": to_vega_lite(spec)}
+            return {"chart": chart_payload(spec)}
         args = {"table_key": key, "chart": spec.model_dump(mode="json") if spec else None,
                 "chart_type": state.get("chart_type")}
         out = call_tool(make_chart, args, config).artifact
-        return {"chart": out["vega_lite"], "chart_note": out["note"]}
+        return {"chart": out["chart"], "chart_note": out["note"]}
 
     def finalize_node(state: AgentState) -> dict:
         """outcome과 답 메시지를 정한다. 답한 표는 다음 턴의 "그 표"(active_table)가 되고, 해석된 질문과 차트 데이터는

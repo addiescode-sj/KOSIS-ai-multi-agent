@@ -19,7 +19,7 @@ export const ANSWERED = {
   no_answer_reason: null,
   outcome: "answered",
   answer: "101_DT_A: 100명\n\n출처: KOSIS / 조사 / 표 DT_A",
-  chart: null as Record<string, unknown> | null, // set below to the phase 1 line spec
+  chart: null as Record<string, unknown> | null, // set below to the line chart data
   stat_answer: {
     outcome: "answered", query: null, text: "101_DT_A: 100명\n\n출처: KOSIS / 조사 / 표 DT_A",
     result: { facts: [{ id: "f1", value: 100.0, unit: "명", period: "2024", dims: null, source_ref: "DT_A|T1|11|2024",
@@ -84,115 +84,42 @@ export const CHART_FAILED = {
   chart_note: "원 그래프는 비율 자료에만 그릴 수 있어요.", stat_answer: null,
 };
 
-// ---------------------------------------------------------------- phase 1 Vega-Lite specs (T3-11 Change 1)
-// Built the way kosis_chat/chart/vega.py `to_vega` builds them at the pinned commit 907b703 (_bars, _timeline,
-// _draw_line, _draw_pie, _draw_grid): same field names, layers, encodings and sorts. Values are test values.
+// ---------------------------------------------------------------- chart data (ChartSpec JSON, T3-02 / KOS-202)
+// Shaped like kosis_chat/chart/module.py `chart_data` (phase 1 T1-32): kind, title, unit, series[].points[] with the
+// display strings and highlights the backend wrote, fact_ids, bar orientation and sort. Values are test values.
 
-const SCHEMA = "https://vega.github.io/schema/vega-lite/v5.json";
-const HIGHLIGHT = "#2f6db5", OTHER = "#b8c4d6";
-const vlBase = (title: string, values: Record<string, unknown>[]) => ({
-  $schema: SCHEMA, title, width: 360, data: { values },
-  config: { font: "sans-serif", axis: { labelFontSize: 11, titleFontSize: 11 } },
+type Pt = { label: string; value: number | null; display: string; fact_id?: string | null; period?: string | null; highlight?: boolean; share_pct?: number | null };
+const pt = (label: string, value: number | null, display: string, highlight = false, extra: Partial<Pt> = {}): Pt => ({
+  label, value, display, fact_id: null, period: null, highlight, share_pct: null, ...extra,
 });
-const color = { field: "강조", type: "nominal", legend: null, scale: { domain: ["예", "아니오"], range: [HIGHLIGHT, OTHER] } };
-const tooltip = [{ field: "이름", type: "nominal" }, { field: "표시", type: "nominal", title: "값" }];
-const row = (이름: string, 값: number | null, 표시: string, 강조 = false) => ({ 이름, 값, 표시, 강조: 강조 ? "예" : "아니오" });
+const spec = (kind: string, title: string, unit: string | null, series: [string, Pt[]][], layout: Record<string, unknown> = {}) => ({
+  kind, title, unit, series: series.map(([name, points]) => ({ name, points })), fact_ids: ["f1"],
+  orientation: null, sort: null, pattern: null, ...layout,
+});
 
-function bars(title: string, rows: Record<string, unknown>[], unit: string, sort: unknown = "-x", horizontal = true) {
-  const value = { field: "값", type: "quantitative", title: `값 (${unit})` };
-  const name = { field: "이름", type: "nominal", title: null, sort, axis: { labelAngle: 0, labelLimit: 160 } };
-  const enc = horizontal ? { y: name, x: value } : { x: name, y: value };
-  return {
-    ...vlBase(title, rows),
-    layer: [
-      { mark: { type: "bar" }, encoding: { ...enc, color, tooltip } },
-      { mark: horizontal ? { type: "text", align: "left", dx: 3 } : { type: "text", dy: -6 }, encoding: { ...enc, text: { field: "표시" } } },
-    ],
-    ...(horizontal ? { height: { step: 22 } } : {}),
-  };
-}
+const BARS = [pt("세종", 0.97, "0.97명"), pt("서울", 0.55, "0.55명", true), pt("부산", 0.66, "0.66명")];
+const GRID: [string, Pt[]][] = [
+  ["서울", [pt("2022", 0.59, "0.59명", false, { period: "2022" }), pt("2023", 0.55, "0.55명", false, { period: "2023" })]],
+  ["부산", [pt("2022", 0.72, "0.72명", false, { period: "2022" }), pt("2023", 0.66, "0.66명", false, { period: "2023" })]],
+];
 
-const BAR_ROWS = [row("세종", 0.97, "0.97명"), row("서울", 0.55, "0.55명", true), row("부산", 0.66, "0.66명")];
-
-export const VEGA = {
-  bar: bars("2023년 시도별 합계출산율", BAR_ROWS, "명"),
-  barVertical: bars("2023년 시도별 합계출산율", BAR_ROWS, "명", ["서울", "부산", "세종"], false),
-  timeline: (() => {
-    const rows = [row("2021", 260562, "260,562명"), row("2022", 249186, "249,186명"), row("2023", 230028, "230,028명", true)];
-    const x = { field: "이름", type: "ordinal", title: null, sort: null, axis: { labelAngle: 0 } };
-    const y = { field: "값", type: "quantitative", title: "값 (명)" };
-    return {
-      ...vlBase("출생아 수", rows),
-      layer: [
-        { mark: { type: "bar" }, encoding: { x, y, color, tooltip } },
-        { transform: [{ filter: "datum['강조'] == '예'" }], mark: { type: "text", dy: -6 }, encoding: { x, y, text: { field: "표시" } } },
-      ],
-      width: 360,
-    };
-  })(),
-  line: (() => {
-    // rows out of period order on purpose: the ordinal axis sorts them ascending
-    const rows = [
-      { 시점: "2023", ...row("2023", 0.72, "0.72명", true) },
-      { 시점: "2021", ...row("2021", 0.81, "0.81명") },
-      { 시점: "2022", ...row("2022", 0.78, "0.78명") },
-    ];
-    const x = { field: "시점", type: "ordinal", title: null, axis: { labelAngle: 0 } };
-    const y = { field: "값", type: "quantitative", title: "값 (명)", scale: { zero: false } };
-    return {
-      ...vlBase("합계출산율 추이", rows),
-      layer: [
-        { mark: { type: "line", color: OTHER }, encoding: { x, y } },
-        { mark: { type: "point", filled: true, size: 60 }, encoding: { x, y, color, tooltip } },
-        { transform: [{ filter: "datum['강조'] == '예'" }], mark: { type: "text", dy: -10 }, encoding: { x, y, text: { field: "표시" } } },
-      ],
-    };
-  })(),
-  pie: (() => {
-    const rows = [
-      { ...row("1인 가구", 7.5, "750만 가구", true), 비중: 35.5, 순서: 0 },
-      { ...row("그 외", 13.6, "1,360만 가구"), 비중: 64.5, 순서: 1 },
-    ];
-    const spec: Record<string, unknown> = vlBase("1인 가구 비중", rows);
-    delete spec.width; // _draw_pie pops the width
-    return {
-      ...spec,
-      layer: [{ mark: { type: "arc", innerRadius: 50, stroke: "white" }, encoding: {
-        theta: { field: "값", type: "quantitative", stack: true },
-        color: { field: "이름", type: "nominal", title: null, sort: ["1인 가구", "그 외"], scale: { range: [HIGHLIGHT, OTHER] } },
-        order: { field: "순서", type: "quantitative" },
-        tooltip: [...tooltip, { field: "비중", type: "quantitative", title: "비중(%)" }],
-      } }],
-    };
-  })(),
-  ...(() => {
-    const series = [["서울", [["2022", 0.59, "0.59명"], ["2023", 0.55, "0.55명"]]], ["부산", [["2022", 0.72, "0.72명"], ["2023", 0.66, "0.66명"]]]] as const;
-    const rows = series.flatMap(([name, pts]) => pts.map(([period, v, d]) => ({ 대상: name, 시점: period, ...row(period, v, d), 이름: name })));
-    const y = { field: "값", type: "quantitative", title: "값 (명)" };
-    const colorBy = { field: "대상", type: "nominal", title: null };
-    const tip = [{ field: "대상", type: "nominal" }, { field: "시점", type: "ordinal" }, { field: "표시", type: "nominal", title: "값" }];
-    return {
-      grouped_bar: { ...vlBase("시도별 합계출산율", rows), mark: { type: "bar" }, encoding: {
-        x: { field: "시점", type: "ordinal", title: null, axis: { labelAngle: 0 } }, xOffset: { field: "대상" }, y, color: colorBy, tooltip: tip } },
-      multi_line: { ...vlBase("시도별 합계출산율", rows), mark: { type: "line", point: true }, encoding: {
-        x: { field: "시점", type: "ordinal", title: null, sort: null }, y: { ...y, scale: { zero: false } }, color: colorBy, tooltip: tip } },
-    };
-  })(),
-  // Built the way services/chart.py `_draw_stacked` (T3-02) builds it: per period the share fact and its rest to 100
-  stacked_bar: (() => {
-    const part = "서울 1인 가구";
-    const rows = [["2015년", 29.5, 70.5], ["2023년", 39.3, 60.7]].flatMap(([시점, v, rest]) => [
-      { 시점, 구분: part, 값: v, 표시: `${v}%`, 순서: 0 },
-      { 시점, 구분: "그 외", 값: rest, 표시: `${rest}%`, 순서: 1 },
-    ]);
-    return { ...vlBase("서울 1인 가구 비중 비교", rows), mark: { type: "bar" }, encoding: {
-      x: { field: "시점", type: "ordinal", title: null, sort: null, axis: { labelAngle: 0 } },
-      y: { field: "값", type: "quantitative", title: "값 (%)", stack: "zero", scale: { domain: [0, 100] } },
-      color: { field: "구분", type: "nominal", title: null, sort: [part, "그 외"], scale: { domain: [part, "그 외"], range: [HIGHLIGHT, OTHER] } },
-      order: { field: "순서", type: "quantitative" },
-      tooltip: [{ field: "시점", type: "ordinal" }, { field: "구분", type: "nominal" }, { field: "표시", type: "nominal", title: "값" }],
-    } };
-  })(),
+export const CHARTS = {
+  bar: spec("bar", "2023년 시도별 합계출산율", "명", [["s", BARS]], { orientation: "horizontal", sort: "-x" }),
+  barVertical: spec("bar", "2023년 시도별 합계출산율", "명", [["s", BARS]], { orientation: "vertical", sort: ["서울", "부산", "세종"] }),
+  timeline: spec("timeline", "출생아 수", "명", [["s", [pt("2021", 260562, "260,562명"), pt("2022", 249186, "249,186명"),
+    pt("2023", 230028, "230,028명", true)]]]),
+  // points out of period order on purpose: a line is drawn by period ascending
+  line: spec("line", "합계출산율 추이", "명", [["s", [pt("2023", 0.72, "0.72명", true, { period: "2023" }),
+    pt("2021", 0.81, "0.81명", false, { period: "2021" }), pt("2022", 0.78, "0.78명", false, { period: "2022" })]]]),
+  pie: spec("pie", "1인 가구 비중", "만 가구", [["s", [pt("1인 가구", 7.5, "750만 가구", true, { share_pct: 35.5 }),
+    pt("그 외", 13.6, "1,360만 가구", false, { share_pct: 64.5 })]]]),
+  grouped_bar: spec("grouped_bar", "시도별 합계출산율", "명", GRID),
+  multi_line: spec("multi_line", "시도별 합계출산율", "명", GRID),
+  // a stacked bar: the share facts, then the rest to 100 the backend added as the second series (chart_data)
+  stacked_bar: spec("stacked_bar", "서울 1인 가구 비중 비교", "%", [
+    ["서울 1인 가구", [pt("2015년", 29.5, "29.5%", true, { period: "2015" }), pt("2023년", 39.3, "39.3%", false, { period: "2023" })]],
+    ["그 외", [pt("2015년", 70.5, "70.5%", false, { period: "2015" }), pt("2023년", 60.7, "60.7%", false, { period: "2023" })]],
+  ]),
 };
 
-ANSWERED.chart = VEGA.line;
+ANSWERED.chart = CHARTS.line;

@@ -3,7 +3,7 @@
 정하는 것은 네 가지다(Reading):
 - use_previous_table : 검색 없이 직전 턴의 표(active_table)를 다시 쓸지
 - resolved_question  : 실전 1에 넘길 문장 (이월이면 직전 질문에 이번 조건을 채운 독립 질문, 아니면 원문)
-- chart_type         : 요청한 차트 종류 (bar | line | pie, 종류 말이 없으면 None)
+- chart_type         : 요청한 차트 종류 (bar | line | pie | stacked, 종류 말이 없으면 None)
 - chart_only         : 숫자는 그대로 두고 차트만 다시 그려 달라는 요청인지
 
 해석 방식 (plans/T3-27.md 옵션 B, `mode`로 바꿈):
@@ -44,7 +44,7 @@ from pydantic import BaseModel, Field
 from kosis_rag.parse.schemas import ParsedQuery
 from kosis_rag.shared.vocab import SIDO
 
-ChartType = Literal["bar", "line", "pie"]
+ChartType = Literal["bar", "line", "pie", "stacked"]
 Mode = Literal["rules", "hybrid", "llm"]
 
 # ---------------------------------------------------------------- 지시어 (T3-23)
@@ -65,7 +65,8 @@ def refers_to_previous_table(question: str) -> bool:
 
 # ---------------------------------------------------------------- 차트 요청 (T3-27)
 CHART_WORDS = re.compile(r"그래프|차트|시각화|그려|막대|꺾은선|선\s*그래프|원형|파이|도표")
-CHART_KINDS: list[tuple[re.Pattern, ChartType]] = [  # 먼저 맞는 것이 이긴다
+CHART_KINDS: list[tuple[re.Pattern, ChartType]] = [  # 먼저 맞는 것이 이긴다 ("누적 막대"는 누적. "누적 확진자"는 차트 말이 아님)
+    (re.compile(r"누적\s*(막대|바|그래프|차트)"), "stacked"),
     (re.compile(r"막대|바\s*차트|바\s*그래프"), "bar"),
     (re.compile(r"꺾은선|선\s*그래프|라인|(?<![가-힣])선(?=으로|\s*차트)"), "line"),
     (re.compile(r"원형|파이"), "pie"),
@@ -191,7 +192,7 @@ class LLMReading(BaseModel):
 
     standalone_question: str = Field(description="이번 질문을 직전 질문의 조건으로 채워, 그것만 읽어도 뜻이 통하게 다시 쓴 질문. 새 주제면 이번 질문 그대로.")
     use_previous_table: bool = Field(description="이번 질문이 직전 질문과 같은 지표를 묻고 지역·기간·분류만 바꾸거나 차트만 요청하면 true. 다른 지표를 물으면 false.")
-    chart_type: ChartType | None = Field(default=None, description="차트를 요청했으면 bar, line, pie 중 하나. 종류를 말하지 않았거나 차트 요청이 없으면 null.")
+    chart_type: ChartType | None = Field(default=None, description="차트를 요청했으면 bar, line, pie, stacked(누적 막대) 중 하나. 종류를 말하지 않았거나 차트 요청이 없으면 null.")
     chart_only: bool = Field(default=False, description="숫자는 그대로 두고 직전 답을 차트로만 다시 그려 달라는 요청이면 true.")
 
 

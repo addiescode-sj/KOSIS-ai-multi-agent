@@ -45,7 +45,7 @@ from kosis_agent.graph.main_graph import build_graph, call_tool
 from kosis_agent.graph.state import ChatResult, chat_result, new_checkpointer
 from kosis_agent.observability.tracing import LiveSpans, record_error, start_turn, trace_id
 from kosis_agent.retrieval.search import make_search_tables_tool
-from kosis_agent.services.chart import make_chart_tool, to_vega_lite
+from kosis_agent.services.chart import make_chart_tool
 from kosis_agent.services.statistics import make_summarize_stat_tool
 from kosis_rag.schemas.io import SearchOutput
 from kosis_store.auth.schemas import MeResponse, MeUpdate
@@ -829,7 +829,7 @@ def summarize_stat(req: StatRequest, tools=Depends(get_tools), tracer: Tracer = 
     _registered(req.table_key, keys)
     out = _run_tool(tracer, "summarize_stat", tools, {"question": req.question, "table_key": req.table_key})
     chart = out.chart.model_dump(mode="json") if out.chart is not None else None
-    return StatResponse(answer=out.answer, chart=chart, vega_lite=to_vega_lite(out.chart))
+    return StatResponse(answer=out.answer, chart=chart)
 
 
 @app.post("/dev/tools/make_chart", tags=["dev"], summary="Vega-Lite 차트", response_model=ChartResponse,
