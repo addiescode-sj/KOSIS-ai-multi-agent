@@ -832,7 +832,7 @@ def summarize_stat(req: StatRequest, tools=Depends(get_tools), tracer: Tracer = 
     return StatResponse(answer=out.answer, chart=chart)
 
 
-@app.post("/dev/tools/make_chart", tags=["dev"], summary="Vega-Lite 차트", response_model=ChartResponse,
+@app.post("/dev/tools/make_chart", tags=["dev"], summary="차트 다시 그리기", response_model=ChartResponse,
           responses={**UNAVAILABLE, **UNKNOWN_TABLE})
 @app.post("/tools/make_chart", tags=["dev"], summary="옛 주소 → /dev/tools/make_chart", response_model=ChartResponse,
           responses={**UNAVAILABLE, **UNKNOWN_TABLE}, deprecated=True)
