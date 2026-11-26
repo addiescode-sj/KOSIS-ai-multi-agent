@@ -179,6 +179,15 @@ def agent_steps() -> str:
     return steps
 
 
+def agent_prefetch() -> bool:
+    """T3-60: AGENT_PREFETCH (default on) starts the search candidates (parse .. rerank1, no LLM) on the user's words
+    while understand waits for the Qwen judgment; 0 / false / off turns it off."""
+    value = (_env("AGENT_PREFETCH") or "1").strip().lower()
+    if value not in ("1", "true", "on", "0", "false", "off"):
+        raise ValueError(f"AGENT_PREFETCH must be 1 or 0, not {value!r}")
+    return value in ("1", "true", "on")
+
+
 def agent_judge():
     """T3-03 step judge on an OpenAI-compatible chat model: AGENT_MODEL / AGENT_BASE_URL / AGENT_API_KEY, each
     defaulting to the stage 2 re-ranker's STAGE2_MODEL / STAGE2_BASE_URL / STAGE2_API_KEY (the self-hosted Qwen).
