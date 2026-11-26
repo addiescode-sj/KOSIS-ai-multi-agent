@@ -723,6 +723,7 @@ dev.sh는 Docker·PostgreSQL·Jaeger를 띄우고 `uv run --group embed --group 
 - 같은 골든·같은 세션·같은 벡터 색인으로 **순서대로** 돌린다. Colab에서는 `colab/t3_03_e2e_eval_gpu.ipynb`가 이 절차를 그대로 한다.
 - 두 트리는 각자 자기 실전 1·2 pin으로 돈다.
 - 로컬에서 돌릴 때는 main worktree와 실험 브랜치에서 같은 `--scenarios`로 `--layer e2e`를 한 번씩 돌린다.
+- **Colab 결과를 로컬로**: 노트북은 run·비교가 끝날 때마다 Drive `MyDrive/kosis/reports/`에 복사한다. PC에서 `python scripts/pull_reports.py`를 실행하면 로컬 `evals/reports`에 로컬 run과 같은 형식·자리로 들어온다. 새 폴더만 복사하고 `ops_history.jsonl`에는 그 run의 줄만 `run_id` 기준 한 번 더한다. Drive 데스크톱 앱이 없으면 노트북 마지막 셀의 zip으로 `python scripts/pull_reports.py <zip>`을 쓴다.
 - A/A(baseline 한 번 더)는 세션 점검용이다. 같은 코드인데 구간이 0을 벗어나거나 지연 p95가 ±20% 넘게 흔들리면 그 세션의 결과는 쓰지 않는다.
 
 **2. 판정한다**
