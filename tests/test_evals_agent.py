@@ -528,7 +528,8 @@ def test_layer_agent_by_task_over_several_scenario_files(tmp_path):
     assert by_task["multiquery"]["n_turns"] == 1 and by_task["multiquery"]["conversation_success"] == 1.0
     assert "| 멀티턴 (MT-*) | 1 | 1.000 |" in report and "| 멀티쿼리 (MQ-*) | 1 | 1.000 |" in report
     next(r for r in rows if r["sid"] == "MT-R-001")["calls"] = []  # the multi-turn run forgot the chart call: only its task fails
-    (tmp_path / "results.jsonl").write_text("".join(__import__("json").dumps(r, ensure_ascii=False) + "\n" for r in rows))
+    (tmp_path / "results.jsonl").write_text("".join(__import__("json").dumps(r, ensure_ascii=False) + "\n" for r in rows),
+                                            encoding="utf-8")
     _, summary, _ = run_agent(Namespace(**{**base, "oracle": False, "from_run": tmp_path}, scenarios=[mt, mq]))
     assert summary["by_task"]["multiturn"]["conversation_success"] == 0.0
     assert summary["by_task"]["multiquery"]["conversation_success"] == 1.0

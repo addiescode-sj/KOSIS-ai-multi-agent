@@ -10,7 +10,7 @@ from kosis_rag.schemas.resources import DEFAULT_DATABASE_URL
 NAMES = ("KOSIS_WORKSPACE", "DATABASE_URL", "VECTOR_COLLECTION", "TEXT_FORMAT", "EMBED_CKPT",
          "RERANK_CKPT", "RERANK_MODE", "STAGE2", "COND_FILTER", "ANSWER_K", "HQ_BUILD", "HQ_WEIGHT", "HQ_BM25",
          "HCX_API_KEY", "HCX_THINKING", "OPENAI_API_KEY", "STAT_PROVIDER", "STAT_MODEL", "STAT_RETRY_INTERVAL",
-         "STAGE2_MODEL", "STAGE2_BASE_URL", "STAGE2_API_KEY")
+         "STAGE2_MODEL", "STAGE2_BASE_URL", "STAGE2_API_KEY", "STAGE2_MAX_TOKENS", "COND_SCOPE")
 
 
 @pytest.fixture
@@ -94,3 +94,18 @@ def test_stage2_model_server_and_key_have_their_own_variables(env):
     env.delenv("STAGE2_API_KEY")  # no stage 2 key: the STAGE2 name's usual key
     assert config.stage2_llm("gpt").api_key.get_secret_value() == "sk-openai"
     assert config.stage2_llm("none") is None
+
+
+def test_stage2_max_tokens_caps_the_stage2_output(env):
+    """STAGE2_MAX_TOKENS: unset keeps phase 2's cap; set, it replaces it (a thinking model needs room)."""
+    env.setenv("OPENAI_API_KEY", "sk-openai")
+    default = config.stage2_llm("gpt").max_tokens
+    env.setenv("STAGE2_MAX_TOKENS", "16384")
+    assert config.stage2_llm("gpt").max_tokens == 16384 != default
+
+
+def test_cond_scope_reaches_the_service_search_options(env):
+    """COND_SCOPE=years gives build_agent() the KOS-192 setting; unset keeps phase 2's default (all)."""
+    assert config.agent_config().options.cond_scope == "all"
+    env.setenv("COND_SCOPE", "Years")
+    assert config.agent_config().options.cond_scope == "years"
