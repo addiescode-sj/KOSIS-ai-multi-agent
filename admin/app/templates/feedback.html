@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% from "macros.html" import pager, review_form, empty %}
+{% block body %}
+<form method="get" class="filter">
+  <label>상태
+    <select name="status">
+      {% for s in statuses %}<option value="{{ s }}" {% if status == s %}selected{% endif %}>{{ s | label('status') }}</option>{% endfor %}
+      <option value="all" {% if status == 'all' %}selected{% endif %}>전체</option>
+    </select>
+  </label>
+  <label>질문 시작일 <input type="date" name="start" value="{{ flt.start_day }}"></label>
+  <label>끝 <input type="date" name="end" value="{{ flt.end_day }}"></label>
+  <label>👎 이유
+    <select name="category"><option value="">전체</option>
+      {% for code, name in LABELS.down.items() %}<option value="{{ code }}" {% if category == code %}selected{% endif %}>{{ name }}</option>{% endfor %}
+      <option value="none" {% if category == 'none' %}selected{% endif %}>선택 안 함</option>
+    </select>
+  </label>
+  <label>담당
+    <select name="assignee"><option value="">전체</option>
+      <option value="me" {% if assignee == 'me' %}selected{% endif %}>나</option>
+      {% for p in people %}<option value="{{ p.id }}" {% if assignee == p.id | string %}selected{% endif %}>{{ p.name }}</option>{% endfor %}
+    </select>
+  </label>
+  <button type="submit">보기</button>
+</form>
+
+{% if data.rows %}
+<table class="list">
+  <tr><th>받은 시각</th><th>질문</th><th>👎 이유</th><th>결과·표</th><th>상태</th><th>담당</th></tr>
+  {% for r in data.rows %}
+  <tr>
+    <td>{{ r.received_at | kst }}</td>
+    <td><a href="{{ PREFIX }}/questions/{{ r.request_id }}">{{ r.question | cut(40) }}</a></td>
+    <td>{{ r.choice | label('down', '선택 안 함') }}{% if r.feedback_reason %} · {{ r.feedback_reason | cut(30, '') }}{% endif %}</td>
+    <td>{{ r.outcome | label('outcome') }} · {{ r.survey_name or '–' }}</td>
+    <td>{{ r.status | label('status') }}{% if r.issue_key %} · {{ r.issue_key }}{% endif %}</td>
+    <td>{{ r.assignee or '–' }}</td>
+  </tr>
+  <tr class="sub"><td colspan="6">
+    <details><summary>처리</summary>
+      {{ review_form(r.request_id, {'status': r.status, 'assignee_id': r.assignee_id, 'note': r.note, 'issue_key': r.issue_key, 'updated_at': r.review_updated_at} if r.review_updated_at else none, people, statuses, op, back) }}
+    </details>
+  </td></tr>
+  {% endfor %}
+</table>
+{{ pager(page_no, pages, qs, data.total) }}
+{% else %}{{ empty() }}{% endif %}
+{% endblock %}

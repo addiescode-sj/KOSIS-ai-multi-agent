@@ -1,0 +1,65 @@
+# API. AI 모델 없음(임베딩·리랭커·LLM은 GPU 서버 호출). 노드마다 1개.
+# GPU 서버가 꺼져 있으면 /health 는 정상이지만 질문은 503 → GPU를 켜면 다음 질문부터 저절로 된다.
+apiVersion: v1
+kind: Service
+metadata: { name: backend }
+spec:
+  selector: { app: backend }
+  ports: [{ port: 8000 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: backend }
+spec:
+  replicas: 2
+  selector: { matchLabels: { app: backend } }
+  template:
+    metadata: { labels: { app: backend } }
+    spec:
+      securityContext: { appArmorProfile: { type: Localhost, localhostProfile: kosis-app } }   # 12-apparmor.sh
+      topologySpreadConstraints:             # node-1, node-2 에 하나씩
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector: { matchLabels: { app: backend } }
+          matchLabelKeys: [pod-template-hash]
+      terminationGracePeriodSeconds: 30      # KOSIS_SHUTDOWN_TIMEOUT(25초)보다 길게
+      enableServiceLinks: false
+      containers:
+        - name: backend
+          image: kosis/backend
+          imagePullPolicy: IfNotPresent   # GHCR 이미지(커밋별 태그라 바뀌지 않음)
+          envFrom:
+            - secretRef: { name: kosis-env }                    # DB·GPU 주소와 키 (51-make-secrets.sh)
+            - secretRef: { name: kosis-keys, optional: true }   # HCX·OpenAI 등 외부 키 (50-set-keys.sh)
+          env:
+            - { name: KOSIS_WORKSPACE, value: /app }
+            - { name: KOSIS_DISABLE_DEV_ROUTES, value: "1" }
+            # main 1c58899 (태그 1126main, ReAct 그래프). 모델은 GPU 서버 컨테이너별 호출 (8002 임베딩, 8003 리랭커)
+            - { name: EMBED_URL, value: "http://gpu.example.invalid:8002" }   # 실제 GPU 주소는 deploy/overlay (scripts/05-make-site.sh)
+            - { name: RERANK_URL, value: "http://gpu.example.invalid:8003" }
+            - { name: COND_SCOPE, value: years }
+            - { name: INTERPRETER_MODEL, value: stage2 }          # 이어 묻기·질문 나누기도 Qwen (STAGE2_* 서버)
+          ports: [{ containerPort: 8000 }]
+          startupProbe:
+            httpGet: { path: /health, port: 8000 }
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 36
+          readinessProbe:
+            httpGet: { path: /health, port: 8000 }
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet: { path: /health, port: 8000 }
+            periodSeconds: 20
+            timeoutSeconds: 10
+            failureThreshold: 6
+          resources:
+            requests: { memory: 512Mi, cpu: 200m }
+            limits: { memory: 3Gi }
+          volumeMounts:
+            - { name: data, mountPath: /app/data, readOnly: true }
+      volumes:
+        - name: data                         # 두 노드에 같은 사본 (보안 서약: GitHub 금지)
+          hostPath: { path: /srv/kosis/data, type: Directory }

@@ -1,0 +1,12 @@
+# 무료 인증서(Let's Encrypt). 인증서는 node-1 디스크에 저장되고 만료 전에 자동 갱신. kube-system 이라 따로 적용: kubectl apply -f 39-traefik-https.yaml
+apiVersion: helm.cattle.io/v1
+kind: HelmChartConfig
+metadata: { name: traefik, namespace: kube-system }
+spec:
+  valuesContent: |-
+    nodeSelector: { kosis/role: data }     # 고정 주소(EIP)가 있는 node-1
+    updateStrategy: { type: Recreate, rollingUpdate: null }
+    persistence: { enabled: true, size: 128Mi, storageClass: local-path, path: /data }
+    additionalArguments:
+      - --certificatesresolvers.le.acme.storage=/data/acme.json
+      - --certificatesresolvers.le.acme.tlschallenge=true
