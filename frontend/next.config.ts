@@ -17,6 +17,16 @@ const nextConfig: NextConfig = {
       { source: "/conversations", destination: "/chat", permanent: true },
     ];
   },
+  // The admin preview (T3-65, sample numbers) is for `next dev` only: in a production server its address goes to a
+  // route that does not exist, so it answers a real 404 before any of it renders (the layout guard is the backup).
+  async rewrites() {
+    if (process.env.NODE_ENV !== "production") return [];
+    return {
+      beforeFiles: [{ source: "/preview/admin/:path*", destination: "/__admin-preview-off" }],
+      afterFiles: [],
+      fallback: [],
+    };
+  },
   turbopack: {
     // Repo root has its own package-lock.json (harness scripts); pin the app root here
     root: __dirname,
