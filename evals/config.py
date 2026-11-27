@@ -6,7 +6,7 @@ by this repo's `backend.app`, and CLAUDE.md §3 allows importing only `kosis_rag
 os.environ first (kosis_agent.envfile, shell values win); this module reads os.environ.
 
     DATABASE_URL VECTOR_COLLECTION · TEXT_FORMAT EMBED_CKPT RERANK_CKPT RERANK_MODE
-    STAGE2 COND_FILTER ANSWER_K · HQ_BUILD HQ_WEIGHT HQ_BM25 · HCX_API_KEY HCX_THINKING OPENAI_API_KEY
+    STAGE2 STAGE2_PROMPT COND_FILTER ANSWER_K · HQ_BUILD HQ_WEIGHT HQ_BM25 BM25_WEIGHT · HCX_API_KEY HCX_THINKING OPENAI_API_KEY
 
 ponytail: replace with this repo's backend config (agent_config()) once T3-01 adds it.
 """
@@ -55,8 +55,13 @@ def search_config(**overrides: Any) -> tuple[IndexSpec, SearchOptions]:
         "stage2": (_env("STAGE2") or "none").strip().lower(),
         "answer_k": int(_env("ANSWER_K") or 5),
         "hq_weight": float(_env("HQ_WEIGHT") or 1.0),
+        # T3-61: RRF weight of the BM25 list, as the service (backend/app/config.py): unset = 1.0, the phase 2 default
+        "bm25_weight": float(_env("BM25_WEIGHT") or 1.0),
         "hq_bm25": (_env("HQ_BM25") or "off").strip().lower() not in OFF,
     }
+    # T3-61: stage 2 prompt v4 (phase 2 default) | v4m (T2-47 together verdict), passed only when set
+    if prompt := (_env("STAGE2_PROMPT") or "").strip().lower():
+        option_values["stage2_prompt"] = prompt
     for key, value in overrides.items():
         if key in IndexSpec.model_fields:
             spec_values[key] = value

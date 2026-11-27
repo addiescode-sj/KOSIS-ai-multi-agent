@@ -10,7 +10,8 @@ from kosis_rag.schemas.resources import DEFAULT_DATABASE_URL
 NAMES = ("KOSIS_WORKSPACE", "DATABASE_URL", "VECTOR_COLLECTION", "TEXT_FORMAT", "EMBED_CKPT",
          "RERANK_CKPT", "RERANK_MODE", "STAGE2", "COND_FILTER", "ANSWER_K", "HQ_BUILD", "HQ_WEIGHT", "HQ_BM25",
          "HCX_API_KEY", "HCX_THINKING", "OPENAI_API_KEY", "STAT_PROVIDER", "STAT_MODEL", "STAT_RETRY_INTERVAL",
-         "STAGE2_MODEL", "STAGE2_BASE_URL", "STAGE2_API_KEY", "STAGE2_MAX_TOKENS", "COND_SCOPE")
+         "STAGE2_MODEL", "STAGE2_BASE_URL", "STAGE2_API_KEY", "STAGE2_MAX_TOKENS", "COND_SCOPE",
+         "STAGE2_PROMPT", "BM25_WEIGHT")
 
 
 @pytest.fixture
@@ -125,6 +126,25 @@ def test_cond_scope_reaches_the_service_search_options(env):
     assert config.agent_config().options.cond_scope == "all"
     env.setenv("COND_SCOPE", "Years")
     assert config.agent_config().options.cond_scope == "years"
+
+
+def test_stage2_prompt_v4m_is_phase_2s_together_option(env):
+    """T3-61: STAGE2_PROMPT=v4m reaches phase 2 SearchOptions.stage2_prompt (T2-47) in the service and in evals;
+    unset = phase 2's v4."""
+    from evals import config as eval_config
+
+    assert config.agent_config().options.stage2_prompt == "v4" == eval_config.search_config()[1].stage2_prompt
+    env.setenv("STAGE2_PROMPT", "V4M")
+    assert config.agent_config().options.stage2_prompt == "v4m" == eval_config.search_config()[1].stage2_prompt
+
+
+def test_evals_read_bm25_weight_like_the_service(env):
+    """T3-61: evals search_config reads BM25_WEIGHT as backend/app/config.py does; unset = 1.0 (phase 2 default)."""
+    from evals import config as eval_config
+
+    assert eval_config.search_config()[1].bm25_weight == 1.0 == config.agent_config().options.bm25_weight
+    env.setenv("BM25_WEIGHT", "0")
+    assert eval_config.search_config()[1].bm25_weight == 0.0 == config.agent_config().options.bm25_weight
 
 
 def test_agent_prefetch_defaults_on_and_turns_off(env):

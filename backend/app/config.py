@@ -18,6 +18,8 @@ then reads os.environ. In the container compose passes the same file as `env_fil
     STAGE2_MODEL STAGE2_BASE_URL STAGE2_API_KEY     stage 2 model (default phase 2's per STAGE2), an OpenAI-compatible server
                                                     (STAGE2=gpt only) and its key (default the STAGE2 key below) (T3-33)
     STAGE2_MAX_TOKENS                               stage 2 output cap (default phase 2's: 512 for gpt); a thinking model needs room
+    STAGE2_PROMPT                                   stage 2 prompt: v4 (default) | v4m (v4 + a "together" multi-table verdict,
+                                                    phase 2 T2-47 SearchOptions.stage2_prompt; T3-61)
     HQ_BUILD HQ_WEIGHT HQ_BM25                      reverse HyDE question index (empty HQ_BUILD = off)
     BM25_WEIGHT                                     RRF weight of the BM25 list (default 1 = phase 2 default; 0 = dense order only, T3-23)
     HCX_API_KEY HCX_THINKING OPENAI_API_KEY         stage 2 keys (clova / hcx: HCX_API_KEY, gpt: OPENAI_API_KEY)
@@ -224,8 +226,11 @@ def agent_config() -> AgentConfig:
     data = root / "data"
     # COND_SCOPE (KOS-192 best L1: years) is passed only when set, so phase 2's default stays the default
     scope = (_env("COND_SCOPE") or "").strip().lower()
+    # STAGE2_PROMPT (T3-61: v4m = phase 2 T2-47 together verdict) is passed the same way: only when set
+    prompt = (_env("STAGE2_PROMPT") or "").strip().lower()
     options = SearchOptions(
         **({"cond_scope": scope} if scope else {}),
+        **({"stage2_prompt": prompt} if prompt else {}),
         cond_filter=(_env("COND_FILTER") or "on").strip().lower() not in OFF,
         rerank_mode=_env("RERANK_MODE") or "blend",
         stage2=(_env("STAGE2") or "none").strip().lower(),

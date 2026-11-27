@@ -10,6 +10,8 @@ SearchSteps를 넘기면(T3-60) 메인 그래프 candidates 노드가 rerank1까
 - artifact: SearchOutput 객체. 노드가 꺼내 AgentState["search"]에 둔다.
 response_format="content_and_artifact"라서 ToolCall 형태로 부르면 ToolMessage(content, artifact)가 돌아온다.
 ReAct의 ToolNode도 같은 방식으로 부르므로, T3-07에서 이 툴을 그대로 쓴다.
+T3-61: 2차 프롬프트가 v4m이면(STAGE2_PROMPT, 실전 2 T2-47) 실전 2가 rerank2 trace에 멀티표 판단 stage2_together를
+남긴다. together_keys()가 그것을 다시 검사해 statistics 노드에 넘긴다. v4에서는 그 키가 없다.
 """
 
 from __future__ import annotations
@@ -25,6 +27,26 @@ from kosis_rag.schemas.io import SearchInput, SearchOutput
 
 if TYPE_CHECKING:
     from kosis_agent.retrieval.search_steps import SearchSteps
+
+
+TOGETHER_FIELD = "stage2_together"  # 실전 2 rerank2 trace의 멀티표 판단 (T2-47, 표 키 목록)
+MAX_TOGETHER = 3  # 실전 1이 한 번에 읽는 표 수 상한 (StatInput.tables, T1-30)
+
+
+def together_keys(out: SearchOutput | None) -> list[str]:
+    """실전 1에 함께 넘길 표 키 (2~3개), 아니면 [] (T3-61).
+
+    실전 2가 이미 검사했지만 여기서 다시 본다: 검색이 found이고, 키가 모두 picked 안에 있고, 2~3개이고 서로 다르다.
+    표 키는 실전 2 결과 안에서만 나온다(표 ID 보존 원칙).
+    """
+    if out is None or out.route != "found":
+        return []
+    span = next((s for s in out.spans if s.get("node") == "rerank2"), None)
+    keys = list((span or {}).get(TOGETHER_FIELD) or [])
+    picked = {c.key for c in out.picked}
+    if not 2 <= len(keys) <= MAX_TOGETHER or len(set(keys)) != len(keys) or not set(keys) <= picked:
+        return []
+    return keys
 
 
 def stream_search(search: Any, question: str) -> SearchOutput:
