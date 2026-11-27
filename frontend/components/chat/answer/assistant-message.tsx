@@ -1,5 +1,8 @@
 import { Info } from "lucide-react";
+import { useEffect } from "react";
 
+import { EnterCard } from "@/components/motion/enter-card";
+import { preloadMotionFeatures } from "@/components/motion/features";
 import { answerKind, copyText, requestIdOf } from "@/lib/chat/answer";
 import type { ChatResult, TurnFeedback } from "@/lib/chat/schemas";
 import type { Citation } from "@/types/answer";
@@ -14,9 +17,12 @@ import { ResultCard } from "./result-card";
 
 // One assistant turn: progress while the stream runs, then the card for the turn's outcome with 복사 and 👍/👎
 // (neither on a failed turn: there is no answer to copy or rate, api.md 10장 제안 5).
-export function AssistantMessage({ message, running, onAsk, threadId = null, turn = null, feedback = null, onFeedback }: {
+// live: the turn arrived on this screen (not part of the conversation it opened with). Only a live card fades in
+// and counts up its 핵심 수치; a restored conversation shows its cards as they are (T3-64).
+export function AssistantMessage({ message, running, live = false, onAsk, threadId = null, turn = null, feedback = null, onFeedback }: {
   message: ChatMessage;
   running: boolean;
+  live?: boolean;
   onAsk: Ask;
   threadId?: string | null;
   turn?: number | null;
@@ -24,6 +30,8 @@ export function AssistantMessage({ message, running, onAsk, threadId = null, tur
   onFeedback?: (requestId: string, feedback: TurnFeedback) => void;
 }) {
   const track = useTrack();
+  // a turn on its way: fetch the entrance animation's code now so it is there when the card arrives (T3-64)
+  useEffect(() => { if (live) void preloadMotionFeatures(); }, [live]);
   let result: ChatResult | undefined;
   let draft = "";
   let progressed = false;
@@ -52,7 +60,7 @@ export function AssistantMessage({ message, running, onAsk, threadId = null, tur
   }
 
   return (
-    <div className="flex flex-col gap-3">
+    <div data-message-id={message.id} className="flex flex-col gap-3">
       {notices.map((n) => (
         <p key={n} role="status" className="flex items-center gap-2 rounded-xl bg-amber-50 px-4 py-2.5 text-[13px] text-amber-800">
           <Info size={15} />
@@ -60,15 +68,18 @@ export function AssistantMessage({ message, running, onAsk, threadId = null, tur
         </p>
       ))}
       {result ? (
-        <ResultCard
-          result={result}
-          onAsk={onAsk}
-          onCitation={handleCitation}
-          actions={rated && <CopyButton text={copyText(result)} onCopied={handleCopied} />}
-          footer={rated && requestId && (
-            <FeedbackBar key={requestId} requestId={requestId} initial={feedback} onSaved={handleFeedbackSaved} />
-          )}
-        />
+        <EnterCard live={live}>
+          <ResultCard
+            result={result}
+            live={live}
+            onAsk={onAsk}
+            onCitation={handleCitation}
+            actions={rated && <CopyButton text={copyText(result)} onCopied={handleCopied} />}
+            footer={rated && requestId && (
+              <FeedbackBar key={requestId} requestId={requestId} initial={feedback} onSaved={handleFeedbackSaved} />
+            )}
+          />
+        </EnterCard>
       ) : running || draft || progressed || notices.length === 0 ? (
         <Generating message={message} draft={draft} running={running} />
       ) : null /* a saved turn that could not be restored: the notice is the whole answer */}

@@ -2,7 +2,8 @@
 
 export type AnswerKind = "answered" | "partial" | "clarify" | "refused" | "failed";
 
-export type Headline = { value: string; unit: string | null; period: string | null };
+// value: the number as shown (formatValue). raw and round are the same fact, for the count-up (T3-64) to land on value.
+export type Headline = { value: string; raw: number; round: number | null; unit: string | null; period: string | null };
 
 export type Citation = { survey: string; table: string; url: string | null; text: string; key: string; rank: number | null };
 

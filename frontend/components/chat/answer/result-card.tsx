@@ -16,8 +16,9 @@ import { Refused } from "./refused";
 import { SourceBlock } from "./source-block";
 
 // The card for one finished turn, chosen by its outcome. actions: the copy button (top right), footer: feedback.
-export function ResultCard({ result, onAsk, onCitation, actions, footer }: {
+export function ResultCard({ result, live = false, onAsk, onCitation, actions, footer }: {
   result: ChatResult;
+  live?: boolean; // streamed in on this screen: the 핵심 수치 counts up (T3-64)
   onAsk?: Ask;
   onCitation?: (c: Citation) => void;
   actions?: ReactNode;
@@ -39,7 +40,7 @@ export function ResultCard({ result, onAsk, onCitation, actions, footer }: {
           {actions}
         </div>
       </div>
-      {kind === "answered" && <Answered result={result} />}
+      {kind === "answered" && <Answered result={result} live={live} />}
       {kind === "partial" && <Partial result={result} />}
       {kind === "clarify" && <Clarify result={result} onAsk={onAsk} />}
       {kind === "refused" && <Refused result={result} onAsk={onAsk} />}

@@ -7,6 +7,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 
 import { AppShell } from "@/components/app-shell";
+import { LazyScrollReveal } from "@/components/motion/lazy";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { useAuth } from "@/lib/auth/use-me";
@@ -25,6 +26,7 @@ import type { Conversation } from "@/types/conversation";
 import { AssistantMessage } from "./answer/assistant-message";
 import { Composer } from "./composer";
 import { ConversationHistory } from "./history/conversation-history";
+import { useAnswerScroll } from "./use-answer-scroll";
 
 // One conversation. `/` starts a new one (empty state = the prototype home); the first question moves the URL to
 // /chat/<id> without a remount. The backend thread_id from `meta` goes back with the next question so follow-ups
@@ -41,6 +43,8 @@ export function Chat({ id, initial, prefill }: { id: string; initial: Conversati
   const client = useQueryClient();
   const threadId = useRef<string | null>(initial?.threadId ?? null);
   const [activeId, setActiveId] = useState(initial?.id ?? id);
+  // turns this screen opened with (a restored conversation): shown as they are, without the T3-64 entrance
+  const [openedWith] = useState(() => new Set(initial?.messages.map((m) => m.id) ?? []));
   const [transport] = useState(() => new DefaultChatTransport<ChatMessage>({ api: "/api/chat" }));
   // the login cookie goes with every request; a guest also names its session (X-Session-Id, contract 1장)
   const headers = () => (member ? {} : sessionHeaders());
@@ -90,10 +94,7 @@ export function Chat({ id, initial, prefill }: { id: string; initial: Conversati
     };
   }, []);
 
-  useEffect(() => {
-    // Block body: Chrome's scrollIntoView returns a Promise, which React would call as the effect cleanup
-    if (messages.length) bottom.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, status]);
+  useAnswerScroll(messages, status, openedWith, bottom);
 
   useEffect(() => {
     if (busy || messages.length === 0) return; // save when a reply ends (done, stopped or failed)
@@ -147,13 +148,13 @@ export function Chat({ id, initial, prefill }: { id: string; initial: Conversati
               </p>
             </div>
           ) : (
-            <AssistantMessage key={m.id} message={m} running={busy && i === messages.length - 1} onAsk={send}
+            <AssistantMessage key={m.id} message={m} running={busy && i === messages.length - 1} live={!openedWith.has(m.id)} onAsk={send}
               threadId={threadIdOf(m) ?? initial?.threadId ?? null} turn={messages.slice(0, i).filter((x) => x.role === "user").length}
               feedback={feedbackOf(initial, requestIdOf(m))} onFeedback={keepFeedback} />
           ),
         )}
         {status === "submitted" && messages.at(-1)?.role === "user" && (
-          <AssistantMessage message={{ id: "pending", role: "assistant", parts: [] }} running onAsk={send} />
+          <AssistantMessage message={{ id: "pending", role: "assistant", parts: [] }} running live onAsk={send} />
         )}
         {error && (
           <Card role="alert" className="flex items-start gap-4 p-6">
@@ -226,11 +227,13 @@ function Home({ prefill, onSend, note }: { prefill?: string; onSend: (text: stri
 
         <div className="mt-14 grid w-full gap-4 text-left md:grid-cols-3">
           {FEATURES.map((f) => (
-            <Card key={f.t} className="p-5">
-              <span className="flex size-10 items-center justify-center rounded-full border border-brand-100 bg-brand-50 text-brand-600"><f.icon size={18} /></span>
-              <h3 className="mt-4 text-[15px] font-semibold">{f.t}</h3>
-              <p className="mt-1.5 text-[13px] leading-relaxed text-sub">{f.d}</p>
-            </Card>
+            <LazyScrollReveal key={f.t}>
+              <Card className="h-full p-5">
+                <span className="flex size-10 items-center justify-center rounded-full border border-brand-100 bg-brand-50 text-brand-600"><f.icon size={18} /></span>
+                <h3 className="mt-4 text-[15px] font-semibold">{f.t}</h3>
+                <p className="mt-1.5 text-[13px] leading-relaxed text-sub">{f.d}</p>
+              </Card>
+            </LazyScrollReveal>
           ))}
         </div>
       </div>
