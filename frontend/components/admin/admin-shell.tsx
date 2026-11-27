@@ -1,22 +1,32 @@
 "use client";
 
-import { Activity, ChartNoAxesColumn, ExternalLink, LayoutDashboard, LogOut, ShieldCheck, SlidersHorizontal } from "lucide-react";
+import { Activity, ChartNoAxesColumn, ExternalLink, House, Inbox, LayoutDashboard, ListChecks, LogOut, ShieldCheck, SlidersHorizontal } from "lucide-react";
+import { useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import type { ReactNode } from "react";
 import { cn } from "cn";
 
+import { useLogout } from "@/lib/auth/use-account-actions";
+import { queryKeys } from "@/lib/query/keys";
 
-export const ADMIN_HOME = "/preview/admin";
+import { useOperator } from "./operator-context";
+
+export const ADMIN_HOME = "/admin";
+export const ADMIN_METRICS = "/admin/metrics";
 
 const NAV = [
-  { href: ADMIN_HOME, label: "메트릭 대시보드", icon: LayoutDashboard },
-  { href: `${ADMIN_HOME}/filters`, label: "필터 설정", icon: SlidersHorizontal },
-  { href: `${ADMIN_HOME}/jaeger`, label: "Jaeger 분산 추적", icon: Activity, external: true },
+  { href: ADMIN_HOME, label: "홈", icon: House },
+  { href: ADMIN_METRICS, label: "메트릭 대시보드", icon: LayoutDashboard },
+  { href: "/admin/questions", label: "질문 검수", icon: ListChecks },
+  { href: "/admin/feedback", label: "👎 처리함", icon: Inbox },
+  { href: "/admin/filters", label: "필터 설정", icon: SlidersHorizontal },
 ] as const;
 
-// Dark sidebar + sticky header of the admin preview screens (design mockup AdminLayout, T3-65). `status` says where
-// the screen's numbers come from (the dashboard: real metrics and when they were read, T3-66).
+const current = (pathname: string, href: string) => (href === ADMIN_HOME ? pathname === href : pathname.startsWith(href));
+
+// Dark sidebar + sticky header of every operator screen (design mockup AdminLayout, T3-65). Drawn only inside an
+// operator page (AdminGate): the name and the links below come from the operator app's /admin/api/me.
 export function AdminShell({ title, sub, actions, status, children }: {
   title: string;
   sub?: string;
@@ -25,6 +35,15 @@ export function AdminShell({ title, sub, actions, status, children }: {
   children: ReactNode;
 }) {
   const pathname = usePathname();
+  const me = useOperator();
+  const router = useRouter();
+  const client = useQueryClient();
+  const out = useLogout(() => {
+    client.removeQueries({ queryKey: queryKeys.admin }); // nothing of the operator screens stays in this tab
+    router.replace("/");
+  });
+  const leaving = out.isPending ? "로그아웃 중…" : out.data && !out.data.ok ? out.data.message : null;
+  const side = "flex h-10 items-center gap-3 rounded-lg px-3 text-[14px] text-white/60 hover:bg-white/5 hover:text-white";
   return (
     <div className="flex min-h-dvh">
       <aside className="sticky top-0 flex h-dvh w-64 shrink-0 flex-col bg-ink text-white">
@@ -37,27 +56,37 @@ export function AdminShell({ title, sub, actions, status, children }: {
             <p className="text-[11px] font-medium text-brand-300">Admin Console</p>
           </div>
         </div>
-        <nav aria-label="운영자 메뉴" className="flex-1 space-y-1 p-4">
+        <nav aria-label="운영자 메뉴" className="flex-1 space-y-1 overflow-y-auto p-4">
           <p className="px-3 pb-2 text-[11px] font-semibold uppercase tracking-wider text-white/40">운영</p>
           {NAV.map((n) => (
             <Link
               key={n.href}
               href={n.href}
-              aria-current={pathname === n.href ? "page" : undefined}
+              aria-current={current(pathname, n.href) ? "page" : undefined}
               className={cn(
                 "flex h-10 w-full items-center gap-3 rounded-lg px-3 text-[14px] transition-colors",
-                pathname === n.href ? "bg-white/10 font-semibold text-white" : "text-white/60 hover:bg-white/5 hover:text-white",
+                current(pathname, n.href) ? "bg-white/10 font-semibold text-white" : "text-white/60 hover:bg-white/5 hover:text-white",
               )}
             >
               <n.icon size={18} />
               <span className="flex-1 text-left">{n.label}</span>
-              {"external" in n && <ExternalLink size={13} className="opacity-50" />}
             </Link>
           ))}
           <p className="px-3 pb-2 pt-6 text-[11px] font-semibold uppercase tracking-wider text-white/40">바로가기</p>
-          <a href="/" target="_blank" rel="noreferrer" className="flex h-10 items-center gap-3 rounded-lg px-3 text-[14px] text-white/60 hover:bg-white/5 hover:text-white">
+          {me.grafana && (
+            <a href={me.grafana} target="_blank" rel="noreferrer" className={side}>
+              <Activity size={18} />
+              <span className="flex-1">Grafana 로그·추적</span>
+              <ExternalLink size={13} className="opacity-50" />
+            </a>
+          )}
+          <a href="/" target="_blank" rel="noreferrer" className={side}>
             <ExternalLink size={18} />
             고객 사이트 열기
+          </a>
+          <a href="/admin/classic" className={side} title="T3-57 화면. QA가 끝나면 지웁니다">
+            <ExternalLink size={18} />
+            이전 운영 화면
           </a>
         </nav>
         <div className="border-t border-white/10 p-4">
@@ -66,10 +95,10 @@ export function AdminShell({ title, sub, actions, status, children }: {
               <ShieldCheck size={16} />
             </span>
             <div className="min-w-0 flex-1">
-              <p className="text-sm font-medium">운영자</p>
-              <p className="text-xs text-white/50">카카오 로그인 · 허용 목록</p>
+              <p className="truncate text-sm font-medium">{me.name ?? "운영자"}</p>
+              <p className="truncate text-xs text-white/50">{leaving ?? "카카오 로그인 · 허용 목록"}</p>
             </div>
-            <button type="button" disabled className="rounded-md p-1.5 text-white/50" aria-label="로그아웃 (미리보기에서는 쓰지 않음)">
+            <button type="button" onClick={() => out.mutate()} disabled={out.isPending} className="rounded-md p-1.5 text-white/50 hover:bg-white/10 hover:text-white" aria-label="로그아웃">
               <LogOut size={16} />
             </button>
           </div>

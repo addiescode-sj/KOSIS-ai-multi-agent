@@ -6,8 +6,12 @@ export const queryKeys = {
   chatDetails: ["chats", "detail"] as const, // every opened member conversation (feedback updates the matching turn)
   chat: (id: string) => ["chats", "detail", id] as const, // GET /chat/{id} → ChatRead
   tables: (q: string) => ["tables", q] as const, // POST /dev/tools/search_tables → TablesResult (search page)
-  // admin preview (T3-65, sample data, next dev only)
+  // operator screens (T3-66, T3-67): the operator app's /admin/api/*
+  admin: ["admin"] as const, // everything below (a saved review refreshes the lists)
   adminDashboard: (f: { period: string; user: string; internal: boolean }) =>
-    ["admin", "dashboard", f.period, f.user, f.internal] as const, // GET /api/preview/admin/dashboard
-  adminTrace: (id: string) => ["admin", "trace", id] as const, // GET /api/preview/admin/trace/{id}
+    ["admin", "dashboard", f.period, f.user, f.internal] as const, // GET /admin/api/metrics
+  adminHome: ["admin", "home"] as const, // GET /admin/api/home
+  adminQuestions: (qs: string) => ["admin", "questions", qs] as const, // GET /admin/api/questions?…
+  adminQuestion: (id: string) => ["admin", "question", id] as const, // GET /admin/api/questions/{id}
+  adminInbox: (qs: string) => ["admin", "inbox", qs] as const, // GET /admin/api/feedback?…
 };

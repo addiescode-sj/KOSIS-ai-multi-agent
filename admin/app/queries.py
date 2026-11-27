@@ -94,6 +94,16 @@ def metrics(session: Session, tab: str, flt: MetricFilter) -> dict:
     return result
 
 
+def _cached(key: tuple, read):
+    """The 5-minute cache of metrics() for one more read (the dashboard's TTFT)."""
+    hit = _cache.get(key)
+    if hit and time.monotonic() - hit[0] < CACHE_SECONDS:
+        return hit[1]
+    value = read()
+    _cache[key] = (time.monotonic(), value)
+    return value
+
+
 def _every_day(rows: list[dict], flt: MetricFilter) -> list[dict]:
     """One entry per day of the range; a day without questions has only `day` (the chart shows a count of 0 and
     leaves a ratio out)."""
@@ -121,7 +131,7 @@ def dashboard(session: Session, flt: MetricFilter) -> dict:
     before = previous(flt)
     return {
         "tabs": {tab: {"rows": t["rows"], "daily": t["daily"]} for tab, t in tabs.items()},
-        "first_token": lm.query(session, "first_token", flt),  # TTFT p50·p95: a log_metrics metric on no tab
+        "first_token": _cached(("first_token", flt), lambda: lm.query(session, "first_token", flt)),  # on no tab
         "previous": metrics(session, "summary", before)["rows"] if before else None,
         "read_at": min(t["read_at"] for t in tabs.values()),
     }

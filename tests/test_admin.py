@@ -186,15 +186,15 @@ def _as(token: str) -> dict:
 def test_sign_in_cases(app_db):
     owner, tokens, _ = app_db
     c = _client()
-    r = c.get("/admin/questions?outcome=error")
-    assert r.status_code == 303 and r.headers["location"] == "/auth/kakao/login?next=/admin/questions%3Foutcome%3Derror"
-    assert c.get("/admin", headers=_as(tokens["expired"])).status_code == 303
-    assert c.get("/admin", headers=_as("not-a-session")).status_code == 303
-    r = c.get("/admin", headers=_as(tokens["outsider"]))
+    r = c.get("/admin/classic/questions?outcome=error")
+    assert r.status_code == 303 and r.headers["location"] == "/auth/kakao/login?next=/admin/classic/questions%3Foutcome%3Derror"
+    assert c.get("/admin/classic", headers=_as(tokens["expired"])).status_code == 303
+    assert c.get("/admin/classic", headers=_as("not-a-session")).status_code == 303
+    r = c.get("/admin/classic", headers=_as(tokens["outsider"]))
     assert r.status_code == 404 and "KOSIS" not in r.text
     with owner.connect() as conn:
         assert conn.execute(text("SELECT user_id FROM admin.audit WHERE action = 'denied'")).scalar() == OUTSIDER
-    r = c.get("/admin", headers=_as(tokens["me"]))
+    r = c.get("/admin/classic", headers=_as(tokens["me"]))
     assert r.status_code == 200 and "병석" in r.text
     assert r.headers["cache-control"] == "no-store" and "frame-ancestors 'none'" in r.headers["content-security-policy"]
     assert c.get("/admin/healthz").text == "ok"
@@ -220,7 +220,7 @@ def test_kosis_admin_reads_only_what_it_was_granted(app_db):
 @pytest.mark.postgres
 def test_home_counts_today(app_db):
     _, tokens, _ = app_db
-    r = _client().get("/admin", headers=_as(tokens["me"]))
+    r = _client().get("/admin/classic", headers=_as(tokens["me"]))
     assert r.status_code == 200
     from admin.app import main
 
@@ -241,12 +241,12 @@ def test_metric_tabs_show_log_metrics_numbers(app_db):
     day = datetime.now(KST).date() - timedelta(days=1)
     flt = MetricFilter(day, day)
     for tab in lm.TABS:
-        r = c.get(f"/admin/metrics?tab={tab}&start={day}&end={day}", headers=_as(tokens["me"]))
+        r = c.get(f"/admin/classic/metrics?tab={tab}&start={day}&end={day}", headers=_as(tokens["me"]))
         assert r.status_code == 200, tab
     with main.sessionmaker(main._engine)() as s:
         assert queries.metrics(s, "summary", flt)["rows"] == lm.tab(s, "summary", flt)
         assert lm.tab(s, "summary", flt)["question_count"] == [{"n": 3}]
-    r = c.get(f"/admin/metrics?tab=summary&start={day}&end={day}", headers=_as(tokens["me"]))
+    r = c.get(f"/admin/classic/metrics?tab=summary&start={day}&end={day}", headers=_as(tokens["me"]))
     assert "질문 수 <b>3</b>" in r.text
 
 
@@ -293,12 +293,12 @@ def test_previous_range_stays_inside_the_limit(monkeypatch):
 def test_question_detail_is_audited(app_db):
     owner, tokens, _ = app_db
     c = _client()
-    r = c.get(f"/admin/questions/{RID[1]}", headers=_as(tokens["me"]))
+    r = c.get(f"/admin/classic/questions/{RID[1]}", headers=_as(tokens["me"]))
     assert r.status_code == 200 and "질문 1" in r.text and "질문 2" in r.text  # same conversation
-    assert c.get("/admin/questions/nothex", headers=_as(tokens["me"])).status_code == 404
+    assert c.get("/admin/classic/questions/nothex", headers=_as(tokens["me"])).status_code == 404
     with owner.connect() as conn:
         assert conn.execute(text("SELECT target_id FROM admin.audit WHERE action = 'view_question'")).scalar() == RID[1]
-    r = c.get("/admin/questions?outcome=error", headers=_as(tokens["me"]))
+    r = c.get("/admin/classic/questions?outcome=error", headers=_as(tokens["me"]))
     assert r.status_code == 200 and RID[4] in r.text and RID[1] not in r.text
 
 
@@ -306,11 +306,11 @@ def test_question_detail_is_audited(app_db):
 def test_review_save_conflict_and_inbox(app_db):
     owner, tokens, _ = app_db
     c = _client()
-    page = c.get("/admin/feedback", headers=_as(tokens["me"]))
+    page = c.get("/admin/classic/feedback", headers=_as(tokens["me"]))
     assert page.status_code == 200 and RID[1] in page.text and RID[3] in page.text
     form = {"status": "checking", "assignee": "", "note": "", "issue_key": "", "seen": "",
-            "back": "/admin/feedback", "form_token": auth.form_token(tokens["me"])}
-    url = f"/admin/feedback/{RID[1]}"
+            "back": "/admin/classic/feedback", "form_token": auth.form_token(tokens["me"])}
+    url = f"/admin/classic/feedback/{RID[1]}"
     assert c.post(url, data=form, headers=_as(tokens["me"])).status_code == 403  # no Origin
     bad = {**form, "form_token": "x"}
     assert c.post(url, data=bad, headers={**_as(tokens["me"]), "origin": ORIGIN}).status_code == 403
@@ -329,13 +329,13 @@ def test_review_save_conflict_and_inbox(app_db):
     with owner.connect() as conn:
         assert conn.execute(text("SELECT status FROM admin.feedback_reviews")).scalar() == "no_issue"
         assert conn.execute(text("SELECT count(*) FROM admin.audit WHERE action = 'update_review'")).scalar() == 2
-    r = c.post(f"/admin/feedback/{RID[3]}", data={**form, "status": "fix_requested"},
+    r = c.post(f"/admin/classic/feedback/{RID[3]}", data={**form, "status": "fix_requested"},
                headers={**_as(tokens["me"]), "origin": ORIGIN})
     assert "error=" in r.headers["location"]
-    new = c.get("/admin/feedback?status=new", headers=_as(tokens["me"])).text
+    new = c.get("/admin/classic/feedback?status=new", headers=_as(tokens["me"])).text
     assert RID[3] in new and RID[1] not in new
-    assert RID[1] in c.get("/admin/feedback?status=no_issue", headers=_as(tokens["me"])).text
-    assert c.post(f"/admin/feedback/{RID[5]}", data=form, headers={**_as(tokens["me"]), "origin": ORIGIN}
+    assert RID[1] in c.get("/admin/classic/feedback?status=no_issue", headers=_as(tokens["me"])).text
+    assert c.post(f"/admin/classic/feedback/{RID[5]}", data=form, headers={**_as(tokens["me"]), "origin": ORIGIN}
                   ).status_code == 404  # no feedback on that answer
 
 
@@ -372,7 +372,87 @@ def test_database_down_is_503(monkeypatch):
 
     main._engine = None
     try:
-        r = _client().get("/admin", headers=_as("tok"))
+        r = _client().get("/admin/classic", headers=_as("tok"))
     finally:
         main._engine = None
     assert r.status_code == 503 and "데이터베이스" in r.text
+    main._engine = None
+    try:
+        r = _client().get("/admin/api/home", headers=_as("tok"))
+    finally:
+        main._engine = None
+    assert r.status_code == 503 and r.json()["error"]["code"] == "db_unavailable"  # JSON for the screens (T3-67)
+
+
+# ---------------------------------------------------------------- JSON API of the /admin screens (T3-67)
+
+@pytest.mark.postgres
+def test_api_screens_are_for_operators_only(app_db):
+    """Every screen API: 401 JSON without a login, 404 off the list, the page's own query results for an operator."""
+    owner, tokens, _ = app_db
+    from admin.app import main
+
+    c = _client()
+    paths = ["/admin/api/me", "/admin/api/home", "/admin/api/questions", f"/admin/api/questions/{RID[1]}",
+             "/admin/api/feedback"]
+    for path in paths:
+        r = c.get(path)
+        assert r.status_code == 401 and r.json()["error"]["code"] == "login_required", path
+        r = c.get(path, headers=_as(tokens["outsider"]))
+        assert r.status_code == 404 and "질문" not in r.text, path
+    me = c.get("/admin/api/me", headers=_as(tokens["me"])).json()
+    assert (me["name"], me["form_token"]) == ("병석", auth.form_token(tokens["me"]))
+    assert me["labels"]["outcome"]["answered"] == "답함" and "no_issue" in me["statuses"]
+
+    home = c.get("/admin/api/home", headers=_as(tokens["me"])).json()
+    assert (home["questions"], home["errors"], home["aborted"], home["new_down"], home["db_ok"]) == (2, 1, 1, 2, True)
+    assert [t["request_id"] for t in home["problems"]] == [RID[5], RID[4]]
+
+    r = c.get("/admin/api/questions?outcome=error", headers=_as(tokens["me"])).json()
+    assert r["total"] == 1 and [t["request_id"] for t in r["rows"]] == [RID[4]] and r["filter"]["outcome"] == "error"
+    assert "session_id" not in r["rows"][0] and "session_id" not in home["problems"][0]
+    with main.sessionmaker(main._engine)() as s:
+        flt = queries.date_range(None, None, include_today=True).flt
+        assert r["total"] == queries.questions(s, flt, outcome="error", page=1)["total"]
+
+    d = c.get(f"/admin/api/questions/{RID[1]}", headers=_as(tokens["me"])).json()
+    assert d["row"]["question"] == "질문 1" and set(d["row"]) == set(main.QUESTION_FIELDS)  # no session or conversation id
+    assert [t["request_id"] for t in d["conversation"]] == [RID[1], RID[2]] and d["feedback"]["value"] == "down"
+    assert {p["name"] for p in d["people"]} == {"병석", "선주"}
+    assert c.get("/admin/api/questions/nothex", headers=_as(tokens["me"])).status_code == 404
+    with owner.connect() as conn:  # one read, one audit row
+        assert conn.execute(text("SELECT count(*) FROM admin.audit WHERE action = 'view_question'")).scalar() == 1
+
+    inbox = c.get("/admin/api/feedback", headers=_as(tokens["me"])).json()
+    assert inbox["total"] == 2 and {t["request_id"] for t in inbox["rows"]} == {RID[1], RID[3]}
+    assert c.get("/admin/api/feedback?assignee=me", headers=_as(tokens["me"])).json()["total"] == 0
+
+
+@pytest.mark.postgres
+def test_api_review_save_is_protected_and_conflicts(app_db):
+    owner, tokens, _ = app_db
+    c = _client()
+    url = f"/admin/api/feedback/{RID[1]}"
+    ok = {**_as(tokens["me"]), "origin": ORIGIN, "x-admin-token": auth.form_token(tokens["me"])}
+    body = {"status": "checking", "assignee": "", "note": "", "issue_key": "", "seen": ""}
+    assert c.post(url, json=body, headers={k: v for k, v in ok.items() if k != "origin"}).status_code == 403
+    assert c.post(url, json=body, headers={**ok, "x-admin-token": "x"}).status_code == 403
+    assert c.post(url, json=body, headers={**ok, "origin": "https://evil.test"}).status_code == 403
+    r = c.post(url, data=body, headers=ok)  # a form post (what another site could send) is no JSON
+    assert r.status_code in (403, 422)
+    with owner.connect() as conn:
+        assert conn.execute(text("SELECT count(*) FROM admin.feedback_reviews")).scalar() == 0
+    r = c.post(url, json=body, headers=ok)
+    assert r.status_code == 200 and r.json()["review"]["status"] == "checking"
+    seen = r.json()["review"]["updated_at"]
+    other = {**_as(tokens["other"]), "origin": ORIGIN, "x-admin-token": auth.form_token(tokens["other"])}
+    late = {**body, "status": "no_issue", "note": "맞는 답"}
+    r = c.post(url, json=late, headers=other)  # read before the first save
+    assert r.status_code == 409 and r.json()["error"]["code"] == "conflict"
+    r = c.post(url, json={**late, "seen": seen}, headers=other)  # the value the screen got back
+    assert r.status_code == 200 and r.json()["review"]["updated_by"] == "선주"
+    r = c.post(f"/admin/api/feedback/{RID[3]}", json={**body, "status": "fix_requested"}, headers=ok)
+    assert r.status_code == 422 and "Linear" in r.json()["error"]["message"]
+    assert c.post(f"/admin/api/feedback/{RID[5]}", json=body, headers=ok).status_code == 404
+    with owner.connect() as conn:
+        assert conn.execute(text("SELECT count(*) FROM admin.audit WHERE action = 'update_review'")).scalar() == 2

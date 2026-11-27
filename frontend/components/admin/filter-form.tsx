@@ -8,7 +8,7 @@ import { Card } from "@/components/ui/card";
 import { DEFAULT_FILTER, filterQuery, PERIOD_LABEL, USER_LABEL } from "@/lib/admin/filter";
 import type { AdminFilter } from "@/lib/admin/schemas";
 
-import { ADMIN_HOME } from "./admin-shell";
+import { ADMIN_METRICS } from "./admin-shell";
 import { SelectField } from "./select-field";
 import { ToggleField } from "./toggle-field";
 
@@ -29,7 +29,7 @@ export function FilterForm({ initial }: { initial: AdminFilter }) {
       </div>
       <div className="flex justify-end gap-2 border-t border-line pt-5">
         <Button variant="secondary" onClick={() => setF(DEFAULT_FILTER)}>기본값으로 되돌리기</Button>
-        <Button onClick={() => router.push(`${ADMIN_HOME}?${filterQuery(f)}`)}>필터 적용</Button>
+        <Button onClick={() => router.push(`${ADMIN_METRICS}?${filterQuery(f)}`)}>필터 적용</Button>
       </div>
     </Card>
   );
