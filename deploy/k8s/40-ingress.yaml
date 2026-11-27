@@ -13,7 +13,12 @@ spec:
     - host: kosis.example.invalid
       http:
         paths:
-          - path: /admin                     # 운영자 페이지 (32-admin.yaml). 긴 경로가 먼저 맞음
+          # 운영자 화면 /admin 은 프론트(React, T3-67)가 그린다. 운영자 앱(32-admin.yaml)은 데이터 창구 /admin/api 와
+          # 이전 화면 /admin/classic(QA 뒤 삭제)만 받는다. 긴 경로가 먼저 맞음
+          - path: /admin/api
+            pathType: Prefix
+            backend: { service: { name: kosis-admin, port: { number: 8100 } } }
+          - path: /admin/classic
             pathType: Prefix
             backend: { service: { name: kosis-admin, port: { number: 8100 } } }
           - path: /

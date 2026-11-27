@@ -21,10 +21,10 @@
 | `k8s/11-migrate-job.yaml` | DB 변경(alembic). `60-deploy.sh`가 배포마다 앱보다 먼저 돌린다 |
 | `k8s/12-vectors-job.yaml` | 벡터 묶음 넣기(가중치 바꿀 때만) |
 | `k8s/30-backend.yaml`·`31-frontend.yaml` | 앱, 2개씩 노드마다 1개 |
-| `k8s/32-admin.yaml` | 운영자 페이지(`/admin`), 정리 작업 03:30 |
+| `k8s/32-admin.yaml` | 운영자 앱: 데이터 창구 `/admin/api`, 이전 화면 `/admin/classic`, 정리 작업 03:30. 화면 `/admin`은 프론트(T3-67) |
 | `k8s/33-db-jobs.yaml` | DB 백업 04:00(node-2), 정리 04:30 |
 | `k8s/39-traefik-https.yaml` | HTTPS 인증서(Let's Encrypt). kube-system이라 따로 적용 |
-| `k8s/40-ingress.yaml` | 입구: HTTPS만, `/admin`은 운영자 페이지, http는 https로 보냄 |
+| `k8s/40-ingress.yaml` | 입구: HTTPS만, `/admin/api`·`/admin/classic`은 운영자 앱(나머지 `/admin`은 프론트), http는 https로 보냄 |
 | `scripts/00`~`21` | 서버 처음 설치(아래 순서) |
 | `scripts/05-make-site.sh` | `site.env` → `overlay/` |
 | `scripts/30-build-images.sh` | GHCR을 못 쓸 때 node-1에서 직접 빌드(대비용) |

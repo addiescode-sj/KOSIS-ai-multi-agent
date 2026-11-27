@@ -1,4 +1,5 @@
-# 운영자 페이지 (저장소 admin/, T3-57). 주소 https://<사이트 주소>/admin
+# 운영자 앱 (저장소 admin/, T3-57·T3-67). 데이터 창구 https://<사이트 주소>/admin/api 와 이전 화면 /admin/classic.
+# 화면 /admin 은 프론트(31-frontend.yaml, ADMIN_URL로 이 앱에 운영자인지 묻는다)가 그린다.
 # 준비: 01-secrets.README.md "운영자 페이지" (DB 계정 kosis_admin + Secret kosis-admin)
 # 시작할 때 admin 스키마 마이그레이션을 먼저 돌린다(initContainer). 매일 03:30 정리 작업.
 apiVersion: v1

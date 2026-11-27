@@ -2,8 +2,7 @@ import { expect, test } from "@jest/globals";
 
 import { apiQuery, DEFAULT_FILTER, filterFrom, filterQuery, kstToday, rangeOf } from "./filter.ts";
 import { count, dotDate, share, shortDate, signed, withUnit } from "./format.ts";
-import { sampleTrace } from "./sample.ts";
-import { AdminMetrics, AdminTrace } from "./schemas.ts";
+import { AdminMetrics } from "./schemas.ts";
 import { toView } from "./view.ts";
 
 test("filter: read from the address, unknown or missing values fall back to the default", () => {
@@ -93,8 +92,4 @@ test("no range before (90-day limit) and no questions: no change, no rate", () =
 test("an answer missing a metric the screen draws fails the check", () => {
   const broken = { ...answer, tabs: { ...answer.tabs, cost: { rows: {} } } };
   expect(AdminMetrics.safeParse(broken).success).toBe(false);
-});
-
-test("the trace stand-in's sample passes its schema", () => {
-  expect(AdminTrace.parse(sampleTrace("x")).spans.every((s) => s.start <= s.end)).toBe(true);
 });

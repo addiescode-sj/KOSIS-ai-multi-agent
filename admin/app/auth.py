@@ -86,6 +86,15 @@ def check_form(request: Request, op: Operator, sent_token: str | None) -> bool:
     return origin == config.public_origin() and hmac.compare_digest(sent_token or "", op.form_token)
 
 
+def check_api_post(request: Request, op: Operator) -> bool:
+    """A JSON save from our own screen (T3-67): the Origin is the service address, the body is JSON and the
+    X-Admin-Token header carries the form token. Another site can set none of these without a CORS preflight, and this
+    app answers no preflight."""
+    ctype = request.headers.get("content-type", "").split(";")[0].strip().lower()
+    return (request.headers.get("origin") == config.public_origin() and ctype == "application/json"
+            and hmac.compare_digest(request.headers.get("x-admin-token", ""), op.form_token))
+
+
 def audit(session: Session, user_id: uuid.UUID | None, action: str, target_id: str | None) -> None:
     """One audit row (no content, no IP). Side effects: inserts (the caller commits)."""
     session.execute(text("INSERT INTO admin.audit (at, user_id, action, target_id) VALUES (:at, :u, :a, :t)"),
