@@ -56,10 +56,3 @@ export const AdminMetrics = z.looseObject({
   previous: Summary.nullable(), // the range of the same length before; null past the 90-day limit
 });
 export type AdminMetrics = z.infer<typeof AdminMetrics>;
-
-// One request's spans, start and end as % of the whole request (the Jaeger stand-in screen, sample data)
-export const AdminTrace = z.strictObject({
-  requestId: z.string(),
-  spans: z.array(z.strictObject({ name: z.string(), start: z.number().min(0).max(100), end: z.number().min(0).max(100) })),
-});
-export type AdminTrace = z.infer<typeof AdminTrace>;

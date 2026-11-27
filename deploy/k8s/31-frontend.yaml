@@ -25,7 +25,9 @@ spec:
         - name: frontend
           image: kosis/frontend
           imagePullPolicy: IfNotPresent   # GHCR 이미지(커밋별 태그라 바뀌지 않음)
-          env: [{ name: BACKEND_URL, value: "http://backend:8000" }]
+          env:
+            - { name: BACKEND_URL, value: "http://backend:8000" }
+            - { name: ADMIN_URL, value: "http://kosis-admin:8100" }   # /admin 화면 전에 운영자인지 묻는 곳 (proxy.ts, T3-67)
           ports: [{ containerPort: 3000 }]
           readinessProbe:
             tcpSocket: { port: 3000 }

@@ -20,3 +20,22 @@ export const dotDate = (day: string) => day.replaceAll("-", ".");
 export const shortDate = (day: string) => `${Number(day.slice(5, 7))}/${day.slice(8, 10)}`;
 
 export const ms = (n: number) => `${count(n)}ms`;
+
+const KST_MINUTE = new Intl.DateTimeFormat("ko-KR", {
+  timeZone: "Asia/Seoul", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false,
+});
+const KST_SECOND = new Intl.DateTimeFormat("ko-KR", {
+  timeZone: "Asia/Seoul", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit",
+  second: "2-digit", hour12: false,
+});
+
+/** An ISO time in Korea: "11. 27. 14:05" (lists), with year and seconds for one question */
+export const kstTime = (iso: string | null | undefined, seconds = false) =>
+  iso ? (seconds ? KST_SECOND : KST_MINUTE).format(new Date(iso)) : "–";
+
+/** 1234 ms → "1.2초"; none → "–" */
+export const sec = (ms: number | null | undefined) => (ms == null ? "–" : `${(ms / 1000).toFixed(1)}초`);
+
+/** Cut a long text for a list cell: "…" when cut, `empty` when there is none */
+export const cut = (text: string | null | undefined, n: number, empty = "(보관 기간 지남)") =>
+  !text ? empty : text.length <= n ? text : `${text.slice(0, n)}…`;
