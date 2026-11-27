@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% from "macros.html" import review_form, feedback_mark %}
+{% block body %}
+{% set r = d.row %}
+<p><a href="{{ PREFIX }}/questions">← 질문 목록</a></p>
+<div class="grid">
+<section class="card-box wide">
+  <h3>질문</h3>
+  <p class="question">{{ r.question or ('(평가·팀 요청)' if r.is_internal else '(보관 기간 지남)') }}</p>
+  {% for w in d.rewrites %}<p class="rewrite">다시 쓴 질문 {{ loop.index }}: {{ w.text or '(보관 기간 지남)' }}</p>{% endfor %}
+  <small>해석 {{ r.rewrite_kind | label('rewrite') }} · 해석한 곳 {{ r.interpreted_by or '–' }} · {{ '회원' if r.is_member else '비회원' }} · {{ r.created_at | kst('%Y-%m-%d %H:%M:%S') }}</small>
+  <p class="empty">답 문장은 저장하지 않습니다(11/26 팀 결정).</p>
+</section>
+<section class="card-box">
+  <h3>결과</h3>
+  <dl>
+    <dt>결과</dt><dd>{{ r.outcome | label('outcome') }}</dd>
+    <dt>사유</dt><dd>{{ r.reason_code | label('reason') }}</dd>
+    <dt>실패 단계</dt><dd>{{ r.failed_stage | label('stage') }}</dd>
+    <dt>표</dt><dd>{{ r.survey_name or '–' }} {% if r.picked_key %}<code>{{ r.picked_key }}</code>{% endif %}</dd>
+    <dt>숫자·차트</dt><dd>{{ '숫자 있음' if r.has_numbers else '숫자 없음' }} · {{ '차트 있음' if r.has_chart else '차트 없음' }}</dd>
+  </dl>
+</section>
+<section class="card-box">
+  <h3>시간·비용</h3>
+  <dl>
+    <dt>응답 시간</dt><dd>{{ r.latency_ms | sec }}</dd>
+    <dt>첫 글자</dt><dd>{{ r.first_token_ms | sec }}</dd>
+    <dt>LLM 호출</dt><dd>{{ r.llm_calls }}</dd>
+    <dt>토큰</dt><dd>입력 {{ r.input_tokens }} · 출력 {{ r.output_tokens }}</dd>
+  </dl>
+</section>
+<section class="card-box">
+  <h3>피드백</h3>
+  {% if d.feedback %}
+  {% set f = d.feedback %}
+  <p>{{ feedback_mark(f.value) }} {{ f.category | label('down' if f.value == 'down' else 'up', '선택 안 함') }} · {{ f.updated_at | kst }}</p>
+  <p>{{ f.reason or '' }}</p>
+  {% else %}<p class="empty">피드백 없음</p>{% endif %}
+</section>
+<section class="card-box">
+  <h3>같은 대화</h3>
+  <ol class="conv">
+  {% for c in d.conversation %}
+    <li value="{{ c.turn_index + 1 }}">{% if c.request_id == r.request_id %}<b>{{ c.question | cut(40, '–') }}</b>{% else %}<a href="{{ PREFIX }}/questions/{{ c.request_id }}">{{ c.question | cut(40, '–') }}</a>{% endif %} · {{ c.outcome | label('outcome') }}</li>
+  {% endfor %}
+  </ol>
+</section>
+<section class="card-box">
+  <h3>연결</h3>
+  <p>request_id <code>{{ r.request_id }}</code></p>
+  {% if grafana %}<p><a href="{{ grafana }}/explore" rel="noreferrer">Grafana에서 로그 찾기 ↗</a></p>{% endif %}
+</section>
+{% if d.feedback and d.feedback.value == 'down' %}
+<section class="card-box wide">
+  <h3>👎 처리</h3>
+  {% if d.review %}<small>마지막 변경 {{ d.review.updated_by or '–' }} · {{ d.review.updated_at | kst }}</small>{% endif %}
+  {{ review_form(r.request_id, d.review, people, statuses, op, back) }}
+</section>
+{% endif %}
+</div>
+{% endblock %}

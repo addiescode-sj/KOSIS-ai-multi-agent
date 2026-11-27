@@ -94,6 +94,9 @@ jobs:
             org.opencontainers.image.revision=${{ github.sha }}
           cache-from: type=gha,scope=frontend
           cache-to: type=gha,scope=frontend,mode=min
+      # The operator app (admin/) is built here only to check it builds; it is not pushed yet.
+      - name: Build admin
+        run: docker build -f admin/Dockerfile -t kosis-admin .
       # Provided data and keys must never be in an image (the images are public). The checkout has neither, so this
       # guards against a future COPY or a committed file.
       - name: No data or keys in the images

@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  {% block head %}{% endblock %}
+  <title>{% block title %}KOSIS 운영{% endblock %}</title>
+  <link rel="stylesheet" href="{{ PREFIX }}/static/admin.css">
+  <script src="{{ PREFIX }}/static/admin.js" defer></script>
+</head>
+<body>
+<header class="top">
+  <strong>KOSIS 운영</strong>
+  <nav>
+    <a href="{{ PREFIX }}" {% if nav == 'home' %}aria-current="page"{% endif %}>홈</a>
+    <a href="{{ PREFIX }}/metrics" {% if nav == 'metrics' %}aria-current="page"{% endif %}>지표</a>
+    <a href="{{ PREFIX }}/questions" {% if nav == 'questions' %}aria-current="page"{% endif %}>질문 검수</a>
+    <a href="{{ PREFIX }}/feedback" {% if nav == 'feedback' %}aria-current="page"{% endif %}>👎 처리함</a>
+    {% if grafana %}<a href="{{ grafana }}" rel="noreferrer">Grafana ↗</a>{% endif %}
+  </nav>
+  {% if op %}
+  <span class="me">{{ op.name }} · <button type="button" class="link" data-logout>로그아웃</button></span>
+  {% endif %}
+</header>
+{% if flt is defined and flt and flt.include_internal %}<div class="band">팀·평가 요청 포함</div>{% endif %}
+{% if notice %}<p class="notice">{{ notice }}</p>{% endif %}
+{% if saved %}<p class="notice ok">저장했습니다.</p>{% endif %}
+{% if error %}<p class="notice bad">{{ error }}</p>{% endif %}
+<main>
+{% block body %}{% endblock %}
+</main>
+<footer>데이터 기준 {{ read_at }} (한국 시각)</footer>
+</body>
+</html>
