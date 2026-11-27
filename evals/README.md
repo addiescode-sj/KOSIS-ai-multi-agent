@@ -714,9 +714,9 @@ dev.sh는 Docker·PostgreSQL·Jaeger를 띄우고 `uv run --group embed --group 
 - 온라인 점수 행은 `eval.online` span으로 원래 서비스 trace에 link된다(`kosis.online.faithfulness` 등, OTLP endpoint가 있을 때).
 
 
-## 11. 전→후 비교 실험 — baseline = main, 짝 bootstrap, 채택 규칙 (T3-60)
+## 11. 전→후 비교 실험 — baseline = main, 짝 bootstrap, 채택 규칙 (T3-63)
 
-아키텍처·프롬프트·모델을 바꿨을 때 채택 여부를 정하는 절차다. 규칙의 근거는 `plans/T3-60.md`에 있다.
+아키텍처·프롬프트·모델을 바꿨을 때 채택 여부를 정하는 절차다. 규칙의 근거는 `plans/T3-63.md`에 있다.
 
 **1. 같은 조건으로 두 run을 만든다**
 - baseline은 **실험을 시작한 시점의 main**(SHA 고정)이고, after는 실험 브랜치다.
@@ -725,6 +725,18 @@ dev.sh는 Docker·PostgreSQL·Jaeger를 띄우고 `uv run --group embed --group 
 - 로컬에서 돌릴 때는 main worktree와 실험 브랜치에서 같은 `--scenarios`로 `--layer e2e`를 한 번씩 돌린다.
 - **Colab 결과를 로컬로**: 노트북은 run·비교가 끝날 때마다 Drive `MyDrive/kosis/reports/`에 복사한다. PC에서 `python scripts/pull_reports.py`를 실행하면 로컬 `evals/reports`에 로컬 run과 같은 형식·자리로 들어온다. 새 폴더만 복사하고 `ops_history.jsonl`에는 그 run의 줄만 `run_id` 기준 한 번 더한다. Drive 데스크톱 앱이 없으면 노트북 마지막 셀의 zip으로 `python scripts/pull_reports.py <zip>`을 쓴다.
 - A/A(baseline 한 번 더)는 세션 점검용이다. 같은 코드인데 구간이 0을 벗어나거나 지연 p95가 ±20% 넘게 흔들리면 그 세션의 결과는 쓰지 않는다.
+
+**단계만 따로 재기**: e2e 전체 대신 필요한 단계만 같은 방식(base → after → A/A, 판정)으로 잴 수 있다. 노트북은 설정 셀의 `LAYERS`로 고른다. 로컬에서는 아래 `--layer`로 두 트리에서 한 번씩 돌린 뒤 `evals.compare`에 넘긴다.
+
+| 단계 | 명령 (`--layer`) | 문항 통과 (`evals.compare`) | 정답 |
+|---|---|---|---|
+| 질의 이해 (슬롯) | `l2` | 슬롯 전부 맞음 (`all_fields`) | `query_golden.jsonl` |
+| 질의 이해 (대화 맥락) | `agent --agent backend.app.main:build_agent --split all --scenarios evals/datasets/agent_scenarios_multiturn_dev.jsonl evals/datasets/agent_scenarios_multiquery_dev.jsonl` | 턴 통과 | 멀티턴·멀티쿼리 시나리오 |
+| 검색 | `l1 --retriever graph:staged-gpt-condyears` (서비스 검색 설정) | 정답 표 1위, 답할 수 없으면 거절 | `retrieval_golden.jsonl` |
+| 계산·답변 생성 | `l3 --calc-golden <e2e 계산 골든 중 table_keys 없는 항목>` | 계산 판정 PASS | 표 하나짜리 54문항 |
+| 전체 | `e2e` | 턴 통과 | e2e 골든 120 |
+
+- 여러 표 문항은 검색이 표를 가져와야 해서 `l3`에서 빼고 `e2e`에서만 잰다. Ragas(RAG 판정)는 이 절차 밖이다.
 
 **2. 판정한다**
 ```bash

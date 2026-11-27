@@ -1,10 +1,10 @@
-"""Before -> after verdict for two e2e (or agent) runs of the same golden (plans/T3-60.md).
+"""Before -> after verdict for two runs of the same layer and golden (plans/T3-63.md): e2e, agent, l1, l2 or l3.
 
     python -m evals.compare --base evals/reports/<baseline run> --after evals/reports/<after run> [--aa <baseline again>]
 
-Questions are paired by (sid, turn). The pass-rate difference and the per-question latency difference get the team's
+Questions are paired by (sid or qid, turn); each layer's question pass is PASSED below. The pass-rate difference and the per-question latency difference get the team's
 paired bootstrap 95% interval (phase 2 lab_common.boot, T2-40: 10,000 resamples, seed 0). The verdict follows the rules
-fixed in plans/T3-60.md before any result: guardrail (new violations), accuracy (interval vs 0), one source losing
+fixed in plans/T3-63.md before any result: guardrail (new violations), accuracy (interval vs 0), one source losing
 alone, then cost and latency. Runs of different goldens, splits or layers are refused, as phase 1 eval.regress does.
 Writes evals/reports/compare-<base>-vs-<after>/compare.md and compare.json (not committed, like run folders).
 """
@@ -34,6 +34,22 @@ class Incomparable(ValueError):
     pass
 
 
+PASS_RULE = {"l1": "정답 표가 1위(답할 수 없는 문항은 거절)", "l2": "슬롯 전부 맞음", "l3": "계산 판정 PASS",
+             "agent": "턴 통과(툴·상태·수치)", "e2e": "턴 통과(툴·상태·수치)"}
+
+
+def passed(layer: str | None, row: dict) -> bool:
+    """One question's pass in each layer: l1 the right table first (or a right refusal for an unanswerable question),
+    l2 every slot right, l3 the calculation verdict PASS, agent / e2e the turn's own pass (tools, state, numbers)."""
+    if layer == "l1":
+        return row.get("hit@1") == 1 if row.get("answerable", True) else bool(row.get("no_answer_pred"))
+    if layer == "l2":
+        return row.get("all_fields") == 1
+    if layer == "l3":
+        return row.get("verdict") == "PASS"
+    return bool(row.get("passed"))
+
+
 def load_run(path: Path) -> dict:
     path = Path(path)
     manifest = json.loads((path / "manifest.json").read_text(encoding="utf-8"))
@@ -42,7 +58,7 @@ def load_run(path: Path) -> dict:
     by_key = {}
     for r in rows:
         if r.get("run", 0) == 0:  # pass^k runs (agent --repeat): the first run pairs with the other side's first
-            by_key[(r["sid"], r.get("turn", 0))] = r
+            by_key[(r.get("sid") or r["qid"], r.get("turn", 0))] = r | {"_pass": passed(manifest.get("layer"), r)}
     return {"path": path, "manifest": manifest, "ops": ops, "rows": by_key}
 
 
@@ -93,9 +109,10 @@ def _ops(run: dict) -> dict:
 def paired(base: dict, after: dict, sources: dict[str, str]) -> dict:
     keys = sorted(base["rows"])
     b, a = base["rows"], after["rows"]
-    diff = [int(bool(a[k].get("passed"))) - int(bool(b[k].get("passed"))) for k in keys]
+    diff = [int(a[k]["_pass"]) - int(b[k]["_pass"]) for k in keys]
+    source = lambda k: sources.get(k[0]) or a[k].get("qtype") or a[k].get("kind") or "?"  # noqa: E731
     item = lambda k: {"sid": k[0], "turn": k[1], "question": a[k].get("question"),
-                      "source": sources.get(k[0], "?"), "errors": a[k].get("errors") or []}
+                      "source": source(k), "errors": a[k].get("errors") or []}
     wins = [item(k) for k, d in zip(keys, diff) if d > 0]
     losses = [item(k) for k, d in zip(keys, diff) if d < 0]
     lat = [a[k]["latency_ms"] - b[k]["latency_ms"] for k in keys
@@ -104,15 +121,15 @@ def paired(base: dict, after: dict, sources: dict[str, str]) -> dict:
                       for k in keys if set(violations(a[k])) - set(violations(b[k]))]
     by_source: dict[str, dict[str, int]] = {}
     for k, d in zip(keys, diff):
-        s = by_source.setdefault(sources.get(k[0], "?"), {"n": 0, "wins": 0, "losses": 0})
+        s = by_source.setdefault(source(k), {"n": 0, "wins": 0, "losses": 0})
         s["n"] += 1
         s["wins"] += d > 0
         s["losses"] += d < 0
     ob, oa = _ops(base), _ops(after)
     return {
         "n": len(keys),
-        "base_pass": sum(bool(b[k].get("passed")) for k in keys) / len(keys),
-        "after_pass": sum(bool(a[k].get("passed")) for k in keys) / len(keys),
+        "base_pass": sum(b[k]["_pass"] for k in keys) / len(keys),
+        "after_pass": sum(a[k]["_pass"] for k in keys) / len(keys),
         "diff": sum(diff) / len(keys), "ci": boot(diff),
         "wins": wins, "losses": losses, "new_violations": new_violations, "by_source": by_source,
         "latency_diff_median_ms": statistics.median(lat) if lat else None, "latency_diff_ci_ms": boot(lat),
@@ -122,7 +139,7 @@ def paired(base: dict, after: dict, sources: dict[str, str]) -> dict:
 
 
 def verdict(c: dict) -> tuple[str, list[str]]:
-    """(채택 | 보류 | 기각, reasons) by the rules of plans/T3-60.md."""
+    """(채택 | 보류 | 기각, reasons) by the rules of plans/T3-63.md."""
     why = []
     if len(c["new_violations"]) > COUNT_TOLERANCE:
         return "기각", [f"가드레일: 새로 생긴 위반 {len(c['new_violations'])}건 > 허용 {COUNT_TOLERANCE}"]
@@ -174,7 +191,8 @@ def render(base: dict, after: dict, c: dict, decision: str, why: list[str], aa: 
              f"| 커밋 | `{(m(base).get('git') or '')[:7]}` | `{(m(after).get('git') or '')[:7]}` |",
              f"| 실전 1 · 2 | `{(m(base).get('vendor_phase1') or '')[:7]}` · `{(m(base).get('vendor_phase2') or '')[:7]}` "
              f"| `{(m(after).get('vendor_phase1') or '')[:7]}` · `{(m(after).get('vendor_phase2') or '')[:7]}` |",
-             f"| 문항 통과율 | {c['base_pass']:.3f} | {c['after_pass']:.3f} |",
+             f"| 문항 통과율 ({m(base).get('layer')}: {PASS_RULE.get(m(base).get('layer'), '턴 통과')}) "
+             f"| {c['base_pass']:.3f} | {c['after_pass']:.3f} |",
              f"| 지연 p95 (ms) | {num(c['p95_ms']['base'])} | {num(c['p95_ms']['after'])} ({pct(c['p95_ms']['change'])}) |",
              f"| 요청당 비용 (KRW) | {num(c['cost']['base'], '{:.3f}')} | {num(c['cost']['after'], '{:.3f}')} ({pct(c['cost']['change'])}) |", "",
              f"- 문항 {c['n']}개, 짝 bootstrap 95% ({RESAMPLES:,}회, seed {SEED}). 바뀐 문항 "

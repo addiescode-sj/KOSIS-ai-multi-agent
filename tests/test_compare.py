@@ -1,4 +1,4 @@
-"""plans/T3-60.md: paired before -> after verdict (evals/compare.py) on made-up run folders."""
+"""plans/T3-63.md: paired before -> after verdict (evals/compare.py) on made-up run folders."""
 
 import json
 
@@ -92,3 +92,31 @@ def test_the_cli_writes_the_report_and_refuses_with_exit_2(tmp_path, capsys):
                          "--scenarios", str(tmp_path / "none.jsonl")]) == 0
     assert "판정: **채택**" in (out / "compare.md").read_text() and json.loads((out / "compare.json").read_text())["decision"] == "채택"
     assert compare.main(["--base", str(tmp_path / "b"), "--after", str(tmp_path / "x"), "--out", str(out)]) == 2
+
+
+def layer_run(tmp_path, name, layer, rows):
+    d = tmp_path / name
+    d.mkdir()
+    (d / "manifest.json").write_text(json.dumps({"run_id": name, "layer": layer, "split": "test", "golden": {"sha256": "g"}}))
+    (d / "ops.json").write_text(json.dumps({"latency_ms": {"p95": 100.0}, "cost": {"per_request_mean": 0.1}}))
+    (d / "results.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    return compare.load_run(d)
+
+
+def test_each_layer_has_its_own_question_pass():
+    """l1 the right table first (or a right refusal), l2 every slot, l3 the PASS verdict, agent / e2e the turn's pass."""
+    assert compare.passed("l1", {"answerable": True, "hit@1": 1}) and not compare.passed("l1", {"answerable": True, "hit@1": 0})
+    assert compare.passed("l1", {"answerable": False, "no_answer_pred": True})
+    assert compare.passed("l2", {"all_fields": 1}) and not compare.passed("l2", {"all_fields": 0})
+    assert compare.passed("l3", {"verdict": "PASS"}) and not compare.passed("l3", {"verdict": "PARTIAL"})
+    assert compare.passed("e2e", {"passed": True}) and not compare.passed("agent", {"passed": False})
+
+
+def test_l3_runs_pair_by_qid_and_group_by_kind(tmp_path):
+    base = layer_run(tmp_path, "b", "l3", [{"qid": f"Q{i}", "kind": "answerable", "verdict": "FAIL", "latency_ms": 10}
+                                           for i in range(12)] + [{"qid": "R", "kind": "default_allowed", "verdict": "PASS"}])
+    after = layer_run(tmp_path, "a", "l3", [{"qid": f"Q{i}", "kind": "answerable", "verdict": "PASS", "latency_ms": 10}
+                                            for i in range(12)] + [{"qid": "R", "kind": "default_allowed", "verdict": "PASS"}])
+    c = compare.paired(base, after, {})
+    assert (c["base_pass"], len(c["wins"]), c["by_source"]["answerable"]["wins"]) == (1 / 13, 12, 12)
+    assert compare.verdict(c)[0] == "채택"

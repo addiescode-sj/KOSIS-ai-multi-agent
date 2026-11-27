@@ -30,7 +30,7 @@ TASK.md를 고치면 `.claude/hooks/linear_sync.py`가 `T3-xx` 제목으로 Line
 과제에 합격 점수는 없다. **"무엇을 바꿔서 몇 → 몇"**을 남기는 것이 결과물이다.
 종합 핵심 지표: **툴·파라미터 정확도, 최종 수치 정확도, 멀티턴 성공률, 요청당 비용·지연**.
 어떤 도구나 모델이든 골든셋 수치로 전→후를 보인 뒤 채택한다. 도입 자체는 성과가 아니다.
-전→후 비교는 baseline = 실험 시점 main으로 같은 세션에서 돌리고, `python -m evals.compare`(짝 bootstrap 95% + 미리 정한 채택 규칙, `evals/README.md` 11장, T3-60)의 판정을 따른다.
+전→후 비교는 baseline = 실험 시점 main으로 같은 세션에서 돌리고, `python -m evals.compare`(짝 bootstrap 95% + 미리 정한 채택 규칙, `evals/README.md` 11장, T3-63)의 판정을 따른다.
 
 ## 2. 설계 원칙
 

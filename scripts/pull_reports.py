@@ -4,7 +4,7 @@
     python scripts/pull_reports.py <folder or .zip>     # a folder of run folders, or the zip the Colab notebook downloads
 
 Copies every run folder (has manifest.json) and compare folder (compare-*, has compare.md) that evals/reports does
-not have yet, and appends the source's ops_history lines of those runs that the local ops_history.jsonl lacks (plans/T3-60.md).
+not have yet, and appends the source's ops_history lines of those runs that the local ops_history.jsonl lacks (plans/T3-63.md).
 Folders already here are never overwritten. Run folders stay out of git; ops_history.jsonl is committed.
 """
 
