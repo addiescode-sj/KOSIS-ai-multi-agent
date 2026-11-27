@@ -182,3 +182,36 @@ def test_record_and_promote_round_trip(tmp_path):
     with pytest.raises(SystemExit):
         (run / "manifest.json").write_text(json.dumps({"run_id": "r1", "layer": "e2e", "summary": summary}), encoding="utf-8")
         quality.promote(run, None, tmp_path / "b.json")
+
+
+def test_a_scenario_e2e_run_is_scored_like_a_calc_golden_run(tmp_path, monkeypatch):
+    """T3-63: the e2e golden's scenario run (rows by sid / turn with tool calls) is read into the same row: the last
+    summarize_stat answer, every searched candidate, the table it ended on, the calc verdict; the calc file's own hash."""
+    from evals.tasks import ragas
+
+    e2e = tmp_path / "e2e"
+    e2e.mkdir()
+    turn = {"sid": "q1", "turn": 0, "run": 0, "question": row()["question"], "state_key": "101_OTHER",
+            "expected_table": "101_GOLD", "calc": {"verdict": "FAIL"}, "pred_labels": {"outcome": "answered"},
+            "trace_id": "ab" * 16, "span_id": "cd" * 8, "error": None, "latency_ms": 12.0,
+            "calls": [{"name": "search_tables", "args": {}, "result": {"route": "found", "candidates": [
+                          {"key": "101_OTHER"}, {"key": "101_GOLD"}]}},
+                      {"name": "summarize_stat", "args": {"table_key": "101_OTHER"}, "result": answer().model_dump(mode="json")}]}
+    (e2e / "results.jsonl").write_text(json.dumps(turn, ensure_ascii=False) + "\n", encoding="utf-8")
+    golden = tmp_path / "e2e_golden_calc.jsonl"
+    golden.write_text(CalcItem(qid="q1", kind="answerable", question=row()["question"], table_key="101_GOLD", table_sha256="x",
+                               required_facts=FACTS).model_dump_json() + "\n", encoding="utf-8")
+    (e2e / "manifest.json").write_text(json.dumps({
+        "run_id": "20261127-000000-e2e", "layer": "e2e", "split": "test", "agent": None,
+        "golden": {"sha256": "scenarios+calc", "files": {"e2e_golden.jsonl": "s",
+                                                         "e2e_golden_calc.jsonl": hashlib.sha256(golden.read_bytes()).hexdigest()}},
+        "source_snapshot": {"tables.jsonl": "t"}, "ops": {"models": ["HCX-DASH-002"]}}), encoding="utf-8")
+    monkeypatch.setattr(rm, "table_texts", lambda keys, path: TEXTS)
+    monkeypatch.setattr(ragas, "make_scorer", lambda args: (lambda jobs: [(0.9, None, 5.0) for _ in jobs], "0.4.3"))
+
+    class Args:
+        from_run, calc_golden, k, split, stage, no_judge_cache = e2e, [golden], 5, "test", "t", False
+    [r], summary, _ = ragas.run(Args)
+    assert r["qid"] == "q1" and r["verdict"] == "FAIL" and r["faithfulness"] == 0.9
+    assert r["id_context_precision"] == 0.5 and r["trace_id"] == "ab" * 16  # gold second among the searched candidates
+    assert summary["gate"]["answered"] == 1 and summary["gate"]["e2e_right_table_rate"] == 0.0
