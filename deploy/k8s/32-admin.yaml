@@ -1,0 +1,66 @@
+# 운영자 페이지 (저장소 admin/, T3-57). 주소 https://<사이트 주소>/admin
+# 준비: 01-secrets.README.md "운영자 페이지" (DB 계정 kosis_admin + Secret kosis-admin)
+# 시작할 때 admin 스키마 마이그레이션을 먼저 돌린다(initContainer). 매일 03:30 정리 작업.
+apiVersion: v1
+kind: Service
+metadata: { name: kosis-admin }
+spec:
+  selector: { app: kosis-admin }
+  ports: [{ port: 8100 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: kosis-admin }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: kosis-admin } }
+  template:
+    metadata: { labels: { app: kosis-admin } }
+    spec:
+      securityContext: { appArmorProfile: { type: Localhost, localhostProfile: kosis-app } }   # 12-apparmor.sh
+      nodeSelector: { kubernetes.io/hostname: kosis-node-2 }
+      initContainers:
+        - name: migrate
+          image: kosis/admin:1126admin
+          imagePullPolicy: Never
+          command: [/app/.venv/bin/alembic, -c, admin/alembic.ini, upgrade, head]
+          envFrom: [{ secretRef: { name: kosis-admin } }]
+          resources: { limits: { memory: 256Mi } }
+      containers:
+        - name: admin
+          image: kosis/admin:1126admin
+          imagePullPolicy: Never
+          envFrom: [{ secretRef: { name: kosis-admin } }]
+          env:
+            - { name: ADMIN_PUBLIC_ORIGIN, value: "https://kosis.example.invalid" }   # 실제 값은 deploy/overlay
+          ports: [{ containerPort: 8100 }]
+          readinessProbe:
+            httpGet: { path: /admin/healthz, port: 8100 }
+            periodSeconds: 10
+          resources:
+            requests: { memory: 96Mi, cpu: 20m }
+            limits: { memory: 256Mi }
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata: { name: kosis-admin-cleanup }
+spec:
+  schedule: "30 3 * * *"
+  startingDeadlineSeconds: 72000   # 서버가 꺼져 시각을 놓치면 켜진 뒤 20시간 안에 한 번 실행 (33-db-jobs.yaml 과 같음)
+  timeZone: Asia/Seoul
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        spec:
+          securityContext: { appArmorProfile: { type: Localhost, localhostProfile: kosis-app } }
+          restartPolicy: OnFailure
+          nodeSelector: { kubernetes.io/hostname: kosis-node-2 }
+          containers:
+            - name: cleanup
+              image: kosis/admin:1126admin
+              imagePullPolicy: Never
+              command: [/app/.venv/bin/python, -m, admin.app.cleanup]
+              envFrom: [{ secretRef: { name: kosis-admin } }]
+              resources: { limits: { memory: 128Mi } }

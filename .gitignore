@@ -43,3 +43,7 @@ chroma/
 
 # Per-machine compose overrides (e.g. a shared Chroma folder)
 docker-compose.override.yml
+
+# Server deploy: per-server addresses (T3-62). deploy/site.env.example is the template
+deploy/site.env
+deploy/overlay/

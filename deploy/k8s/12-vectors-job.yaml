@@ -1,0 +1,22 @@
+# 벡터 2,364건을 PostgreSQL에 넣기(임베딩 다시 계산 안 함). migrate 가 끝난 뒤 한 번: kubectl -n kosis apply -f 12-vectors-job.yaml
+# 컬렉션이 바뀌면 파일 이름과 kosis-env 의 VECTOR_COLLECTION 을 같이 바꾼다. 이미지 태그도 맞출 것.
+apiVersion: batch/v1
+kind: Job
+metadata: { name: vectors, namespace: kosis }
+spec:
+  backoffLimit: 1
+  template:
+    spec:
+      securityContext: { appArmorProfile: { type: Localhost, localhostProfile: kosis-app } }   # 12-apparmor.sh
+      restartPolicy: Never
+      nodeSelector: { kosis/role: data }
+      containers:
+        - name: vectors
+          image: kosis/backend:1125mms2
+          imagePullPolicy: Never
+          command: [uv, run, --no-sync, python, -m, kosis_rag_build.cli, vectors, --database-url, $(DATABASE_URL), --import, /app/data/vectors/kosis_mixft_A1_e3.npz]
+          envFrom: [{ secretRef: { name: kosis-env } }]
+          volumeMounts: [{ name: data, mountPath: /app/data, readOnly: true }]
+      volumes:
+        - name: data
+          hostPath: { path: /srv/kosis/data, type: Directory }

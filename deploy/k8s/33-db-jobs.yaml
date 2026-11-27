@@ -1,0 +1,100 @@
+# DB 예약 작업 2개 (11/26). 백업 04:00 → 정리 04:30 (한국 시각).
+# - 서버가 꺼져 있어 시각을 놓치면 켜진 뒤 20시간 안에 한 번 실행한다(startingDeadlineSeconds).
+# - 백업은 node-2 /srv/kosis/backup 에 둔다(DB는 node-1). 7일 지난 파일은 지운다.
+#   처음 한 번 node-2: sudo install -d -o 999 -g 999 -m 700 /srv/kosis/backup
+# - 정리는 26시간 안의 백업이 있을 때만 실행한다(없으면 10분 기다린 뒤 실패).
+# - 손으로 백업: kubectl -n kosis create job --from=cronjob/db-backup db-backup-manual-$(date +%m%d%H%M)
+# - 복원(사람이 결정): pg_restore -h postgres -U $POSTGRES_USER -d <대상 DB> --clean --if-exists <파일>
+apiVersion: batch/v1
+kind: CronJob
+metadata: { name: db-backup }
+spec:
+  schedule: "0 4 * * *"
+  timeZone: Asia/Seoul
+  startingDeadlineSeconds: 72000
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        spec:
+          securityContext: { runAsUser: 999, runAsGroup: 999, appArmorProfile: { type: Localhost, localhostProfile: kosis-app } }
+          restartPolicy: Never
+          nodeSelector: { kubernetes.io/hostname: kosis-node-2 }
+          containers:
+            - name: backup
+              image: pgvector/pgvector:0.8.1-pg17      # DB와 같은 판의 pg_dump
+              imagePullPolicy: IfNotPresent
+              env:
+                - { name: PGHOST, value: postgres }
+                - { name: TZ, value: Asia/Seoul }
+                - { name: PGUSER, valueFrom: { secretKeyRef: { name: kosis-db, key: POSTGRES_USER } } }
+                - { name: PGPASSWORD, valueFrom: { secretKeyRef: { name: kosis-db, key: POSTGRES_PASSWORD } } }
+                - { name: PGDATABASE, valueFrom: { secretKeyRef: { name: kosis-db, key: POSTGRES_DB } } }
+              command:
+                - sh
+                - -c
+                - |
+                  set -eu
+                  umask 077
+                  n=0; until pg_isready -t 2; do n=$((n+1)); [ $n -lt 60 ] || exit 1; sleep 5; done
+                  f=kosis-$(date +%Y%m%d-%H%M).dump
+                  pg_dump -Fc -f /backup/.tmp-$f
+                  pg_restore -l /backup/.tmp-$f > /dev/null      # 읽을 수 있는 파일인지 확인
+                  mv /backup/.tmp-$f /backup/$f
+                  rm -f /backup/.tmp-*
+                  find /backup -name 'kosis-*.dump' -mtime +7 -delete
+                  ls -l /backup
+              resources: { limits: { memory: 256Mi } }
+              volumeMounts: [{ name: backup, mountPath: /backup }]
+          volumes:
+            - name: backup
+              hostPath: { path: /srv/kosis/backup, type: Directory }
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata: { name: db-cleanup }
+spec:
+  schedule: "30 4 * * *"
+  timeZone: Asia/Seoul
+  startingDeadlineSeconds: 72000
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      template:
+        spec:
+          securityContext: { appArmorProfile: { type: Localhost, localhostProfile: kosis-app } }
+          restartPolicy: Never
+          nodeSelector: { kubernetes.io/hostname: kosis-node-2 }   # 백업 폴더를 보려고 node-2
+          initContainers:
+            - name: wait-backup
+              image: pgvector/pgvector:0.8.1-pg17
+              imagePullPolicy: IfNotPresent
+              securityContext: { runAsUser: 999, runAsGroup: 999 }
+              command:
+                - sh
+                - -c
+                - |
+                  for i in $(seq 60); do
+                    find /backup -name 'kosis-*.dump' -mmin -1560 | grep -q . && exit 0
+                    sleep 10
+                  done
+                  echo "26시간 안의 백업이 없어 정리를 하지 않음"; exit 1
+              volumeMounts: [{ name: backup, mountPath: /backup, readOnly: true }]
+          containers:
+            - name: cleanup
+              image: kosis/backend
+              imagePullPolicy: IfNotPresent   # kustomization 의 backend 태그를 따라감
+              command: [/app/.venv/bin/python, -m, kosis_store.cleanup]   # docs/service/api.md 4장 규칙. 다시 실행해도 안전
+              env:
+                - name: DATABASE_URL
+                  valueFrom: { secretKeyRef: { name: kosis-env, key: DATABASE_URL } }
+              resources: { limits: { memory: 512Mi } }
+          volumes:
+            - name: backup
+              hostPath: { path: /srv/kosis/backup, type: Directory }

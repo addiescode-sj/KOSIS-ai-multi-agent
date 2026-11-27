@@ -1,0 +1,37 @@
+# GPU 서버: vLLM (Qwen3.8-27B-INT4). 사용: cd ~/deploy/gpu && docker compose -f docker-compose.gpu.yml up -d
+# .env (같은 폴더, chmod 600): VLLM_API_KEY=<임의의 긴 문자열>   ← 서비스 서버의 STAGE2_API_KEY 등과 같은 값
+# 모델은 /srv/hf-cache 에 미리 받아 둠(~/download-models.sh) → 인터넷에서 다시 받지 않음(HF_HUB_OFFLINE).
+# 서버가 켜지면 자동 시작(restart). 모델 적재에 수 분 걸림 → /health 가 200이 되면 사용 가능.
+services:
+  vllm:
+    # vLLM 0.34.0 · torch 2.14.0+cu130 · transformers 5.22.2 — 11/23 동작 확인한 이미지로 고정 (약 36GB)
+    image: vllm/vllm-openai@sha256:20fdb089454afbb324efa4110a2c025ff7b27cc1a086e07aa580b18df8ad1ce1
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      HF_HUB_OFFLINE: "1"
+    command:   # 메모리 계산 근거: kosis-infra/07-GPU-메모리-검토.md
+      - --model=RedHatAI/Qwen3.8-27B-INT4             # 11/23 결정 (Gemma에서 변경). 가중치 약 18GB
+      - --served-model-name                          # 두 이름 모두 받음 (팀 .env 의 STAGE2_MODEL 은 긴 이름)
+      - qwen3.8-27b
+      - RedHatAI/Qwen3.8-27B-INT4
+      - --default-chat-template-kwargs={"enable_thinking":false}   # 2차 리랭커가 512토큰 제한이라 생각 모드 기본 끔 (요청에서 켤 수 있음)
+      - --api-key=${VLLM_API_KEY}
+      - --gpu-memory-utilization=0.70                # 약 31.5GiB. 나머지는 임베딩·리랭커 서버(약 4~6.5GiB) + 여유
+      - --max-model-len=32768
+      - --max-num-seqs=32                            # 동시 요청 상한. 기본 256은 선형 어텐션 상태 공간(237개분) 초과로 시작 실패 (11/23)
+      - --limit-mm-per-prompt={"image":0,"video":0}  # 텍스트만 사용
+      - --reasoning-parser=qwen3
+      - --enable-auto-tool-choice
+      - --tool-call-parser=qwen3_xml
+      - --speculative-config={"method":"mtp","num_speculative_tokens":3}   # 모델 카드 권장, 메모리 +0.8GiB
+    ports:
+      - "8000:8000"
+    volumes:
+      - /srv/hf-cache:/root/.cache/huggingface        # EBS에 저장 → 껐다 켜도 다시 받지 않음
+    ipc: host
+    deploy:
+      resources:
+        reservations:
+          devices: [{ driver: nvidia, count: all, capabilities: [gpu] }]
+  # 임베딩·1차 리랭커는 docker-compose.inference.yml (8002·8003). 예전 embed-rerank(8001)는 11/26 삭제
