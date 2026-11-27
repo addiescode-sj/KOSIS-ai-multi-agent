@@ -8,7 +8,7 @@ import { ErrorScreen } from "@/components/error-screen";
 import { Button } from "@/components/ui/button";
 import { isNewVersion, SCREEN_ERRORS } from "@/lib/chat/errors";
 
-// The root layout itself failed (T3-67 `page_error` / `new_version`). The app's providers are not here.
+// The root layout itself failed (T3-68 `page_error` / `new_version`). The app's providers are not here.
 export default function GlobalError({ error, retry }: { error: unknown; retry: () => void }) {
   const fresh = isNewVersion(error);
   return (

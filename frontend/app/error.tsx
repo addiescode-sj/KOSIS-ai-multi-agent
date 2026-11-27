@@ -6,7 +6,7 @@ import { ErrorScreen } from "@/components/error-screen";
 import { Button } from "@/components/ui/button";
 import { isNewVersion, SCREEN_ERRORS } from "@/lib/chat/errors";
 
-// A page that failed to render (T3-67 `page_error`), or an old page after a deploy asking for a file the new version
+// A page that failed to render (T3-68 `page_error`), or an old page after a deploy asking for a file the new version
 // no longer has (`new_version`): a reload fixes that one. The error's own text is never shown.
 export default function ErrorPage({ error, retry }: { error: unknown; retry: () => void }) {
   if (isNewVersion(error)) {

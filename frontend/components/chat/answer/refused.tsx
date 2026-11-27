@@ -29,7 +29,7 @@ export function Refused({ result, onAsk }: { result: ChatResult; onAsk?: Ask }) 
         <p className="whitespace-pre-wrap">{result.answer}</p>
         {available && <p>대신 확인할 수 있는 범위: <b className="text-ink">{available}</b></p>}
       </Notice>
-      {/* the reason code is for developers: not on the deployed screen (T3-67) */}
+      {/* the reason code is for developers: not on the deployed screen (T3-68) */}
       {reason && SHOW_REASON_CODE && <div className="flex gap-2"><Badge variant="gray">{reason}</Badge></div>}
       {suggest && onAsk && (
         <div className="rounded-xl bg-canvas p-4">

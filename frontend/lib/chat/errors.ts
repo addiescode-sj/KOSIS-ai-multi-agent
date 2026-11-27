@@ -1,4 +1,4 @@
-// What the screen says for a failed answer or request (T3-67, PM 문서 13 4·5·8장). The list here is the reference:
+// What the screen says for a failed answer or request (T3-68, PM 문서 13 4·5·8장). The list here is the reference:
 // the screen picks the sentence by `code` and shows the server's `message` only for a code it does not know.
 // Exception names, exception text and internal addresses are never shown (they stay in the backend logs).
 
@@ -46,7 +46,7 @@ export function isNewVersion(error: unknown): boolean {
 
 // A failed request outside the answer (api.md 0장 codes) needs no list here: those screens already write their own
 // sentence from the status (lib/chat/read.ts, lib/feedback/feedback.ts, lib/auth/account-actions.ts, ...) and show
-// the server's text only for input errors it words for people (invalid_feedback). T3-67 checked them, 11/27.
+// the server's text only for input errors it words for people (invalid_feedback). T3-68 checked them, 11/27.
 
 /** The short support number on an error card: the first 8 characters of the request_id (32 hex), or null. */
 export function supportId(requestId: string | null | undefined): string | null {

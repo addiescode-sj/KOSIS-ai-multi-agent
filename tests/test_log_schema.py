@@ -181,7 +181,7 @@ def _service_turn(outcome: str = "refused", fail: bool = False, thread: str = "t
         RunnableLambda(turn, name="LangGraph").invoke("2023년 출생아 수", {"callbacks": [spans]})
     except TimeoutError:
         pass
-    if code:  # what backend/app/main.py leaves on the root of a failed answer (T3-67)
+    if code:  # what backend/app/main.py leaves on the root of a failed answer (T3-68)
         root.set_attribute("kosis.error.code", code)
     root.end()
     return memory.get_finished_spans(), root
@@ -238,7 +238,7 @@ def test_an_error_turn_keeps_the_error_type_and_drops_its_message():
 
 @offline
 def test_an_error_turn_records_the_error_code_when_the_service_left_one():
-    """T3-67: reason_code is the error code (backend/app/errors.py); the class stays in the step's error_type."""
+    """T3-68: reason_code is the error code (backend/app/errors.py); the class stays in the step's error_type."""
     from kosis_store.log_rows import row_from_turn
 
     finished, _ = _service_turn(fail=True, code="timeout")
@@ -248,7 +248,7 @@ def test_an_error_turn_records_the_error_code_when_the_service_left_one():
 
 @offline
 def test_the_react_graph_nodes_have_their_stage():
-    """T3-67: the ReAct graph (T3-03) nodes. candidates is the search's candidate share, so a failure there (the
+    """T3-68: the ReAct graph (T3-03) nodes. candidates is the search's candidate share, so a failure there (the
     embed or rerank server) is a search failure, not an agent one."""
     from kosis_store.log_rows import STAGES
 

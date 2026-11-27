@@ -71,9 +71,9 @@
 | 409 | 꺼진 노드 호출(개발용 `/dev/nodes/*`) |
 | 422 | 입력 검증 실패(빈 질문, 200자 초과, 레지스트리에 없는 표 키, 선택지 조합 오류, 선택지 누락) |
 | 429 | 요청 제한 초과(피드백: 같은 IP 분당 10회) |
-| 503 | 에이전트 자원(벡터 DB PostgreSQL+pgvector·모델·키)을 아직 못 엶. 다음 요청에서 다시 시도. `/health`는 이때도 200. 선택 필드 `cause`에 원인 오류 코드(2장 `error`의 `code`, 예 `model_unavailable`)를 붙인다(T3-67) |
+| 503 | 에이전트 자원(벡터 DB PostgreSQL+pgvector·모델·키)을 아직 못 엶. 다음 요청에서 다시 시도. `/health`는 이때도 200. 선택 필드 `cause`에 원인 오류 코드(2장 `error`의 `code`, 예 `model_unavailable`)를 붙인다(T3-68) |
 
-- `message`에 예외 이름·예외 문구·내부 주소를 넣지 않는다(T3-67). 개발용 `POST /dev/chat`의 500은 고정 문구 + 문의 번호(`request_id` 앞 8자리).
+- `message`에 예외 이름·예외 문구·내부 주소를 넣지 않는다(T3-68). 개발용 `POST /dev/chat`의 500은 고정 문구 + 문의 번호(`request_id` 앞 8자리).
 - 오류 본문은 한 곳(전역 처리기)에서 만든다. 상태 코드는 그대로 두고 `code`만 붙인다: `not_found`·`method_not_allowed`·`unavailable`·`internal_error`·`login_required`·`forbidden_origin`·`conversation_busy`·`too_many_requests`·`invalid_feedback`·`failed_answer`·`unknown_table`·`invalid_cursor`. `message`는 화면에 보여도 되는 문장이다 (11/25, T3-55).
 - 입력 형식 오류(빈 질문, 200자 초과, 빠진 필드, 잘못된 타입)만 FastAPI 기본 본문 `{"detail": [...]}`으로 422를 돌려준다. 프론트는 422면 `error.message`, 없으면 `detail`을 본다.
 
@@ -292,7 +292,7 @@ F-JJWJTZ는 "재검색·재연결 중임을 일반 진행과 구분해 보여 �
   "retryable": true, "request_id": "4bf92f…", "type": "InferenceError", "detail": "…" }
 ```
 
-- `code`·`message` **[T3-67]**: 오류 코드 7종과 그 고정 문구(`backend/app/errors.py`). 지금은 예외 종류로 정하는 변환표이고, KOS-211에서 앞단 에이전트의 판단으로 바뀐다(같은 코드 목록).
+- `code`·`message` **[T3-68]**: 오류 코드 7종과 그 고정 문구(`backend/app/errors.py`). 지금은 예외 종류로 정하는 변환표이고, KOS-211에서 앞단 에이전트의 판단으로 바뀐다(같은 코드 목록).
 
   | `code` | 언제 | `retryable` |
   | -- | -- | -- |

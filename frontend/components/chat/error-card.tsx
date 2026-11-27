@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { type ErrorView, supportId } from "@/lib/chat/errors";
 
-// The card of a turn that ended without an answer (T3-67): the error code's title and sentence, a small support
+// The card of a turn that ended without an answer (T3-68): the error code's title and sentence, a small support
 // number (the first 8 characters of the request_id) to quote when asking for help, and "다시 시도".
 export function ErrorCard({ view, requestId, onRetry }: {
   view: ErrorView;

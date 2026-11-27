@@ -101,7 +101,7 @@ app = FastAPI(
 
 class ApiError(Exception):
     """An error of a non-SSE endpoint in the contract's shape: {"error": {"code", "message"}} (api.md 0). `cause`
-    (optional, T3-67): the error code (backend/app/errors.py) behind a 503 `unavailable`, so the screen can say why."""
+    (optional, T3-68): the error code (backend/app/errors.py) behind a 503 `unavailable`, so the screen can say why."""
 
     def __init__(self, status: int, code: str, message: str, cause: str | None = None):
         self.status, self.code, self.message, self.cause = status, code, message, cause
@@ -229,7 +229,7 @@ def _loaded() -> tuple[Any, dict[str, BaseTool]]:
                 _agent = _build(checkpointer)
             except Exception as e:  # noqa: BLE001 - any load failure means the agent is unavailable
                 log.warning("agent not available: %s", e)
-                # T3-67: no exception text in the body; the cause code says why (GPU server down, missing key, ...)
+                # T3-68: no exception text in the body; the cause code says why (GPU server down, missing key, ...)
                 raise ApiError(503, "unavailable", UNAVAILABLE_MESSAGE, cause=classify(e)) from e
         return _agent
 
@@ -481,7 +481,7 @@ def chat_stream(req: ChatRequest, graph=Depends(get_graph), tracer: Tracer = Dep
     5. `result` — `ChatResult` (`request_id` 포함). 화면의 최종 답은 이것으로 바꾼다
 
     실행 중 예외는 `error` (`{code, message, retryable, request_id, type, detail}`)로 끝난다(상태 줄은 이미 200으로 나감).
-    `code`는 오류 코드 7종(backend/app/errors.py, T3-67), `message`는 그 고정 문구, `retryable`은 코드로 정한다.
+    `code`는 오류 코드 7종(backend/app/errors.py, T3-68), `message`는 그 고정 문구, `retryable`은 코드로 정한다.
     `type`·`detail`(예외 이름·문구)은 로그·개발용이고 화면에 쓰지 않는다."""
     if not isinstance(turn, Turn):  # a direct call (tests): no dependencies were filled
         session = _session(None, req.session_id)
@@ -525,7 +525,7 @@ def chat_stream(req: ChatRequest, graph=Depends(get_graph), tracer: Tracer = Dep
     except Exception as e:  # noqa: BLE001 - the status line is already sent; say it in the stream instead
         _fail(root, e)
         payload = error_event(e, request_id)
-        root.set_attribute("kosis.error.code", payload["code"])  # request_logs.reason_code (log_rows.py, T3-67)
+        root.set_attribute("kosis.error.code", payload["code"])  # request_logs.reason_code (log_rows.py, T3-68)
         yield ServerSentEvent(event="error", data=payload)
     finally:  # also on client disconnect (GeneratorExit): the root span always ends
         root.end()

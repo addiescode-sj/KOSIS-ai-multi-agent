@@ -108,7 +108,7 @@ export const Meta = z.looseObject({
 });
 export type Meta = z.infer<typeof Meta>;
 
-// The SSE `error` event (api.md 2장 error). code: one of the backend's error codes (T3-67, backend/app/errors.py) and
+// The SSE `error` event (api.md 2장 error). code: one of the backend's error codes (T3-68, backend/app/errors.py) and
 // message its fixed sentence; type / detail (exception name and text) are for logs, never shown. retryable: worth one
 // automatic reconnect; an input error (422) is not.
 export const ErrorEvent = z.looseObject({

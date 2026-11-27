@@ -131,7 +131,7 @@ async function answerOnce(
 }
 
 // The code, message and cause of a non-2xx answer: {"error": {code, message, cause}}, FastAPI's 422 {"detail": [...]},
-// or a body of another shape (an entry proxy's page): then only the status speaks (T3-67: its text is not shown)
+// or a body of another shape (an entry proxy's page): then only the status speaks (T3-68: its text is not shown)
 async function reply(res: Response): Promise<ErrorReply> {
   const text = await res.text().catch(() => "");
   try {

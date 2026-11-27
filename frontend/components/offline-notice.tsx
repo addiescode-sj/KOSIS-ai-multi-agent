@@ -5,7 +5,7 @@ import { WifiOff } from "lucide-react";
 import { useOnline } from "@/lib/browser/use-online";
 import { ANSWER_ERRORS } from "@/lib/chat/errors";
 
-// One line on top of every customer screen while the browser is offline (T3-67 `offline`); it goes away by itself
+// One line on top of every customer screen while the browser is offline (T3-68 `offline`); it goes away by itself
 // when the connection is back.
 export function OfflineNotice() {
   const online = useOnline();

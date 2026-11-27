@@ -6,7 +6,7 @@ import { useState } from "react";
 import { QUESTION_MAX } from "@/lib/chat/schemas";
 
 // Sticky question box under the conversation (prototype Composer). Enter sends, Shift+Enter breaks the line.
-// disabled (T3-67): offline, the question cannot go out; typing stays possible.
+// disabled (T3-68): offline, the question cannot go out; typing stays possible.
 export function Composer({ busy, disabled = false, onSend, onStop, placeholder = "궁금한 통계를 평소 말로 입력하세요. 예: 2023년 합계출산율은?" }: {
   busy: boolean;
   disabled?: boolean;

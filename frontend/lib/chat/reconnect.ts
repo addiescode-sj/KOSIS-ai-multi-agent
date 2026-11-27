@@ -1,7 +1,7 @@
 // When the chat proxy reconnects to the backend on its own (api.md 2 `error`, 10장 제안 8: once). A failure the
 // user can fix (422: bad input) is never retried; a dropped connection, a 5xx or an `error` event with
 // `retryable: true` is retried once, then the turn ends with the "다시 시도" card.
-// T3-67: every failure carries an error code; the card picks its sentence by code (lib/chat/errors.ts) and never
+// T3-68: every failure carries an error code; the card picks its sentence by code (lib/chat/errors.ts) and never
 // shows the backend's exception name or text.
 
 import { errorView } from "./errors.ts";

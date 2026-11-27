@@ -110,7 +110,7 @@ export function Chat({ id, initial, prefill }: { id: string; initial: Conversati
   }, [busy, id, messages, member, client]);
 
   function send(text: string, inputMethod: InputMethod = "direct") {
-    if (!text.trim() || busy || !online) return; // offline: the notice on top says why (T3-67)
+    if (!text.trim() || busy || !online) return; // offline: the notice on top says why (T3-68)
     if (messages.length === 0 && window.location.pathname !== `/chat/${id}`) {
       window.history.replaceState(null, "", `/chat/${id}`); // Next's router picks this up; no remount
     }
@@ -137,7 +137,7 @@ export function Chat({ id, initial, prefill }: { id: string; initial: Conversati
   const failure = lastAnswer?.parts.findLast((p) => p.type === "data-failure");
   const failed = failure?.type === "data-failure" ? failure.data : null;
   const canRetry = failed?.status !== 422; // bad input: the same again fails
-  // T3-67: the card's sentence comes from the error code. No data-failure part means the browser's own request to
+  // T3-68: the card's sentence comes from the error code. No data-failure part means the browser's own request to
   // /api/chat failed: offline, or the service could not be reached.
   const errorCard: ErrorView = failed
     ? failed.status === 422 ? { title: "질문을 다시 확인해 주세요", text: error?.message ?? "" } : errorView(failed.code, error?.message)

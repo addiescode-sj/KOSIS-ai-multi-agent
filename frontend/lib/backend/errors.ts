@@ -4,7 +4,7 @@ import { z } from "zod";
 // place for every caller and route handler.
 
 // {"error": {"code", "message"}}: every error the service code answers
-// cause (optional, T3-67): the error code behind a 503 `unavailable` (why the agent could not be opened)
+// cause (optional, T3-68): the error code behind a 503 `unavailable` (why the agent could not be opened)
 export const ErrorBody = z.looseObject({
   error: z.looseObject({ code: z.string(), message: z.string(), cause: z.string().nullish() }),
 });

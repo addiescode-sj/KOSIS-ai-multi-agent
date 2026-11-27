@@ -14,7 +14,7 @@ test("a retryable failure reconnects once, then gives up with its code's sentenc
   expect(finalMessage(f)).toBe(ANSWER_ERRORS.timeout.text);
 });
 
-test("T3-67: the exception name and text never reach the card", () => {
+test("T3-68: the exception name and text never reach the card", () => {
   const f = failureFromEvent({ code: "config_error", message: "설정", retryable: false, type: "LLMKeyMissing",
                                detail: "HCX_API_KEY is not set" } as never);
   expect(shouldReconnect(f, 0)).toBe(false);

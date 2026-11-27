@@ -1,4 +1,4 @@
-"""Error codes of a failed answer (T3-67, docs/service/api.md 2 `error`).
+"""Error codes of a failed answer (T3-68, docs/service/api.md 2 `error`).
 
 A failure while answering ends the SSE stream with `error` {code, message, retryable, request_id, type, detail}.
 `code` is one of CODES; `message` is its fixed sentence (no exception text, no internal address); `retryable` follows

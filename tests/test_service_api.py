@@ -267,13 +267,13 @@ def test_error_event_says_the_code_retryable_and_the_request_id(svc):
 
     app.dependency_overrides[get_graph] = lambda: Boom()
     _, ev = svc.ask()
-    # T3-67: code + its fixed sentence; type / detail stay for logs only (the screen does not show them)
+    # T3-68: code + its fixed sentence; type / detail stay for logs only (the screen does not show them)
     assert ev["error"] == {"code": "timeout", "message": CODES["timeout"].message, "retryable": True,
                            "request_id": ev["meta"]["trace_id"], "type": "TimeoutError", "detail": "phase 1 timed out"}
 
 
 def test_a_load_failure_says_its_cause(svc, monkeypatch):
-    """T3-67: the GPU server down when the agent opens is a 503 `unavailable` with cause model_unavailable."""
+    """T3-68: the GPU server down when the agent opens is a 503 `unavailable` with cause model_unavailable."""
     from backend.app import main
     from inference.client import InferenceError
 

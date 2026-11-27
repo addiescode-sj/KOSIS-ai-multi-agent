@@ -136,7 +136,7 @@ export const REFUSALS: Record<string, { title: string; tone: Tone }> = {
   missing_value: { title: "해당 칸에 값이 없습니다", tone: "gray" },
   out_of_scope: { title: "제공된 KOSIS 통계표가 다루는 범위 밖입니다", tone: "gray" },
 };
-// a refusal without a reason: the search found no table that fits (T3-67, matches phase 2's REFUSAL_TEXT)
+// a refusal without a reason: the search found no table that fits (T3-68, matches phase 2's REFUSAL_TEXT)
 export const UNKNOWN_REFUSAL = { title: "맞는 통계표를 찾지 못했어요", tone: "gray" as Tone };
 
 export function refusalTitle(reason: string | null): { title: string; tone: Tone } {

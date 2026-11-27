@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 
 import type { ErrorView } from "@/lib/chat/errors";
 
-// The whole-page notice of app/error.tsx, global-error.tsx and not-found.tsx (T3-67). No AppShell: the shell itself
+// The whole-page notice of app/error.tsx, global-error.tsx and not-found.tsx (T3-68). No AppShell: the shell itself
 // may be what failed, and these pages must draw even then.
 export function ErrorScreen({ view, missing = false, children }: { view: ErrorView; missing?: boolean; children: ReactNode }) {
   const Icon = missing ? SearchX : CircleAlert;
