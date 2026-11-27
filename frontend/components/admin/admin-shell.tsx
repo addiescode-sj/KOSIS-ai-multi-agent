@@ -16,7 +16,7 @@ const NAV = [
   { href: `${ADMIN_HOME}/jaeger`, label: "Jaeger 분산 추적", icon: Activity, external: true },
 ] as const;
 
-// Dark sidebar + sticky header of the admin preview screens (design mockup AdminLayout, T3-63). The header always
+// Dark sidebar + sticky header of the admin preview screens (design mockup AdminLayout, T3-65). The header always
 // says the numbers are samples. `status` is the dashboard's batch state, when the screen has one.
 export function AdminShell({ title, sub, actions, status, children }: {
   title: string;

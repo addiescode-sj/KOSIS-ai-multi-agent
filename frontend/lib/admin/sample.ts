@@ -1,6 +1,6 @@
 import type { AdminDashboard, AdminFilter, AdminTrace } from "./schemas.ts";
 
-// Sample numbers of the admin preview (the design mockup's values, T3-63). Not real metrics: every screen that
+// Sample numbers of the admin preview (the design mockup's values, T3-65). Not real metrics: every screen that
 // shows them carries the "예시 데이터" badge. Served only by app/api/preview/admin and the preview pages.
 
 export function sampleDashboard(filter: AdminFilter): AdminDashboard {

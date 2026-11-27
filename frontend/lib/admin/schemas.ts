@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-// Runtime shapes of the admin preview screens (T3-63): the dashboard filter, the dashboard numbers and one trace.
+// Runtime shapes of the admin preview screens (T3-65): the dashboard filter, the dashboard numbers and one trace.
 // The numbers are sample data from app/api/preview/admin; when a real metrics API exists it answers in this shape.
 
 export const Period = z.enum(["today", "7d", "30d"]);
