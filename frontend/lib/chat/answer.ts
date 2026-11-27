@@ -25,7 +25,7 @@ export function headline(result: ChatResult): Headline | null {
 }
 
 // The 핵심 수치 the answered card shows: a one-question answered turn's headline (a multi-question turn has none).
-// The card (answered.tsx) and the chat's scroll (scroll to it first, T3-62) both use this, so they agree.
+// The card (answered.tsx) and the chat's scroll (scroll to it first, T3-64) both use this, so they agree.
 export function cardHeadline(result: ChatResult): Headline | null {
   if (answerKind(result) !== "answered" || result.sub_results) return null;
   return headline(result);

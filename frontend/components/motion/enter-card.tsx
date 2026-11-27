@@ -6,7 +6,7 @@ import { useState, type ReactNode } from "react";
 
 import { loadedMotionFeatures } from "./features";
 
-// A new answer card fades and slides in (T3-62, the note's fadeIn + slideIn). Only a live card (it arrived on this
+// A new answer card fades and slides in (T3-64, the note's fadeIn + slideIn). Only a live card (it arrived on this
 // screen) and only if the motion features are already loaded when it mounts; otherwise, and for restored cards,
 // it is shown at once, so a card is never left hidden waiting for a chunk.
 export function EnterCard({ live, children }: { live: boolean; children: ReactNode }) {

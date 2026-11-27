@@ -43,7 +43,7 @@ export function Chat({ id, initial, prefill }: { id: string; initial: Conversati
   const client = useQueryClient();
   const threadId = useRef<string | null>(initial?.threadId ?? null);
   const [activeId, setActiveId] = useState(initial?.id ?? id);
-  // turns this screen opened with (a restored conversation): shown as they are, without the T3-62 entrance
+  // turns this screen opened with (a restored conversation): shown as they are, without the T3-64 entrance
   const [openedWith] = useState(() => new Set(initial?.messages.map((m) => m.id) ?? []));
   const [transport] = useState(() => new DefaultChatTransport<ChatMessage>({ api: "/api/chat" }));
   // the login cookie goes with every request; a guest also names its session (X-Session-Id, contract 1장)

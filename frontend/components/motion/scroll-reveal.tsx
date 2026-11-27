@@ -6,7 +6,7 @@ import * as m from "motion/react-m";
 import { loadedMotionFeatures } from "./features";
 import { useRef, type ReactNode } from "react";
 
-// Fades and slides a block in as it scrolls up into view (scroll-linked, T3-62). Progress is 0 when its top meets
+// Fades and slides a block in as it scrolls up into view (scroll-linked, T3-64). Progress is 0 when its top meets
 // the bottom of the screen and 1 when its bottom does, so a block that already fits on screen is fully shown
 // even where the page cannot scroll. Reduced motion: fixed motion values (shown as is). Always motion values,
 // never plain numbers, so the style motion writes is always its own. Rendered only on the client after hydration

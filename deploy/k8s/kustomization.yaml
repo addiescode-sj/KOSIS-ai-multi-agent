@@ -1,0 +1,17 @@
+# 적용은 scripts/60-deploy.sh 가 한다(DB 백업 → DB 변경 → 앱 교체 → 확인). 손으로 apply 하면 DB 변경을 건너뛴다.
+# 이 폴더는 주소가 빈 값(example.invalid)인 공개 판이다. 서버는 ../overlay(scripts/05-make-site.sh 가 site.env 로 만듦, git에 없음)를 적용한다.
+# 앱 이미지는 GitHub Actions가 main merge마다 GHCR에 저장한 것(sha-<커밋 전체>, 저장소 T3-59). 60-deploy.sh 가 newTag 를 바꾼다.
+namespace: kosis
+resources:
+  - 00-namespace.yaml
+  - 10-postgres.yaml
+  # 11-migrate-job.yaml 은 60-deploy.sh 가 앱보다 먼저 따로 적용한다(Job은 바꿀 수 없어 지우고 다시 만듦)
+  - 30-backend.yaml
+  - 31-frontend.yaml
+  - 33-db-jobs.yaml
+  - 40-ingress.yaml
+  - 32-admin.yaml   # 운영자 페이지. 아직 GHCR 이미지가 없어 태그는 그 파일에 고정(아래 images 에 없음)
+images:
+  - { name: kosis/backend,  newName: ghcr.io/addiescode-sj/kosis-agent-backend,  newTag: "sha-1c58899606b8970ddd09a1bc35c790b0cf1291c9" }
+  - { name: kosis/migrate,  newName: ghcr.io/addiescode-sj/kosis-agent-migrate,  newTag: "sha-1c58899606b8970ddd09a1bc35c790b0cf1291c9" }
+  - { name: kosis/frontend, newName: ghcr.io/addiescode-sj/kosis-agent-frontend, newTag: "sha-1c58899606b8970ddd09a1bc35c790b0cf1291c9" }

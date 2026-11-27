@@ -18,7 +18,7 @@ import { SourceBlock } from "./source-block";
 // The card for one finished turn, chosen by its outcome. actions: the copy button (top right), footer: feedback.
 export function ResultCard({ result, live = false, onAsk, onCitation, actions, footer }: {
   result: ChatResult;
-  live?: boolean; // streamed in on this screen: the 핵심 수치 counts up (T3-62)
+  live?: boolean; // streamed in on this screen: the 핵심 수치 counts up (T3-64)
   onAsk?: Ask;
   onCitation?: (c: Citation) => void;
   actions?: ReactNode;

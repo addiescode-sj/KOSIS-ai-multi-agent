@@ -1,0 +1,40 @@
+# 대화 기록·평가 결과. 오늘은 1개(node-1 고정), 복제본은 CloudNativePG로 2단계에서.
+apiVersion: v1
+kind: Service
+metadata: { name: postgres }
+spec:
+  selector: { app: postgres }
+  ports: [{ port: 5432 }]
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata: { name: postgres }
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector: { matchLabels: { app: postgres } }
+  template:
+    metadata: { labels: { app: postgres } }
+    spec:
+      # Ubuntu 26.04 AppArmor 기본 규칙이 컨테이너 안 신호를 막음 → 12-apparmor.sh 의 규칙 사용, 처음부터 postgres(999) 로 실행 (11/25)
+      securityContext: { runAsUser: 999, runAsGroup: 999, fsGroup: 999, appArmorProfile: { type: Localhost, localhostProfile: kosis-app } }
+      nodeSelector: { kosis/role: data }
+      containers:
+        - name: postgres
+          image: pgvector/pgvector:0.8.1-pg17   # 대화 기록 + 벡터 검색(pgvector, KOS-138). Chroma는 뺐음
+          envFrom: [{ secretRef: { name: kosis-db } }]
+          env: [{ name: PGDATA, value: /var/lib/postgresql/data/pgdata }]
+          ports: [{ containerPort: 5432 }]
+          readinessProbe:
+            exec: { command: ["sh", "-c", "pg_isready -U $POSTGRES_USER -d $POSTGRES_DB"] }
+            periodSeconds: 5
+          resources:
+            requests: { memory: 256Mi, cpu: 100m }
+            limits: { memory: 1Gi }
+          volumeMounts: [{ name: data, mountPath: /var/lib/postgresql/data }]
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec:
+        accessModes: [ReadWriteOnce]
+        storageClassName: local-path        # k3s 기본: 노드 디스크(/var/lib/rancher/k3s/storage)
+        resources: { requests: { storage: 10Gi } }

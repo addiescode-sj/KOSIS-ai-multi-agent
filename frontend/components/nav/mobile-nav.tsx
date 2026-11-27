@@ -8,7 +8,7 @@ import { SearchForm } from "./search-form";
 import { SidebarContent } from "./sidebar-content";
 
 // Below 768px the sidebar is hidden (app-shell), so the header gets a ☰ button that slides the same SidebarContent
-// in from the left (T3-62). Radix Dialog gives the focus trap, Esc / outside click, scroll lock and aria-expanded.
+// in from the left (T3-64). Radix Dialog gives the focus trap, Esc / outside click, scroll lock and aria-expanded.
 // It closes on any link inside (a same-page link or the full-load "새 대화" does not change the path), on a search,
 // and when the window grows to 768px (the drawer is hidden there, but its scroll lock would stay). A dialog opened
 // from inside (로그아웃) stacks on top, so the drawer stays open under it.

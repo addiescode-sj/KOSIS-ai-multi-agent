@@ -18,7 +18,7 @@ import { ResultCard } from "./result-card";
 // One assistant turn: progress while the stream runs, then the card for the turn's outcome with 복사 and 👍/👎
 // (neither on a failed turn: there is no answer to copy or rate, api.md 10장 제안 5).
 // live: the turn arrived on this screen (not part of the conversation it opened with). Only a live card fades in
-// and counts up its 핵심 수치; a restored conversation shows its cards as they are (T3-62).
+// and counts up its 핵심 수치; a restored conversation shows its cards as they are (T3-64).
 export function AssistantMessage({ message, running, live = false, onAsk, threadId = null, turn = null, feedback = null, onFeedback }: {
   message: ChatMessage;
   running: boolean;
@@ -30,7 +30,7 @@ export function AssistantMessage({ message, running, live = false, onAsk, thread
   onFeedback?: (requestId: string, feedback: TurnFeedback) => void;
 }) {
   const track = useTrack();
-  // a turn on its way: fetch the entrance animation's code now so it is there when the card arrives (T3-62)
+  // a turn on its way: fetch the entrance animation's code now so it is there when the card arrives (T3-64)
   useEffect(() => { if (live) void preloadMotionFeatures(); }, [live]);
   let result: ChatResult | undefined;
   let draft = "";

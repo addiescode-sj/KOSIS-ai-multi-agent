@@ -12,7 +12,7 @@ import { useAuth } from "@/lib/auth/use-me";
 
 // Sidebar + sticky header of every customer screen (prototype Layout): a member sees the account card and menu,
 // a guest the Kakao login buttons (T3-11 Change 4). Notifications and help have no screen and are left out.
-// One breakpoint, 768px (Tailwind md, T3-62): from there up the sidebar is shown; below it the header's ☰ opens
+// One breakpoint, 768px (Tailwind md, T3-64): from there up the sidebar is shown; below it the header's ☰ opens
 // the same sidebar as a drawer (MobileNav).
 export function AppShell({ title, sub, actions, query, children }: {
   title: string;

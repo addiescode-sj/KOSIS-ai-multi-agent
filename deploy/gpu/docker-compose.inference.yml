@@ -1,0 +1,37 @@
+# GPU 서버: 임베딩(8002)·1차 리랭커(8003)를 모델별 컨테이너로 실행. 코드 = 저장소 inference/ (dc39ce8 뒤로 서버 코드 변경 없음, 11/26 확인)
+# 빌드: cd <저장소 사본> && docker build -f inference/Dockerfile --build-arg PRELOAD=0 \
+#   --build-arg TORCH_INDEX=https://download.pytorch.org/whl/cu132 -t kosis/inference:dc39ce8 .
+# 실행: cd ~/deploy/gpu && docker compose -f docker-compose.inference.yml up -d
+# 저장소 기본 포트(8001·8002) 대신 8002·8003(8001은 예전 embed-rerank 번호, 11/26 삭제). 인증 없음 → 보안 그룹 내부에서만 접근.
+name: kosis-inference
+x-common: &common
+  image: kosis/inference:dc39ce8
+  restart: unless-stopped
+  volumes:
+    - /srv/models:/models:ro
+    - /srv/hf-cache:/opt/hf      # 기반 모델(bge-m3, bge-reranker-v2-m3)은 서버에 받아 둔 것을 씀
+  deploy:
+    resources:
+      reservations:
+        devices: [{ driver: nvidia, count: all, capabilities: [gpu] }]
+services:
+  embedder:
+    <<: *common
+    environment:
+      INFER_MODEL: embed
+      EMBED_CKPT: /models/embedder/A1-e3.pt
+      TEXT_FORMAT: n2-L60
+      INFER_DEVICE: cuda
+      HF_HUB_OFFLINE: "1"
+      PORT: "8002"
+    ports: ["8002:8002"]
+  reranker:
+    <<: *common
+    environment:
+      INFER_MODEL: rerank
+      RERANK_CKPT: /models/reranker/RR-A1-e3.pt
+      TEXT_FORMAT: n2-L60
+      INFER_DEVICE: cuda
+      HF_HUB_OFFLINE: "1"
+      PORT: "8003"
+    ports: ["8003:8003"]

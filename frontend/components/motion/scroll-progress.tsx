@@ -5,7 +5,7 @@ import * as m from "motion/react-m";
 
 import { loadedMotionFeatures } from "./features";
 
-// A thin bar across the top that grows with how far the page is scrolled (scroll-linked scaleX, T3-62).
+// A thin bar across the top that grows with how far the page is scrolled (scroll-linked scaleX, T3-64).
 // The window is the scroller (AppShell only has sticky parts). Hidden at the top, so a page that cannot scroll
 // (progress reads 1 there) shows no bar. Reduced motion: the bar follows without the spring.
 export function ScrollProgress() {

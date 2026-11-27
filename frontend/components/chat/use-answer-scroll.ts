@@ -16,7 +16,7 @@ export const HEADLINE_HOLD_MS = SCROLL_MS + COUNT_UP_SECONDS * 1000 + READ_MS;
 const TAKE_OVER = ["wheel", "touchmove", "keydown"] as const;
 
 // The conversation follows the newest message (the progress while it streams). When a new answer with a 핵심 수치
-// arrives (T3-62), it first centers that number so its count-up is seen, then after HEADLINE_HOLD_MS goes on to the
+// arrives (T3-64), it first centers that number so its count-up is seen, then after HEADLINE_HOLD_MS goes on to the
 // end of the answer. Restored turns and reduced motion (no count-up) go straight to the end.
 export function useAnswerScroll(messages: ChatMessage[], status: string, openedWith: Set<string>, bottom: RefObject<HTMLDivElement | null>) {
   const focused = useRef<string | null>(null); // the answer whose number was shown first (once per answer)

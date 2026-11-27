@@ -5,7 +5,7 @@ import { lazy, Suspense, useSyncExternalStore, type ReactNode } from "react";
 import { preloadMotionFeatures } from "./features";
 
 // The scroll effects are decoration, so their code (motion's scroll hooks and spring) is not in the first screen's
-// JS: each loads as its own chunk once the page has hydrated (T3-62). Until then the page looks as it would
+// JS: each loads as its own chunk once the page has hydrated (T3-64). Until then the page looks as it would
 // without them. Both wait for hydration (not next/dynamic ssr:false, which made the page's streamed content
 // client-render instead of hydrate), so the server HTML and the first client render are the same.
 

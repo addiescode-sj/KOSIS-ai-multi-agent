@@ -1,6 +1,6 @@
 import type { Headline } from "../../types/answer.ts";
 
-// Frames of the 핵심 수치 count-up (T3-62). The last frame is the headline's own string (formatValue of the
+// Frames of the 핵심 수치 count-up (T3-64). The last frame is the headline's own string (formatValue of the
 // server's fact), never a number rebuilt here; the frames before it are only the animation on the way there.
 // They keep the last frame's decimal places so the text does not change width while it counts.
 

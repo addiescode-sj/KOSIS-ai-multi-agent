@@ -21,7 +21,7 @@ const ON = "bg-brand-50 font-semibold text-brand-700";
 const OFF = "text-sub hover:bg-gray-50 hover:text-ink";
 
 // What the sidebar holds (prototype Layout): logo, menu, 설정, and the account card for a member or the Kakao login
-// prompt for a guest. One component for both places it shows (T3-62): the desktop <aside> (768px and up) and the
+// prompt for a guest. One component for both places it shows (T3-64): the desktop <aside> (768px and up) and the
 // mobile drawer (below 768px), so the two never drift apart. `search` sits under the logo (the drawer passes one).
 export function SidebarContent({ search }: { search?: ReactNode }) {
   const pathname = usePathname();

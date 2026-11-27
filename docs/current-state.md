@@ -3,6 +3,12 @@
 > A new session starts here. Keep this short and current — it is the handoff
 > packet between sessions.
 
+## T3-62 배포 설정·인프라 문서 (2026-11-27, 브랜치 T3-62-infra-docs)
+
+- 서버 운영은 `docs/infra/`(한눈에 보기·운영 절차·결정·이력), 설정은 `deploy/`(k8s·scripts·gpu). 공개 저장소라 주소·IP·키 없음: 서버별 값은 node-1 `~/deploy/site.env`, k8s는 `scripts/05-make-site.sh`가 만든 `deploy/overlay`(둘 다 gitignore)를 적용한다.
+- 앱 배포는 GHCR 이미지 + `deploy/scripts/60-deploy.sh`(자동 실행 timer는 꺼져 있음). 저장소 설정의 결과가 11/27 서버와 같음을 확인(렌더 차이 0, `kubectl diff -k` 0).
+- 인프라 담당 인계: 김병석 → 전민기. 접속 키·ssh 설정·`site.env`는 저장소 밖에서 따로 전달.
+
 ## T3-27 멀티턴 조건 이월 · 멀티쿼리 (2026-11-09, 브랜치 T3-27-multiturn-context, PR #9 위, 진행 중)
 
 - 해석기: `src/kosis_agent/graph/context.py` `read_turn` — 규칙(남는 내용 낱말 · 슬롯 바꿔 끼우기 · 차트어) 우선, 판단 못 한 턴만 LLM(`INTERPRETER`=hybrid, `INTERPRETER_MODEL` 있을 때). LLM 독립 질문은 숫자·시도·낱말이 두 질문 안에 있을 때만 쓴다.
