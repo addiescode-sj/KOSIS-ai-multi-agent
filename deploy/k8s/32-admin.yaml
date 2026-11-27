@@ -18,7 +18,7 @@ spec:
     metadata: { labels: { app: kosis-admin } }
     spec:
       securityContext: { appArmorProfile: { type: Localhost, localhostProfile: kosis-app } }   # 12-apparmor.sh
-      nodeSelector: { kubernetes.io/hostname: kosis-node-1 }
+      nodeSelector: { kubernetes.io/hostname: kosis-node-2 }
       initContainers:
         - name: migrate
           image: kosis/admin:1126admin
@@ -46,6 +46,7 @@ kind: CronJob
 metadata: { name: kosis-admin-cleanup }
 spec:
   schedule: "30 3 * * *"
+  startingDeadlineSeconds: 72000   # 서버가 꺼져 시각을 놓치면 켜진 뒤 20시간 안에 한 번 실행 (33-db-jobs.yaml 과 같음)
   timeZone: Asia/Seoul
   concurrencyPolicy: Forbid
   jobTemplate:
@@ -55,7 +56,7 @@ spec:
         spec:
           securityContext: { appArmorProfile: { type: Localhost, localhostProfile: kosis-app } }
           restartPolicy: OnFailure
-          nodeSelector: { kubernetes.io/hostname: kosis-node-1 }
+          nodeSelector: { kubernetes.io/hostname: kosis-node-2 }
           containers:
             - name: cleanup
               image: kosis/admin:1126admin

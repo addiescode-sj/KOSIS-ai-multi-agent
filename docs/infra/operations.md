@@ -45,8 +45,7 @@ Host kosis-inference
 - 학원 콘솔에는 **자동 중지(기본 2시간)**가 있다. 시연·QA 중이면 시간을 늘리거나 다시 켠다.
 
 **꺼져 있다 켜지면**
-- DB 백업(04:00)과 정리(04:30)를 놓쳤어도 켜진 뒤 20시간 안에 한 번 실행된다.
-- 운영자 페이지 정리(`kosis-admin-cleanup`, 03:30)는 이 설정이 없어 건너뛸 수 있다.
+- DB 백업(04:00)·정리(04:30)·운영자 페이지 정리(03:30)를 놓쳤어도 켜진 뒤 20시간 안에 한 번 실행된다.
 
 ## 2. 점검 (켠 뒤 5분)
 
@@ -111,7 +110,8 @@ tail ~/deploy/state/deploy.log                      # 기록. 마지막 성공 �
 - `30-build-images.sh`로 node-1에서 빌드한다. 파일 맨 위 주석대로 태그와 `imagePullPolicy`를 바꾼다.
 
 **운영자 페이지(`32-admin.yaml`)**
-- 이미지가 GHCR에 없어 node-1에서 `docker build -f admin/Dockerfile`로 만든다.
+- 이미지가 GHCR에 없어 node-1에서 `docker build -f admin/Dockerfile -t kosis/admin:<태그> .`로 만든다. 앱은 node-2에서 돌므로 node-2에도 넣는다(이 PC에서):
+  `ssh kosis-node-1 "sudo docker save kosis/admin:<태그>" | ssh kosis-node-2 "sudo k3s ctr images import -"`
 - 태그는 그 파일에 적는다.
 - 처음 설치는 `deploy/k8s/01-secrets.README.md`의 "운영자 페이지"를 따른다.
 

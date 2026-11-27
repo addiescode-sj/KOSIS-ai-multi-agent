@@ -13,12 +13,12 @@
 
 | 이름 | 사양 | 역할 | 주요 컨테이너 |
 |---|---|---|---|
-| `kosis-node-1` | t3.large (2 vCPU, 8GB, 디스크 48GB) | k3s server(관리 + 작업). 고정 공인 IP(사이트 주소)를 가진 유일한 서버, SSH 입구 | postgres(pgvector), backend, frontend, kosis-admin, Traefik(입구·HTTPS), CoreDNS |
-| `kosis-node-2` | t3.large (같음) | k3s agent(작업). DB 백업 보관 | backend, frontend, DB 백업·정리 예약 작업 |
+| `kosis-node-1` | t3.large (2 vCPU, 8GB, 디스크 48GB) | k3s server(관리 + 작업). 고정 공인 IP(사이트 주소)를 가진 유일한 서버, SSH 입구 | postgres(pgvector), backend, frontend, Traefik(입구·HTTPS), CoreDNS |
+| `kosis-node-2` | t3.large (같음) | k3s agent(작업). DB 백업 보관 | backend, frontend, kosis-admin(운영자 페이지), DB 백업·정리 예약 작업 |
 | `kosis-inference` | g6e.xlarge (L40S 48GB) | AI 모델 서버. 도커 compose로 실행(k3s 밖) | vLLM(8000), 임베딩(8002), 1차 리랭커(8003) |
 
 - backend·frontend는 2개씩 돌고, 노드마다 1개씩 놓인다.
-- DB·운영자 페이지·k3s 관리 기능은 node-1에만 있다. 한계는 [decisions.md](decisions.md)에 적었다.
+- DB와 k3s 관리 기능은 node-1에만 있다. 운영자 페이지는 1개로 node-2에 있다(11/27 옮김). 한계는 [decisions.md](decisions.md)에 적었다.
 
 ```mermaid
 flowchart LR
@@ -47,7 +47,7 @@ flowchart LR
 | 무엇 | 어디 | 비고 |
 |---|---|---|
 | 앱 이미지 | GHCR `ghcr.io/addiescode-sj/kosis-agent-{backend,frontend,migrate}:sha-<커밋>` | main merge마다 CI가 저장(T3-59). 공개라 받을 때 키가 필요 없다 |
-| 운영자 페이지 이미지 | node-1 안 `kosis/admin:<태그>` | 아직 GHCR에 없어 node-1에서 빌드. 그래서 node-1에만 둔다 |
+| 운영자 페이지 이미지 | node-2 안 `kosis/admin:<태그>` | 아직 GHCR에 없어 node-1에서 빌드한 뒤 node-2로 복사한다(operations 3절) |
 | k8s 설정 | node-1 `~/deploy/k8s` (+ 주소를 채운 `~/deploy/overlay`) | 저장소 `deploy/k8s`와 같은 내용 |
 | 서버별 값 | node-1 `~/deploy/site.env` | 사이트 주소, GPU 내부 IP. git에 없음 |
 | 배포 기록 | node-1 `~/deploy/state/deploy.log` | `60-deploy.sh`가 쓴다 |
