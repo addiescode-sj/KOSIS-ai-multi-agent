@@ -72,6 +72,7 @@ class AgentState(MessagesState):
     researched: bool  # 검색 거절 후 재작성·재검색을 이미 했는가 (1회)
     review: dict | None  # 검수 결과 {"source", "chart", "numbers_verified"}
     answer_text: str | None  # 검수 뒤 답 문장 (출처 줄이 없으면 코드가 붙인 것)
+    search_question: str | None  # candidates가 후보를 찾은 문장 = search_tables 툴 인자 (T3-60)
     refusal_reason: str | None  # 이번 턴 거절 이유 (gate 이유 또는 템플릿 종류). 직전 턴 검색 결과와 섞이지 않게 따로 둔다
     trace: list[dict]  # 단계별 {"step", "action", "by", "thought"} (턴마다 비움)
 

@@ -39,8 +39,8 @@ TASK.md를 고치면 `.claude/hooks/linear_sync.py`가 `T3-xx` 제목으로 Line
 - 노드·툴 입출력은 Pydantic 계약을 유지한다: 공용 `kosis_ai.schemas`(실전 1), 검색 `kosis_rag.schemas`(실전 2). 깨는 변경은 plan에 명시하고 승인받는다.
 - 툴 (T3-01): `search_tables`(실전 2) · `summarize_stat`(실전 1) · `make_chart`(T3-02, 실전 1 차트 모듈로 ChartSpec을 요청 종류로 다시 그림, Vega-Lite 없음) · `combine_values`(T3-28, 표가 다른 두 하위 답의 숫자를 코드가 합침).
 - 오케스트레이션: LangGraph StateGraph(대화 상태 유지, checkpointer). 메인 흐름은 supervisor 없는 **단계별 ReAct 판단**이다(T3-03 옵션 B, `graph/react.py`):
-  understand(매 턴 Qwen이 먼저 판단, 규칙 판단 없음 — LLM 없거나 장애면 search: template 즉시 답변 | clarify 되묻기 | rewrite | search, 지시어·이월이면 직전 표 재사용)
-  → rewrite(재작성 문장은 원문 낱말·숫자만, Qwen 충분성 판단, 불충분이면 1회만 더) → search(`search_tables` 툴 = 실전 2 검색 그래프 전체, 2차 리랭커·gate가 "답할 수 있음" 검수, no_item 거절이면 재작성·재검색 1회)
+  understand(매 턴 Qwen이 먼저 판단, 규칙 판단 없음 — LLM 없거나 장애면 search: template 즉시 답변 | clarify 되묻기 | rewrite | search, 지시어·이월이면 직전 표 재사용. 후속 질문 규칙 `graph/followup.py`: 지표만 바꾼 이월·직전 표에 없는 시도는 조건을 채운 문장으로 새로 찾음, T3-60)
+  → rewrite(재작성 문장은 원문 낱말·숫자만, Qwen 충분성 판단, 불충분이면 1회만 더) → candidates(실전 2 검색의 후보 몫 parse~rerank1, LLM 없음·툴 아님. understand 판단과 동시에 원문으로 미리 돌림, `AGENT_PREFETCH` 기본 켬, T3-60) → search(`search_tables` 툴 = 후보에 2차 리랭커·gate, "답할 수 있음" 검수, no_item 거절이면 재작성·재검색 1회)
   → statistics(`summarize_stat` 툴 = 실전 1) → chart → review(코드: 출처 줄·차트) → finalize(outcome: answered | refused | clarify | failed). 서로 다른 지표가 둘 이상이면 understand → multi(T3-28, 규칙 분해는 Qwen이 한 번 검토).
   다음 단계는 단계가 고른 Action 값으로 조건부 경로가 정한다. Qwen 설정은 `AGENT_MODEL`·`AGENT_BASE_URL`(기본 STAGE2와 같은 서버), `AGENT_STEPS`=off|a|b(기본 b).
   노드는 실전 1·2를 직접 부르지 않고 툴을 거친다(툴 span = agent 계층 채점 근거). 노드 안에서 실전 1·2 그래프를 부를 때는 `kosis_agent.runtime.without_checkpointer`로 부모 checkpointer를 끊는다.

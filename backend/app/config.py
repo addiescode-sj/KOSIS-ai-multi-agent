@@ -19,7 +19,7 @@ then reads os.environ. In the container compose passes the same file as `env_fil
                                                     (STAGE2=gpt only) and its key (default the STAGE2 key below) (T3-33)
     STAGE2_MAX_TOKENS                               stage 2 output cap (default phase 2's: 512 for gpt); a thinking model needs room
     HQ_BUILD HQ_WEIGHT HQ_BM25                      reverse HyDE question index (empty HQ_BUILD = off)
-    BM25_WEIGHT                                     RRF weight of the BM25 list (default 0 = dense order only, T3-23)
+    BM25_WEIGHT                                     RRF weight of the BM25 list (default 1 = phase 2 default; 0 = dense order only, T3-23)
     HCX_API_KEY HCX_THINKING OPENAI_API_KEY         stage 2 keys (clova / hcx: HCX_API_KEY, gpt: OPENAI_API_KEY)
     STAT_PROVIDER STAT_MODEL STAT_RETRY_INTERVAL    phase 1 model (hcx = HCX-DASH-002 default | openai | gemma | mock), seconds before a retry
     HCX_API_KEY                                     phase 1 key too (None: LLMKeyMissing when a phase 1 LLM step runs)
@@ -179,6 +179,15 @@ def agent_steps() -> str:
     return steps
 
 
+def agent_prefetch() -> bool:
+    """T3-60: AGENT_PREFETCH (default on) starts the search candidates (parse .. rerank1, no LLM) on the user's words
+    while understand waits for the Qwen judgment; 0 / false / off turns it off."""
+    value = (_env("AGENT_PREFETCH") or "1").strip().lower()
+    if value not in ("1", "true", "on", "0", "false", "off"):
+        raise ValueError(f"AGENT_PREFETCH must be 1 or 0, not {value!r}")
+    return value in ("1", "true", "on")
+
+
 def agent_judge():
     """T3-03 step judge on an OpenAI-compatible chat model: AGENT_MODEL / AGENT_BASE_URL / AGENT_API_KEY, each
     defaulting to the stage 2 re-ranker's STAGE2_MODEL / STAGE2_BASE_URL / STAGE2_API_KEY (the self-hosted Qwen).
@@ -222,8 +231,9 @@ def agent_config() -> AgentConfig:
         stage2=(_env("STAGE2") or "none").strip().lower(),
         answer_k=int(_env("ANSWER_K") or 5),
         hq_weight=float(_env("HQ_WEIGHT") or 1.0),
-        # T3-23: RRF weight of the BM25 list; 0 = the A1-e3 dense order only (kos192 / dev13 best), raise it in .env
-        bm25_weight=float(_env("BM25_WEIGHT") or 0.0),
+        # T3-23: RRF weight of the BM25 list. Unset = 1.0, the phase 2 default (the E2s-e2 service and the 11/23 e2e
+        # baseline ran with it); BM25_WEIGHT=0 = dense order only (A1-e3 best on kos192 / dev13)
+        bm25_weight=float(_env("BM25_WEIGHT") or 1.0),
         hq_bm25=(_env("HQ_BM25") or "off").strip().lower() not in OFF,
     )
     spec = IndexSpec(

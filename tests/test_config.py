@@ -125,3 +125,13 @@ def test_cond_scope_reaches_the_service_search_options(env):
     assert config.agent_config().options.cond_scope == "all"
     env.setenv("COND_SCOPE", "Years")
     assert config.agent_config().options.cond_scope == "years"
+
+
+def test_agent_prefetch_defaults_on_and_turns_off(env):
+    env.delenv("AGENT_PREFETCH", raising=False)
+    assert config.agent_prefetch() is True
+    env.setenv("AGENT_PREFETCH", "0")
+    assert config.agent_prefetch() is False
+    env.setenv("AGENT_PREFETCH", "maybe")
+    with pytest.raises(ValueError):
+        config.agent_prefetch()
