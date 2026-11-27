@@ -4,7 +4,7 @@ import type { ReactNode } from "react";
 
 import { AccountMenu } from "@/components/account/account-menu";
 import { KakaoLoginButton } from "@/components/account/kakao-login-button";
-import { ScrollProgress } from "@/components/motion/scroll-progress";
+import { LazyScrollProgress } from "@/components/motion/lazy";
 import { MobileNav } from "@/components/nav/mobile-nav";
 import { SearchForm } from "@/components/nav/search-form";
 import { SidebarContent } from "@/components/nav/sidebar-content";
@@ -25,7 +25,7 @@ export function AppShell({ title, sub, actions, query, children }: {
   const member = auth.status === "member";
   return (
     <div className="flex min-h-dvh">
-      <ScrollProgress />
+      <LazyScrollProgress />
       <aside className="sticky top-0 hidden h-dvh w-64 shrink-0 flex-col border-r border-line bg-white md:flex">
         <SidebarContent />
       </aside>

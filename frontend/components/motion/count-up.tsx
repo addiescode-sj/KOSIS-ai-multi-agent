@@ -1,6 +1,6 @@
 "use client";
 
-import { animate, useReducedMotion } from "motion/react";
+import { useReducedMotion } from "motion/react";
 import { useEffect, useState } from "react";
 
 import { countFrame, type CountTarget } from "@/lib/motion/count-up";
@@ -15,15 +15,24 @@ export function CountUp({ target, live, duration = 0.9 }: { target: CountTarget;
 
   // primitives, not the target object: the card re-renders while the stream finishes and must not restart this
   const { value, raw, round } = target;
+  // animate is loaded only now (import(): not in the first screen's JS). If it cannot load, show the value.
   useEffect(() => {
     if (!run) return;
-    const controls = animate(0, 1, {
-      duration,
-      ease: "linear", // countFrame eases
-      onUpdate: (p) => setFrame(countFrame({ value, raw, round }, p)),
-      onComplete: () => setFrame(null),
-    });
-    return () => controls.stop();
+    let cancelled = false;
+    let stop = () => {};
+    import("./animate")
+      .then(({ animate }) => {
+        if (cancelled) return;
+        const controls = animate(0, 1, {
+          duration,
+          ease: "linear", // countFrame eases
+          onUpdate: (p) => setFrame(countFrame({ value, raw, round }, p)),
+          onComplete: () => setFrame(null),
+        });
+        stop = () => controls.stop();
+      })
+      .catch(() => { if (!cancelled) setFrame(null); });
+    return () => { cancelled = true; stop(); };
   }, [run, value, raw, round, duration]);
 
   const counting = run && frame !== null;

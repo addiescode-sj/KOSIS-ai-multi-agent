@@ -7,7 +7,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 
 import { AppShell } from "@/components/app-shell";
-import { ScrollReveal } from "@/components/motion/scroll-reveal";
+import { LazyScrollReveal } from "@/components/motion/lazy";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { useAuth } from "@/lib/auth/use-me";
@@ -229,13 +229,13 @@ function Home({ prefill, onSend, note }: { prefill?: string; onSend: (text: stri
 
         <div className="mt-14 grid w-full gap-4 text-left md:grid-cols-3">
           {FEATURES.map((f) => (
-            <ScrollReveal key={f.t}>
+            <LazyScrollReveal key={f.t}>
               <Card className="h-full p-5">
                 <span className="flex size-10 items-center justify-center rounded-full border border-brand-100 bg-brand-50 text-brand-600"><f.icon size={18} /></span>
                 <h3 className="mt-4 text-[15px] font-semibold">{f.t}</h3>
                 <p className="mt-1.5 text-[13px] leading-relaxed text-sub">{f.d}</p>
               </Card>
-            </ScrollReveal>
+            </LazyScrollReveal>
           ))}
         </div>
       </div>

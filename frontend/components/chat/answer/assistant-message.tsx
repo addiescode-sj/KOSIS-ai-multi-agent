@@ -1,6 +1,8 @@
 import { Info } from "lucide-react";
-import { motion } from "motion/react";
+import { useEffect } from "react";
 
+import { EnterCard } from "@/components/motion/enter-card";
+import { preloadMotionFeatures } from "@/components/motion/features";
 import { answerKind, copyText, requestIdOf } from "@/lib/chat/answer";
 import type { ChatResult, TurnFeedback } from "@/lib/chat/schemas";
 import type { Citation } from "@/types/answer";
@@ -28,6 +30,8 @@ export function AssistantMessage({ message, running, live = false, onAsk, thread
   onFeedback?: (requestId: string, feedback: TurnFeedback) => void;
 }) {
   const track = useTrack();
+  // a turn on its way: fetch the entrance animation's code now so it is there when the card arrives (T3-62)
+  useEffect(() => { if (live) void preloadMotionFeatures(); }, [live]);
   let result: ChatResult | undefined;
   let draft = "";
   let progressed = false;
@@ -64,11 +68,7 @@ export function AssistantMessage({ message, running, live = false, onAsk, thread
         </p>
       ))}
       {result ? (
-        <motion.div
-          initial={live ? { opacity: 0, y: 16 } : false}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.35, ease: "easeOut" }}
-        >
+        <EnterCard live={live}>
           <ResultCard
             result={result}
             live={live}
@@ -79,7 +79,7 @@ export function AssistantMessage({ message, running, live = false, onAsk, thread
               <FeedbackBar key={requestId} requestId={requestId} initial={feedback} onSaved={handleFeedbackSaved} />
             )}
           />
-        </motion.div>
+        </EnterCard>
       ) : running || draft || progressed || notices.length === 0 ? (
         <Generating message={message} draft={draft} running={running} />
       ) : null /* a saved turn that could not be restored: the notice is the whole answer */}
