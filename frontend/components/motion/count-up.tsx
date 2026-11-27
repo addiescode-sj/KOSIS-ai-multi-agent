@@ -1,23 +1,38 @@
 "use client";
 
 import { useReducedMotion } from "motion/react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
-import { countFrame, type CountTarget } from "@/lib/motion/count-up";
+import { COUNT_UP_SECONDS, countFrame, type CountTarget } from "@/lib/motion/count-up";
 
 // 핵심 수치 counting up from 0 to the server's value (T3-62). Only on a turn that streamed in on this screen
 // (live): a restored turn, the server render and reduced motion show the value at once. The final string holds
 // the width (invisible) and is the text a screen reader or a drag-copy gets; the counting digits sit on top of it.
-export function CountUp({ target, live, duration = 0.9 }: { target: CountTarget; live: boolean; duration?: number }) {
+// It starts counting once the number is mostly on screen (the chat scrolls a new answer's number into view first).
+export function CountUp({ target, live, duration = COUNT_UP_SECONDS }: { target: CountTarget; live: boolean; duration?: number }) {
   const reduce = useReducedMotion();
   const run = live && !reduce;
   const [frame, setFrame] = useState<string | null>(() => (live ? countFrame(target, 0) : null));
+  const box = useRef<HTMLSpanElement>(null);
+  const [seen, setSeen] = useState(false);
+
+  useEffect(() => {
+    if (!run || seen) return;
+    const el = box.current;
+    if (!el || typeof IntersectionObserver === "undefined") {
+      setSeen(true); // no way to tell: count now
+      return;
+    }
+    const watch = new IntersectionObserver(([e]) => { if (e.isIntersecting) setSeen(true); }, { threshold: 0.6 });
+    watch.observe(el);
+    return () => watch.disconnect();
+  }, [run, seen]);
 
   // primitives, not the target object: the card re-renders while the stream finishes and must not restart this
   const { value, raw, round } = target;
   // animate is loaded only now (import(): not in the first screen's JS). If it cannot load, show the value.
   useEffect(() => {
-    if (!run) return;
+    if (!run || !seen) return;
     let cancelled = false;
     let stop = () => {};
     import("./animate")
@@ -33,11 +48,11 @@ export function CountUp({ target, live, duration = 0.9 }: { target: CountTarget;
       })
       .catch(() => { if (!cancelled) setFrame(null); });
     return () => { cancelled = true; stop(); };
-  }, [run, value, raw, round, duration]);
+  }, [run, seen, value, raw, round, duration]);
 
   const counting = run && frame !== null;
   return (
-    <span className="relative inline-block tabular-nums">
+    <span ref={box} className="relative inline-block tabular-nums">
       <span className={counting ? "invisible" : undefined}>{value}</span>
       {counting && (
         <>

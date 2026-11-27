@@ -4,6 +4,9 @@ import type { Headline } from "../../types/answer.ts";
 // server's fact), never a number rebuilt here; the frames before it are only the animation on the way there.
 // They keep the last frame's decimal places so the text does not change width while it counts.
 
+// How long the count-up runs (the chat holds a new answer's number in view about this long first)
+export const COUNT_UP_SECONDS = 0.9;
+
 export type CountTarget = Pick<Headline, "value" | "raw" | "round">;
 
 // Decimal places of a ko-KR number string ("1,234.50" → 2).

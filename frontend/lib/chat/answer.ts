@@ -24,6 +24,19 @@ export function headline(result: ChatResult): Headline | null {
   return { value: formatValue(fact), raw: fact.value, round: fact.round ?? null, unit: fact.unit ?? null, period: fact.period ?? null };
 }
 
+// The 핵심 수치 the answered card shows: a one-question answered turn's headline (a multi-question turn has none).
+// The card (answered.tsx) and the chat's scroll (scroll to it first, T3-62) both use this, so they agree.
+export function cardHeadline(result: ChatResult): Headline | null {
+  if (answerKind(result) !== "answered" || result.sub_results) return null;
+  return headline(result);
+}
+
+// The turn's finished result (its data-result part), if it has one yet.
+export function resultOf(message: Pick<ChatMessage, "parts">): ChatResult | null {
+  const part = message.parts.findLast((p) => p.type === "data-result");
+  return part?.type === "data-result" ? part.data : null;
+}
+
 export function formatValue(fact: Pick<Fact, "value" | "round">): string {
   if (fact.value == null) return "";
   return fact.value.toLocaleString("ko-KR", {

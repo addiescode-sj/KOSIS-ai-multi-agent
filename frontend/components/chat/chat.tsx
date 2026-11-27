@@ -26,6 +26,7 @@ import type { Conversation } from "@/types/conversation";
 import { AssistantMessage } from "./answer/assistant-message";
 import { Composer } from "./composer";
 import { ConversationHistory } from "./history/conversation-history";
+import { useAnswerScroll } from "./use-answer-scroll";
 
 // One conversation. `/` starts a new one (empty state = the prototype home); the first question moves the URL to
 // /chat/<id> without a remount. The backend thread_id from `meta` goes back with the next question so follow-ups
@@ -93,10 +94,7 @@ export function Chat({ id, initial, prefill }: { id: string; initial: Conversati
     };
   }, []);
 
-  useEffect(() => {
-    // Block body: Chrome's scrollIntoView returns a Promise, which React would call as the effect cleanup
-    if (messages.length) bottom.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, status]);
+  useAnswerScroll(messages, status, openedWith, bottom);
 
   useEffect(() => {
     if (busy || messages.length === 0) return; // save when a reply ends (done, stopped or failed)
