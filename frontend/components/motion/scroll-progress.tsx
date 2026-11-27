@@ -2,7 +2,7 @@
 
 import { motion, useReducedMotion, useScroll, useSpring, useTransform } from "motion/react";
 
-// A thin bar across the top that grows with how far the page is scrolled (scroll-linked scaleX, T3-61).
+// A thin bar across the top that grows with how far the page is scrolled (scroll-linked scaleX, T3-62).
 // The window is the scroller (AppShell only has sticky parts). Hidden at the top, so a page that cannot scroll
 // (progress reads 1 there) shows no bar. Reduced motion: the bar follows without the spring.
 export function ScrollProgress() {

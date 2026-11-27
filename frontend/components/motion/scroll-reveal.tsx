@@ -3,7 +3,7 @@
 import { motion, useMotionValue, useReducedMotion, useScroll, useTransform } from "motion/react";
 import { useRef, useSyncExternalStore, type ReactNode } from "react";
 
-// Fades and slides a block in as it scrolls up into view (scroll-linked, T3-61). Progress is 0 when its top meets
+// Fades and slides a block in as it scrolls up into view (scroll-linked, T3-62). Progress is 0 when its top meets
 // the bottom of the screen and 1 when its bottom does, so a block that already fits on screen is fully shown
 // even where the page cannot scroll. Reduced motion: fixed motion values (shown as is). Always motion values,
 // never plain numbers: motion writes them after hydration, so the server's starting style does not stay. The
