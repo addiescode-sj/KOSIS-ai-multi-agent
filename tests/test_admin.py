@@ -251,6 +251,45 @@ def test_metric_tabs_show_log_metrics_numbers(app_db):
 
 
 @pytest.mark.postgres
+def test_metrics_api_gives_the_page_numbers_to_operators_only(app_db):
+    """T3-66: the React metrics screen reads /admin/api/metrics. Same filter rule and queries.metrics() as the page;
+    no login is a 401 (not the Kakao redirect), off the list a 404 with no numbers."""
+    _, tokens, _ = app_db
+    from kosis_store import log_metrics as lm
+
+    from admin.app import main
+
+    c = _client()
+    day = datetime.now(KST).date() - timedelta(days=1)
+    url = f"/admin/api/metrics?start={day}&end={day}"
+    r = c.get(url)
+    assert r.status_code == 401 and r.json()["error"]["code"] == "login_required"
+    r = c.get(url, headers=_as(tokens["outsider"]))
+    assert r.status_code == 404 and "question_count" not in r.text
+    r = c.get(url, headers=_as(tokens["me"]))
+    assert r.status_code == 200 and r.headers["cache-control"] == "no-store"
+    body = r.json()
+    assert body["filter"] == {"start": str(day), "end": str(day), "user": "all", "internal": False}
+    assert body["notice"] is None and set(body["tabs"]) == set(lm.TABS)
+    assert body["tabs"]["summary"]["rows"]["question_count"] == [{"n": 3}]
+    with main.sessionmaker(main._engine)() as s:
+        for tab in lm.TABS:  # the page's numbers, as JSON
+            assert body["tabs"][tab]["rows"] == main.jsonable_encoder(lm.tab(s, tab, MetricFilter(day, day)))
+    assert body["previous"]["question_count"] == [{"n": 0}]  # the day before: no questions
+    assert body["labels"]["reason"]["no_period"] == "기간 없음"
+    today = datetime.now(KST).date()
+    r = c.get(f"/admin/api/metrics?start={today}&end={today}", headers=_as(tokens["me"]))
+    assert r.json()["filter"]["end"] == str(day) and r.json()["notice"]  # today is moved to yesterday, and told
+
+
+def test_previous_range_stays_inside_the_limit(monkeypatch):
+    monkeypatch.setattr(queries, "today", lambda: date(2026, 11, 27))
+    week = MetricFilter(date(2026, 11, 20), date(2026, 11, 26))
+    assert queries.previous(week) == MetricFilter(date(2026, 11, 13), date(2026, 11, 19))
+    assert queries.previous(MetricFilter(date(2026, 8, 29), date(2026, 11, 26))) is None  # would start before 90 days
+
+
+@pytest.mark.postgres
 def test_question_detail_is_audited(app_db):
     owner, tokens, _ = app_db
     c = _client()

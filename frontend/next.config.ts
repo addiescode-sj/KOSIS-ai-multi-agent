@@ -17,10 +17,15 @@ const nextConfig: NextConfig = {
       { source: "/conversations", destination: "/chat", permanent: true },
     ];
   },
-  // The admin preview (T3-65, sample numbers) is for `next dev` only: in a production server its address goes to a
-  // route that does not exist, so it answers a real 404 before any of it renders (the layout guard is the backup).
+  // The admin preview (T3-65) is for `next dev` only: in a production server its address goes to a route that does
+  // not exist, so it answers a real 404 before any of it renders (the layout guard is the backup).
+  // In `next dev` its numbers come from the operator app (T3-66): /admin/api/* is passed to ADMIN_URL the way the
+  // deployed ingress sends /admin/* there, so the browser's login cookie reaches it on the same origin.
   async rewrites() {
-    if (process.env.NODE_ENV !== "production") return [];
+    if (process.env.NODE_ENV !== "production") {
+      const admin = process.env.ADMIN_URL ?? "http://localhost:8100";
+      return [{ source: "/admin/api/:path*", destination: `${admin}/admin/api/:path*` }];
+    }
     return {
       beforeFiles: [{ source: "/preview/admin/:path*", destination: "/__admin-preview-off" }],
       afterFiles: [],

@@ -6,7 +6,6 @@ import { usePathname } from "next/navigation";
 import type { ReactNode } from "react";
 import { cn } from "cn";
 
-import { Badge } from "@/components/ui/badge";
 
 export const ADMIN_HOME = "/preview/admin";
 
@@ -16,8 +15,8 @@ const NAV = [
   { href: `${ADMIN_HOME}/jaeger`, label: "Jaeger 분산 추적", icon: Activity, external: true },
 ] as const;
 
-// Dark sidebar + sticky header of the admin preview screens (design mockup AdminLayout, T3-65). The header always
-// says the numbers are samples. `status` is the dashboard's batch state, when the screen has one.
+// Dark sidebar + sticky header of the admin preview screens (design mockup AdminLayout, T3-65). `status` says where
+// the screen's numbers come from (the dashboard: real metrics and when they were read, T3-66).
 export function AdminShell({ title, sub, actions, status, children }: {
   title: string;
   sub?: string;
@@ -68,7 +67,7 @@ export function AdminShell({ title, sub, actions, status, children }: {
             </span>
             <div className="min-w-0 flex-1">
               <p className="text-sm font-medium">운영자</p>
-              <p className="text-xs text-white/50">ops@kosis-ai.kr</p>
+              <p className="text-xs text-white/50">카카오 로그인 · 허용 목록</p>
             </div>
             <button type="button" disabled className="rounded-md p-1.5 text-white/50" aria-label="로그아웃 (미리보기에서는 쓰지 않음)">
               <LogOut size={16} />
@@ -83,7 +82,6 @@ export function AdminShell({ title, sub, actions, status, children }: {
             {sub && <p className="text-xs text-mute">{sub}</p>}
           </div>
           {actions}
-          <Badge variant="amber" title="디자인 목업의 예시 값입니다. 실제 지표가 아닙니다.">예시 데이터</Badge>
           {status}
         </header>
         <main className="flex-1 p-8">{children}</main>
