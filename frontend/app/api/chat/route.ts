@@ -3,7 +3,8 @@ import { ZodError } from "zod";
 
 import { callerHeaders } from "@/lib/backend/proxy";
 import {
-  droppedFailure, type Failure, failureFromEvent, failureFromStatus, finalMessage, shouldReconnect,
+  droppedFailure, type ErrorReply, type Failure, failureFromEvent, failureFromStatus, finalMessage, shouldReconnect,
+  unreachableFailure,
 } from "@/lib/chat/reconnect";
 import { errorFrom, errorResponse, issuesText } from "@/lib/backend/errors";
 import {
@@ -44,14 +45,14 @@ export async function POST(request: Request) {
         const body = ChatStreamRequest.safeParse({ question, thread_id: thread, retry_of: retry, input_method: inputMethod });
         const attempt = body.success
           ? await answerOnce(`${backend}/chat/stream`, headers, body.data, writer, request.signal, reconnects)
-          : { failure: failureFromStatus(422, `질문은 ${QUESTION_MAX}자까지 입력할 수 있습니다.`), threadId: null };
+          : { failure: failureFromStatus(422, { message: `질문은 ${QUESTION_MAX}자까지 입력할 수 있습니다.` }), threadId: null };
         if (attempt.failure === null) return;
         const { failure } = attempt;
         if (!shouldReconnect(failure, reconnects)) {
           writer.write({
             type: "data-failure",
             id: "failure",
-            data: { retryable: failure.retryable, status: failure.status, requestId: failure.requestId },
+            data: { retryable: failure.retryable, status: failure.status, requestId: failure.requestId, code: failure.code },
           });
           throw new Error(finalMessage(failure));
         }
@@ -85,9 +86,9 @@ async function answerOnce(
     res = await fetch(url, { method: "POST", headers, body: JSON.stringify(body), signal });
   } catch (e) {
     if (signal.aborted) throw e;
-    return { failure: droppedFailure(null), threadId: null };
+    return { failure: unreachableFailure(), threadId: null }; // no answer at all: the backend is not reachable
   }
-  if (!res.ok || !res.body) return { failure: failureFromStatus(res.status, await detail(res)), threadId: null };
+  if (!res.ok || !res.body) return { failure: failureFromStatus(res.status, await reply(res)), threadId: null };
 
   let draft = "";
   let threadId: string | null = null;
@@ -129,12 +130,13 @@ async function answerOnce(
   return { failure: droppedFailure(requestId), threadId }; // the stream ended without `result` or `error`
 }
 
-// The message of a non-2xx answer: {"error": {code, message}}, FastAPI's 422 {"detail": [...]}, or the raw text
-async function detail(res: Response): Promise<string> {
+// The code, message and cause of a non-2xx answer: {"error": {code, message, cause}}, FastAPI's 422 {"detail": [...]},
+// or a body of another shape (an entry proxy's page): then only the status speaks (T3-68: its text is not shown)
+async function reply(res: Response): Promise<ErrorReply> {
   const text = await res.text().catch(() => "");
   try {
-    return errorFrom(res.status, JSON.parse(text)).message;
+    return errorFrom(res.status, JSON.parse(text));
   } catch {
-    return text || res.statusText;
+    return { code: `http_${res.status}`, message: "" };
   }
 }

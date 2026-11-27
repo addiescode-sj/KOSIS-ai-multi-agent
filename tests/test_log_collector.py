@@ -211,7 +211,7 @@ def test_every_turn_becomes_one_row(store):
     assert second.input_method == "clarify_option" and second.first_token_ms is None  # /chat has no tokens
     assert next(r for r in rows if r.conversation_id == "t2").failed_stage == "search"
     error = next(r for r in rows if r.conversation_id == "t3")
-    assert (error.outcome, error.reason_code) == ("error", "RuntimeError")
+    assert (error.outcome, error.reason_code) == ("error", "internal_error")  # T3-68: the error code, not the class
     assert all("010-1234" not in (r.question or "") for r in rows)
 
 

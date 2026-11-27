@@ -40,6 +40,7 @@ from opentelemetry.trace import Span, Tracer
 
 import kosis_agent  # noqa: F401  (sets KOSIS_WORKSPACE before phase 1 / phase 2 modules load)
 from backend.app import auth, telemetry
+from backend.app.errors import INTERNAL_MESSAGE, UNAVAILABLE_MESSAGE, classify, error_event
 from kosis_agent.envfile import load_env_file
 from kosis_agent.graph.main_graph import build_graph, call_tool
 from kosis_agent.graph.state import ChatResult, chat_result, new_checkpointer
@@ -99,15 +100,17 @@ app = FastAPI(
 
 
 class ApiError(Exception):
-    """An error of a non-SSE endpoint in the contract's shape: {"error": {"code", "message"}} (api.md 0)."""
+    """An error of a non-SSE endpoint in the contract's shape: {"error": {"code", "message"}} (api.md 0). `cause`
+    (optional, T3-68): the error code (backend/app/errors.py) behind a 503 `unavailable`, so the screen can say why."""
 
-    def __init__(self, status: int, code: str, message: str):
-        self.status, self.code, self.message = status, code, message
+    def __init__(self, status: int, code: str, message: str, cause: str | None = None):
+        self.status, self.code, self.message, self.cause = status, code, message, cause
 
 
 @app.exception_handler(ApiError)
 def _api_error(_: Request, e: ApiError) -> JSONResponse:
-    return JSONResponse({"error": {"code": e.code, "message": e.message}}, status_code=e.status)
+    error = {"code": e.code, "message": e.message, **({"cause": e.cause} if e.cause else {})}
+    return JSONResponse({"error": error}, status_code=e.status)
 
 
 # codes of the HTTP errors raised outside ApiError (unknown paths, wrong methods, a library's HTTPException)
@@ -226,8 +229,8 @@ def _loaded() -> tuple[Any, dict[str, BaseTool]]:
                 _agent = _build(checkpointer)
             except Exception as e:  # noqa: BLE001 - any load failure means the agent is unavailable
                 log.warning("agent not available: %s", e)
-                raise ApiError(503, "unavailable",
-                               f"에이전트를 열 수 없습니다. 잠시 뒤 다시 시도해 주세요. ({type(e).__name__})") from e
+                # T3-68: no exception text in the body; the cause code says why (GPU server down, missing key, ...)
+                raise ApiError(503, "unavailable", UNAVAILABLE_MESSAGE, cause=classify(e)) from e
         return _agent
 
 
@@ -447,11 +450,6 @@ def _log_turn(collector: TurnLogCollector | None, root: Span, req: ChatRequest, 
         pass
 
 
-def _retryable(e: BaseException) -> bool:
-    """Whether "다시 시도" can help: not for bad input."""
-    return not isinstance(e, (ValueError, TypeError, KeyError))
-
-
 # ---------------------------------------------------------------- endpoints
 
 @app.get("/health", tags=["ops"], summary="서버 상태")
@@ -482,7 +480,9 @@ def chat_stream(req: ChatRequest, graph=Depends(get_graph), tracer: Tracer = Dep
     4. `token` — 답 문장을 어절 단위로 `{delta}`. 실전 1이 숫자 검증을 끝낸 문장만 흘린다(검증 전 LLM 출력 아님)
     5. `result` — `ChatResult` (`request_id` 포함). 화면의 최종 답은 이것으로 바꾼다
 
-    실행 중 예외는 `error` (`{type, detail, retryable, request_id}`)로 끝난다(상태 줄은 이미 200으로 나감)."""
+    실행 중 예외는 `error` (`{code, message, retryable, request_id, type, detail}`)로 끝난다(상태 줄은 이미 200으로 나감).
+    `code`는 오류 코드 7종(backend/app/errors.py, T3-68), `message`는 그 고정 문구, `retryable`은 코드로 정한다.
+    `type`·`detail`(예외 이름·문구)은 로그·개발용이고 화면에 쓰지 않는다."""
     if not isinstance(turn, Turn):  # a direct call (tests): no dependencies were filled
         session = _session(None, req.session_id)
         turn = Turn(_open(store, req, session), session, None)
@@ -524,8 +524,9 @@ def chat_stream(req: ChatRequest, graph=Depends(get_graph), tracer: Tracer = Dep
         raise
     except Exception as e:  # noqa: BLE001 - the status line is already sent; say it in the stream instead
         _fail(root, e)
-        yield ServerSentEvent(event="error", data={"type": type(e).__name__, "detail": str(e),
-                                                   "retryable": _retryable(e), "request_id": request_id})
+        payload = error_event(e, request_id)
+        root.set_attribute("kosis.error.code", payload["code"])  # request_logs.reason_code (log_rows.py, T3-68)
+        yield ServerSentEvent(event="error", data=payload)
     finally:  # also on client disconnect (GeneratorExit): the root span always ends
         root.end()
         _end_turn(store, turn, graph)
@@ -784,7 +785,8 @@ def chat(req: ChatRequest, graph=Depends(get_graph), tracer: Tracer = Depends(te
         return ChatResponse(thread_id=thread, trace_id=request_id, expired=opened.expired, result=result)
     except Exception as e:
         _fail(root, e)
-        raise ApiError(500, "internal_error", f"{type(e).__name__}: {e}  (trace_id {request_id})") from e
+        root.set_attribute("kosis.error.code", classify(e))
+        raise ApiError(500, "internal_error", f"{INTERNAL_MESSAGE} (문의 번호 {request_id[:8]})") from e
     finally:
         root.end()
         _end_turn(store, turn, graph)

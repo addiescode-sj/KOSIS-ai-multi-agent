@@ -6,15 +6,17 @@ import { useState } from "react";
 import { QUESTION_MAX } from "@/lib/chat/schemas";
 
 // Sticky question box under the conversation (prototype Composer). Enter sends, Shift+Enter breaks the line.
-export function Composer({ busy, onSend, onStop, placeholder = "궁금한 통계를 평소 말로 입력하세요. 예: 2023년 합계출산율은?" }: {
+// disabled (T3-68): offline, the question cannot go out; typing stays possible.
+export function Composer({ busy, disabled = false, onSend, onStop, placeholder = "궁금한 통계를 평소 말로 입력하세요. 예: 2023년 합계출산율은?" }: {
   busy: boolean;
+  disabled?: boolean;
   onSend: (text: string) => void;
   onStop: () => void;
   placeholder?: string;
 }) {
   const [text, setText] = useState("");
   function submit() {
-    if (!text.trim() || busy) return;
+    if (!text.trim() || busy || disabled) return;
     onSend(text.trim());
     setText("");
   }
@@ -48,7 +50,7 @@ export function Composer({ busy, onSend, onStop, placeholder = "궁금한 통계
             <Square size={16} />
           </button>
         ) : (
-          <button type="submit" disabled={!text.trim()} aria-label="전송"
+          <button type="submit" disabled={!text.trim() || disabled} aria-label="전송"
             className="flex size-10 cursor-pointer items-center justify-center rounded-xl bg-brand-600 text-white hover:bg-brand-700 disabled:cursor-default disabled:opacity-50">
             <ArrowUp size={18} />
           </button>

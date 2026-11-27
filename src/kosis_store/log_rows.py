@@ -24,12 +24,15 @@ CHAT = "chat"  # gen_ai.operation.name of every LLM call span: the eval ops coun
 CONVERSATION_ID_MAX = 64  # request_logs.conversation_id is VARCHAR(64); a sha256 hex digest is exactly 64
 
 # The stage a span belongs to: its own name, else the nearest ancestor's. Main graph nodes and the three tools;
-# phase 1 and 2 nodes inside a tool take the tool's stage.
+# phase 1 and 2 nodes inside a tool take the tool's stage. T3-68: the ReAct graph's nodes (graph/main_graph.py, T3-03)
+# — candidates is the search's candidate share (no LLM, not a tool), understand / rewrite / rewrite_after_search /
+# review are agent steps.
 STAGES = {
-    "search": "search", "search_tables": "search",
+    "search": "search", "search_tables": "search", "candidates": "search",
     "statistics": "stat", "summarize_stat": "stat",
     "chart": "chart", "make_chart": "chart",
     "context": "agent", "multi": "agent", "finalize": "agent",
+    "understand": "agent", "rewrite": "agent", "rewrite_after_search": "agent", "review": "agent",
 }
 
 
@@ -122,7 +125,8 @@ def row_from_turn(spans: Iterable, result: dict | None, *, aborted: bool = False
 
     reason = a.get("kosis.no_answer_reason") or r.get("no_answer_reason")
     if outcome == "error":
-        reason = a.get("error.type") or reason
+        # T3-68: the error code (backend/app/errors.py) the service left on the root; older spans carry only the class
+        reason = a.get("kosis.error.code") or a.get("error.type") or reason
     if outcome == "refused" and not reason:
         reason = UNKNOWN_REASON
 

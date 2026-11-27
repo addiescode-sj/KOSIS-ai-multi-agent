@@ -19,6 +19,7 @@ from sqlalchemy import select
 
 from backend.app import main as api
 from backend.app import telemetry
+from backend.app.errors import CODES
 from backend.app.main import app, get_checkpointer, get_graph, get_store, get_tools
 from kosis_agent.graph.main_graph import build_graph
 from kosis_agent.graph.state import new_checkpointer
@@ -256,7 +257,7 @@ def test_store_failure_does_not_stop_the_answer(svc, monkeypatch):
     assert status == 200 and ev["result"]["answer"]
 
 
-def test_error_event_says_retryable_and_the_request_id(svc):
+def test_error_event_says_the_code_retryable_and_the_request_id(svc):
     class Boom:
         def get_state(self, config):
             raise ValueError("no checkpointer")
@@ -266,8 +267,24 @@ def test_error_event_says_retryable_and_the_request_id(svc):
 
     app.dependency_overrides[get_graph] = lambda: Boom()
     _, ev = svc.ask()
-    assert ev["error"] == {"type": "TimeoutError", "detail": "phase 1 timed out", "retryable": True,
-                           "request_id": ev["meta"]["trace_id"]}
+    # T3-68: code + its fixed sentence; type / detail stay for logs only (the screen does not show them)
+    assert ev["error"] == {"code": "timeout", "message": CODES["timeout"].message, "retryable": True,
+                           "request_id": ev["meta"]["trace_id"], "type": "TimeoutError", "detail": "phase 1 timed out"}
+
+
+def test_a_load_failure_says_its_cause(svc, monkeypatch):
+    """T3-68: the GPU server down when the agent opens is a 503 `unavailable` with cause model_unavailable."""
+    from backend.app import main
+    from inference.client import InferenceError
+
+    def down(checkpointer=None):
+        raise InferenceError("embed server unreachable: GET http://10.0.0.5:8002/health")
+    app.dependency_overrides.pop(get_graph, None)
+    monkeypatch.setattr(main, "_build", down)
+    monkeypatch.setattr(main, "_agent", None)
+    res = svc.http.post("/chat/stream", json={"question": "q"})
+    assert res.status_code == 503 and res.json()["error"]["cause"] == "model_unavailable"
+    assert "10.0.0.5" not in res.text
 
 
 PG_URL = os.environ.get("TEST_DATABASE_URL", "").strip()

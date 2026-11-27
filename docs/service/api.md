@@ -71,8 +71,9 @@
 | 409 | 꺼진 노드 호출(개발용 `/dev/nodes/*`) |
 | 422 | 입력 검증 실패(빈 질문, 200자 초과, 레지스트리에 없는 표 키, 선택지 조합 오류, 선택지 누락) |
 | 429 | 요청 제한 초과(피드백: 같은 IP 분당 10회) |
-| 503 | 에이전트 자원(벡터 DB PostgreSQL+pgvector·모델·키)을 아직 못 엶. 다음 요청에서 다시 시도. `/health`는 이때도 200 |
+| 503 | 에이전트 자원(벡터 DB PostgreSQL+pgvector·모델·키)을 아직 못 엶. 다음 요청에서 다시 시도. `/health`는 이때도 200. 선택 필드 `cause`에 원인 오류 코드(2장 `error`의 `code`, 예 `model_unavailable`)를 붙인다(T3-68) |
 
+- `message`에 예외 이름·예외 문구·내부 주소를 넣지 않는다(T3-68). 개발용 `POST /dev/chat`의 500은 고정 문구 + 문의 번호(`request_id` 앞 8자리).
 - 오류 본문은 한 곳(전역 처리기)에서 만든다. 상태 코드는 그대로 두고 `code`만 붙인다: `not_found`·`method_not_allowed`·`unavailable`·`internal_error`·`login_required`·`forbidden_origin`·`conversation_busy`·`too_many_requests`·`invalid_feedback`·`failed_answer`·`unknown_table`·`invalid_cursor`. `message`는 화면에 보여도 되는 문장이다 (11/25, T3-55).
 - 입력 형식 오류(빈 질문, 200자 초과, 빠진 필드, 잘못된 타입)만 FastAPI 기본 본문 `{"detail": [...]}`으로 422를 돌려준다. 프론트는 422면 `error.message`, 없으면 `detail`을 본다.
 
@@ -287,10 +288,25 @@ F-JJWJTZ는 "재검색·재연결 중임을 일반 진행과 구분해 보여 �
 #### `error` [현재 + 확장]
 
 ```json
-{ "type": "TimeoutError", "detail": "…", "retryable": true, "request_id": "4bf92f…" }
+{ "code": "model_unavailable", "message": "답변에 필요한 AI 서버가 잠시 멈춰 있어요. 1~2분 뒤 다시 시도해 주세요.",
+  "retryable": true, "request_id": "4bf92f…", "type": "InferenceError", "detail": "…" }
 ```
 
-- `retryable`·`request_id` **[신규]**: `true`면 FE가 자동 재연결(정책 상한 안에서) 뒤 "다시 시도" 버튼을 보인다. 재연결을 소진하면 "응답을 마치지 못했습니다. 잠시 뒤 다시 시도해 주세요."
+- `code`·`message` **[T3-68]**: 오류 코드 7종과 그 고정 문구(`backend/app/errors.py`). 지금은 예외 종류로 정하는 변환표이고, KOS-211에서 앞단 에이전트의 판단으로 바뀐다(같은 코드 목록).
+
+  | `code` | 언제 | `retryable` |
+  | -- | -- | -- |
+  | `model_unavailable` | GPU 서버(임베딩·리랭커·Qwen) 연결 실패 | true |
+  | `upstream_busy` | HCX 등 외부 모델이 요청 과다로 거절(429) | true |
+  | `upstream_error` | 외부 모델의 5xx·형식 오류 | true |
+  | `timeout` | 시간 초과 | true |
+  | `data_error` | 표 자료를 읽지 못함 | false |
+  | `config_error` | 키 없음 등 서버 설정 문제 | false |
+  | `internal_error` | 그 밖 | true |
+
+- 화면은 `code`로 제목·문구를 고르고(`frontend/lib/chat/errors.ts`), 모르는 코드면 `message`를 쓴다. `type`·`detail`(예외 이름·문구)은 로그·개발용이며 화면에 쓰지 않는다. 오류 카드에 문의 번호(`request_id` 앞 8자리)를 보인다.
+- 화면이 스스로 정하는 코드(서버가 보낼 수 없음): `connection_lost`(스트림이 끊김) · `offline`(브라우저 오프라인) · `network_error`(서비스에 닿지 못함) · `backend_unreachable`(5xx·입구 오류 페이지) · `bad_response`.
+- `retryable`·`request_id`: `true`면 FE가 자동 재연결(정책 상한 안에서) 뒤 "다시 시도" 버튼을 보인다. 재연결을 소진해도 그 코드의 문구를 그대로 둔다.
 - 최종 `result`를 받기 전에 끝난 응답은 완료된 답으로 확정하지 않는다. 이미 받은 `token` 문장은 미완성 경고와 함께 둔다(F-ZTUGMI).
 - 입력 오류(422)는 자동 재연결 대상이 아니다. 연결 장애를 "자료 없음"으로 바꾸어 거절하지 않는다.
 
