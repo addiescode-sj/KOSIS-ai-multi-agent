@@ -1,5 +1,5 @@
 import { count, share } from "@/lib/admin/format";
-import type { Labeled } from "@/lib/admin/schemas";
+import type { Labeled } from "@/lib/admin/view";
 
 // Each reason with its count and its share of all reasons (computed here, not stored)
 export function ReasonBars({ rows }: { rows: Labeled[] }) {

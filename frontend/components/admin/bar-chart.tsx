@@ -1,7 +1,7 @@
 import { cn } from "cn";
 
 import { count } from "@/lib/admin/format";
-import type { Labeled } from "@/lib/admin/schemas";
+import type { Labeled } from "@/lib/admin/view";
 
 // Vertical bars with the count above and the label below (mockup BarChart); `highlight` is the bar drawn darker
 export function BarChart({ data, height = 180, highlight }: { data: Labeled[]; height?: number; highlight?: number }) {

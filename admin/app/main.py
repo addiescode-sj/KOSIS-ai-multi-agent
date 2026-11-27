@@ -13,7 +13,8 @@ from pathlib import Path
 from urllib.parse import quote, urlencode
 
 from fastapi import Depends, FastAPI, Form, Request
-from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, Response
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import Engine, create_engine
@@ -30,6 +31,7 @@ from admin.app.models import REVIEW_STATUSES
 log = logging.getLogger("admin")
 HERE = Path(__file__).parent
 PREFIX = "/admin"
+API = f"{PREFIX}/api"  # JSON for the React metrics screen (T3-66); same origin, so the login cookie comes along
 
 app = FastAPI(title="KOSIS 운영", docs_url=None, redoc_url=None, openapi_url=None)
 app.mount(f"{PREFIX}/static", StaticFiles(directory=HERE / "static"), name="static")
@@ -105,6 +107,8 @@ async def _headers(request: Request, call_next):
 
 @app.exception_handler(auth.NotSignedIn)
 async def _sign_in(request: Request, exc: auth.NotSignedIn) -> Response:
+    if request.url.path.startswith(API):  # a screen's fetch: say so instead of sending it to the Kakao pages
+        return JSONResponse({"error": {"code": "login_required", "message": "로그인이 필요합니다."}}, status_code=401)
     back = request.url.path + (f"?{request.url.query}" if request.url.query else "")
     if request.method != "GET":
         back = PREFIX
@@ -134,6 +138,19 @@ def healthz() -> PlainTextResponse:
 @app.get(f"{PREFIX}/", response_class=HTMLResponse, include_in_schema=False)
 def home(request: Request, op: auth.Operator = Depends(current_operator), db: Session = Depends(get_db)):
     return page(request, "home.html", op, nav="home", db_ok=queries.db_ok(db), data=queries.home(db))
+
+
+@app.get(f"{API}/metrics")
+def api_metrics(start: str | None = None, end: str | None = None, user: str = "all", internal: bool = False,
+                op: auth.Operator = Depends(current_operator), db: Session = Depends(get_db)) -> JSONResponse:
+    """The metrics screen's numbers as JSON for the React screen (T3-66): the same filter rule and queries.metrics()
+    as the page below, so both show the same numbers. Operators only (401 without a login, 404 off the list)."""
+    rng = queries.date_range(start, end, include_today=False, user=user, internal=internal)
+    flt = rng.flt
+    data = queries.dashboard(db, flt)
+    body = {"filter": {"start": flt.start_day, "end": flt.end_day, "user": flt.user, "internal": flt.include_internal},
+            "notice": rng.notice, "labels": LABELS, **data}
+    return JSONResponse(jsonable_encoder(body))
 
 
 @app.get(f"{PREFIX}/metrics", response_class=HTMLResponse)

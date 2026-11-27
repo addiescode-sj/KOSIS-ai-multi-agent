@@ -86,7 +86,8 @@ def metrics(session: Session, tab: str, flt: MetricFilter) -> dict:
     if hit and time.monotonic() - hit[0] < CACHE_SECONDS:
         return hit[1]
     result = {"rows": lm.tab(session, tab, flt),
-              "daily": {m: _every_day(lm.query(session, m, flt, by_day=True), flt) for m in lm.TABS[tab] if m in DAILY}}
+              "daily": {m: _every_day(lm.query(session, m, flt, by_day=True), flt) for m in lm.TABS[tab] if m in DAILY},
+              "read_at": datetime.now(timezone.utc)}  # when these numbers were read (the cache keeps them 5 minutes)
     if len(_cache) > 200:  # filters come from the address; keep the cache small
         _cache.clear()
     _cache[key] = (time.monotonic(), result)
@@ -99,6 +100,31 @@ def _every_day(rows: list[dict], flt: MetricFilter) -> list[dict]:
     by_day = {r["day"]: r for r in rows}
     days = (flt.end_day - flt.start_day).days + 1
     return [by_day.get(d, {"day": d}) for d in (flt.start_day + timedelta(days=i) for i in range(days))]
+
+
+def previous(flt: MetricFilter) -> MetricFilter | None:
+    """The range of the same length just before `flt` (for the change shown next to a number); None when it would
+    start more than MAX_DAYS ago. Side effects: none."""
+    days = (flt.end_day - flt.start_day).days + 1
+    end = flt.start_day - timedelta(days=1)
+    start = end - timedelta(days=days - 1)
+    if start < today() - timedelta(days=MAX_DAYS):
+        return None
+    return MetricFilter(start, end, flt.user, flt.include_internal)
+
+
+def dashboard(session: Session, flt: MetricFilter) -> dict:
+    """Every tab's metrics for the React metrics screen (T3-66), the summary of the range before for the changes, and
+    when the numbers were read (the oldest tab). The same metrics() the operator pages use: nothing is computed again.
+    Side effects: reads."""
+    tabs = {tab: metrics(session, tab, flt) for tab in lm.TABS}
+    before = previous(flt)
+    return {
+        "tabs": {tab: {"rows": t["rows"], "daily": t["daily"]} for tab, t in tabs.items()},
+        "first_token": lm.query(session, "first_token", flt),  # TTFT p50·p95: a log_metrics metric on no tab
+        "previous": metrics(session, "summary", before)["rows"] if before else None,
+        "read_at": min(t["read_at"] for t in tabs.values()),
+    }
 
 
 # ---------------------------------------------------------------- home
