@@ -120,3 +120,17 @@ def test_l3_runs_pair_by_qid_and_group_by_kind(tmp_path):
     c = compare.paired(base, after, {})
     assert (c["base_pass"], len(c["wins"]), c["by_source"]["answerable"]["wins"]) == (1 / 13, 12, 12)
     assert compare.verdict(c)[0] == "채택"
+
+
+def test_ragas_runs_compare_scores_and_hold_on_a_worse_judge_metric(tmp_path):
+    """T3-63: ragas has no pass: per metric the paired interval of the score difference; any of the judge's four worse
+    holds (보류), else 문제 없음."""
+    def ragas_run(name, faith):
+        return layer_run(tmp_path, name, "ragas", [{"qid": f"Q{i}", "faithfulness": faith, "answer_relevancy": 0.8,
+                                                     "context_precision": None, "context_recall": 0.5,
+                                                     "id_context_precision": 1.0, "id_context_recall": 1.0} for i in range(20)])
+    base, same, worse = ragas_run("b", 0.9), ragas_run("s", 0.9), ragas_run("w", 0.6)
+    scores = compare.ragas_scores(base, same)
+    assert compare.ragas_verdict(scores)[0] == "문제 없음" and scores["context_precision"]["n"] == 0
+    scores = compare.ragas_scores(base, worse)
+    assert scores["faithfulness"]["reading"] == "악화" and compare.ragas_verdict(scores)[0] == "보류"

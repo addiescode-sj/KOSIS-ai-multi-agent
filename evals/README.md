@@ -735,8 +735,12 @@ dev.sh는 Docker·PostgreSQL·Jaeger를 띄우고 `uv run --group embed --group 
 | 검색 | `l1 --retriever graph:staged-gpt-condyears` (서비스 검색 설정) | 정답 표 1위, 답할 수 없으면 거절 | `retrieval_golden.jsonl` |
 | 계산·답변 생성 | `l3 --calc-golden <e2e 계산 골든 중 table_keys 없는 항목>` | 계산 판정 PASS | 표 하나짜리 54문항 |
 | 전체 | `e2e` | 턴 통과 | e2e 골든 120 |
+| 답 문장 품질 | `ragas --from-run <그 arm의 e2e run> --calc-golden evals/datasets/e2e_golden_calc.jsonl --no-record` | 통과 없음: 지표마다 점수 차이의 짝 bootstrap 구간, 판정 모델 지표 하나라도 악화면 **보류** | e2e run 재채점 |
 
-- 여러 표 문항은 검색이 표를 가져와야 해서 `l3`에서 빼고 `e2e`에서만 잰다. Ragas(RAG 판정)는 이 절차 밖이다.
+- 여러 표 문항은 검색이 표를 가져와야 해서 `l3`에서 빼고 `e2e`에서만 잰다.
+- Ragas는 채택을 정하지 않는다. e2e가 채택이어도 Ragas가 보류면 최종 판정은 보류다. 실험 run은 `--no-record`로 품질 게이트 기록(`quality_history.jsonl`)에 넣지 않는다.
+- Ragas는 지금 e2e 골든(시나리오 방식) run도 읽는다: 마지막 `summarize_stat` 결과를 답으로, 검색 후보를 문맥으로 쓰고 sid를 계산 골든 qid로 맞춘다(사람 골든 H001~H120).
+- trace: 노트북은 모든 run의 span을 Jaeger로 보낸다(보안 비밀 `OTEL_EXPORTER_OTLP_ENDPOINT`의 수집기, 없으면 Colab 안 Jaeger → Drive `jaeger/<EXPERIMENT>/`). 리포트의 trace 링크는 `JAEGER_UI_URL`을 따른다.
 
 **2. 판정한다**
 ```bash

@@ -34,6 +34,9 @@ class Incomparable(ValueError):
     pass
 
 
+RAGAS_JUDGED = ("faithfulness", "answer_relevancy", "context_precision", "context_recall")  # the judge's four
+RAGAS_ALL = RAGAS_JUDGED + ("id_context_precision", "id_context_recall")  # + two code cross-checks (evals.evaluators.ragas_metrics)
+
 PASS_RULE = {"l1": "정답 표가 1위(답할 수 없는 문항은 거절)", "l2": "슬롯 전부 맞음", "l3": "계산 판정 PASS",
              "agent": "턴 통과(툴·상태·수치)", "e2e": "턴 통과(툴·상태·수치)"}
 
@@ -83,6 +86,30 @@ def boot(diff: list[float], resamples: int = RESAMPLES, seed: int = SEED) -> tup
     n = len(diff)
     means = sorted(sum(rng.choices(diff, k=n)) / n for _ in range(resamples))
     return means[int(0.025 * resamples)], means[int(0.975 * resamples) - 1]
+
+
+def ragas_scores(base: dict, after: dict) -> dict:
+    """Ragas runs (scores of the same e2e golden, no pass): per metric, the paired bootstrap 95% interval of the score
+    difference over the questions both runs scored, and its reading (개선 | 악화 | 차이 미확인)."""
+    out = {}
+    for metric in RAGAS_ALL:
+        pairs = [(base["rows"][k].get(metric), after["rows"][k].get(metric)) for k in sorted(base["rows"])]
+        diff = [a - b for b, a in pairs if a is not None and b is not None]
+        lo, hi = boot(diff)
+        out[metric] = {"n": len(diff), "base": statistics.fmean([b for b, a in pairs if b is not None and a is not None]) if diff else None,
+                       "after": statistics.fmean([a for b, a in pairs if b is not None and a is not None]) if diff else None,
+                       "diff": statistics.fmean(diff) if diff else None, "ci": (lo, hi),
+                       "reading": "개선" if lo > 0 else "악화" if hi < 0 else "차이 미확인"}
+    return out
+
+
+def ragas_verdict(scores: dict) -> tuple[str, list[str]]:
+    """보류 when any of the judge's four metrics got worse (the answers read worse whatever e2e says), else 문제 없음.
+    Ragas decides no adoption itself: e2e does, and a 보류 here holds an e2e 채택 (plans/T3-63.md)."""
+    worse = [m for m in RAGAS_JUDGED if scores[m]["reading"] == "악화"]
+    why = [f"{m} {v['diff']:+.3f} [{v['ci'][0]:+.3f}, {v['ci'][1]:+.3f}] {v['reading']} (n={v['n']})"
+           for m, v in scores.items() if v["diff"] is not None]
+    return ("보류", [f"답 품질 악화: {', '.join(worse)}", *why]) if worse else ("문제 없음", why)
 
 
 def violations(row: dict) -> list[str]:
@@ -227,13 +254,30 @@ def main(argv: list[str] | None = None) -> int:
     try:
         check_comparable(base, after)
         aa = None
-        if args.aa:
+        if args.aa and base["manifest"].get("layer") != "ragas":
             again = load_run(args.aa)
             check_comparable(base, again)
             aa = aa_check(base, again)
     except Incomparable as exc:
         print(f"비교 거부: {exc}", file=sys.stderr)
         return 2
+    if base["manifest"].get("layer") == "ragas":
+        scores = ragas_scores(base, after)
+        decision, why = ragas_verdict(scores)
+        out = args.out or ROOT / "evals" / "reports" / f"compare-{base['manifest']['run_id']}-vs-{after['manifest']['run_id']}"
+        out.mkdir(parents=True, exist_ok=True)
+        text = "\n".join([f"# Ragas 전→후: {base['manifest']['run_id']} → {after['manifest']['run_id']}", "",
+                          f"## 판정: **{decision}**", "", *[f"- {w}" for w in why], "",
+                          "| 지표 | baseline | after | 차이 [95%] | 읽기 |", "|---|---|---|---|---|",
+                          *[f"| {m} | {v['base']:.3f} | {v['after']:.3f} | {v['diff']:+.3f} [{v['ci'][0]:+.3f}, {v['ci'][1]:+.3f}] | {v['reading']} |"
+                            for m, v in scores.items() if v["diff"] is not None], "",
+                          "- Ragas는 채택을 정하지 않는다. e2e 판정이 채택이어도 여기가 보류이면 보류다 (plans/T3-63.md)."]) + "\n"
+        (out / "compare.md").write_text(text, encoding="utf-8")
+        (out / "compare.json").write_text(json.dumps({"decision": decision, "reasons": why, "scores": scores},
+                                                     ensure_ascii=False, indent=1), encoding="utf-8")
+        print(text)
+        print(f"saved: {out}")
+        return 0
     c = paired(base, after, sources_of(args.scenarios))
     decision, why = verdict(c)
     out = args.out or ROOT / "evals" / "reports" / f"compare-{base['manifest']['run_id']}-vs-{after['manifest']['run_id']}"
