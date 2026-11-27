@@ -61,6 +61,8 @@ SEARCH_ARGS = {
     "rerank_mode": ("RERANK_MODE", "stage 1: blend | score"),
     "answer_k": ("ANSWER_K", "candidates handed to gate"),
     "hq_build": ("HQ_BUILD", "question index build id (T2-39)"),
+    "bm25_weight": ("BM25_WEIGHT", "RRF weight of the BM25 list (default 1 = phase 2 / service; 0 = dense order only)"),
+    "stage2_prompt": ("STAGE2_PROMPT", "stage 2 prompt: v4 (default) | v4m (multi-table together verdict, T3-61)"),
     "hcx_thinking": ("HCX_THINKING", "stage 2 hcx: none | low"),
 }
 

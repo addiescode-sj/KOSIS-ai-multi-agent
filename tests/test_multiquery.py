@@ -8,7 +8,7 @@ import pytest
 from kosis_agent.graph.main_graph import build_graph
 from kosis_agent.graph.multiquery import LLMSplit, split_by_rules, split_question, verify_split
 from kosis_agent.graph.state import chat_result
-from kosis_agent.services.combine import combine
+from kosis_agent.services.combine import combine, combine_text
 from kosis_ai.schemas import Fact, FactPart, StatAnswer, StatResult
 from kosis_chat.schemas.io import StatOutput
 from kosis_rag.parse.node import parse_query
@@ -91,7 +91,12 @@ def test_combine_computes_in_code_and_refuses_what_it_cannot_pick():
     assert combine("sum", [answer(100), answer(30)])["value"] == 130
     assert combine("diff", [answer(100), answer(30)])["value"] == 70
     assert combine("ratio", [answer(30), answer(120)]) | {"inputs": None} == {
-        "op": "ratio", "value": 25.0, "unit": "%", "inputs": None, "reason": None}
+        "op": "ratio", "value": 0.25, "unit": "배", "inputs": None, "reason": None}  # "몇 배"는 배수 (T3-61)
+    assert combine("ratio", [answer(30), answer(120, unit="가구")])["reason"] == "unit_mismatch"
+    assert combine("ratio", [answer(30), answer(0)])["reason"] == "zero_denominator"
+    assert combine_text(combine("ratio", [answer(30), answer(120)])) == "두 값의 계산 결과(배수): 0.25배"
+    assert combine_text(combine("ratio", [answer(240), answer(120)])) == "두 값의 계산 결과(배수): 2배"
+    assert combine_text(combine("ratio", [answer(30), answer(120, unit="가구")])) == "두 값의 계산(배수)은 단위가 달라서 하지 않았어요."
     assert combine("sum", [answer(100), answer(30, unit="가구")])["reason"] == "unit_mismatch"
     assert combine("sum", [answer(100, n=2), answer(30)])["reason"] == "not_single_value"
     assert combine("sum", [answer(100), refused("101_T", "no_period").answer])["value"] is None
