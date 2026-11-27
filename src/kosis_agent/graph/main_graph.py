@@ -59,12 +59,12 @@ from kosis_agent.graph.followup import RegionsOf, follow_up, region_gap
 from kosis_agent.graph.multiquery import SplitReader, split_question
 from kosis_agent.graph.react import (TEMPLATES, Judge, Steps, UnderstandStep, clarify_text, grounded, safe)
 from kosis_agent.graph.state import AgentState
-from kosis_agent.retrieval.search import make_search_tables_tool
+from kosis_agent.retrieval.search import make_search_tables_tool, together_keys
 from kosis_agent.retrieval.search_steps import SearchSteps
 from kosis_agent.services.chart import CHART_NAMES, chart_payload, make_chart_tool
 from kosis_agent.services.combine import combine_text, make_combine_values_tool
 from kosis_agent.services.statistics import make_summarize_stat_tool
-from kosis_chat.api import summarize_stat_run
+from kosis_chat.api import summarize_stat_run, summarize_stats_run
 from kosis_chat.schemas.io import StatOutput
 from kosis_chat.schemas.resources import LLMConfig as StatLLMConfig
 from kosis_rag.parse.node import parse_query
@@ -134,7 +134,8 @@ def step(state: AgentState, name: str, action: str, by: str, thought: str = "") 
 
 
 def build_graph(search: Any, stat_llm: StatLLMConfig, *, retry_interval: float = 0.0,
-                summarize: Callable[..., StatOutput] = summarize_stat_run, checkpointer: Any = None,
+                summarize: Callable[..., StatOutput] = summarize_stat_run,
+                summarize_many: Callable[..., StatOutput] = summarize_stats_run, checkpointer: Any = None,
                 alt_table_budget: int = 0, parse: Callable[[str], ParsedQuery] | None = None,
                 interpreter: Mode = "hybrid", llm: LLMReader | None = None, splitter: SplitReader | None = None,
                 judge: Judge | None = None, steps: Steps = "b", prefetch: bool = False,
@@ -144,6 +145,7 @@ def build_graph(search: Any, stat_llm: StatLLMConfig, *, retry_interval: float =
     In: search = kosis_rag.api.SearchModule (테스트·stat_oracle에서는 .stream(SearchInput)만 있는 가짜);
         stat_llm = 실전 1의 LLMConfig (실전 2 LLMConfig와 다른 클래스·필드);
         retry_interval = 실전 1의 HCX 429 재시도 대기 초; summarize = 실전 1 summarize_stat_run (테스트에서는 가짜);
+        summarize_many = 실전 1 summarize_stats_run (T3-61: 2차가 함께 읽으라고 한 표 2~3개, 테스트에서는 가짜);
         checkpointer = LangGraph checkpointer (None이면 턴 사이 상태를 잇지 않음, graph/state.new_checkpointer 권장);
         alt_table_budget = 첫 표가 표 불일치로 거절됐을 때 더 시도할 후보 표 수. 기본 0(끔, plans/T3-23.md Result).
         parse = 질문 → ParsedQuery (None이면 default_parser(search)). summarize_stat의 조건 인자를 채운다.
@@ -161,7 +163,8 @@ def build_graph(search: Any, stat_llm: StatLLMConfig, *, retry_interval: float =
         raise ValueError("alt_table_budget cannot be negative")
     search_steps = SearchSteps(search)
     search_tables = make_search_tables_tool(search, search_steps)
-    summarize_stat = make_summarize_stat_tool(stat_llm, retry_interval=retry_interval, summarize=summarize)
+    summarize_stat = make_summarize_stat_tool(stat_llm, retry_interval=retry_interval, summarize=summarize,
+                                              summarize_many=summarize_many)
     make_chart = make_chart_tool()
     combine_values = make_combine_values_tool()
     parse = parse or default_parser(search)
@@ -327,11 +330,14 @@ def build_graph(search: Any, stat_llm: StatLLMConfig, *, retry_interval: float =
             return None if tried else state["active_table"]
         return next((k for k in candidate_keys(state["search"]) if k not in tried), None)
 
-    def ask(question: str, key: str, config: RunnableConfig) -> StatOutput:
-        """summarize_stat 툴 한 번: 질문 + 표 키 + 그 질문을 실전 2 규칙으로 읽은 조건 4개."""
+    def ask(question: str, key: str, config: RunnableConfig, keys: list[str] | None = None) -> StatOutput:
+        """summarize_stat 툴 한 번: 질문 + 표 키 + 그 질문을 실전 2 규칙으로 읽은 조건 4개.
+        keys(T3-61)가 있으면 표 여러 개를 함께 넘긴다(첫 표 = key). 없으면 인자는 예전과 같다."""
         parsed = parse(question)
         args = {"question": question, "table_key": key,
                 **{field: getattr(parsed, field) for field in CONDITION_FIELDS}}
+        if keys:
+            args["table_keys"] = keys
         return call_tool(summarize_stat, args, config).artifact
 
     def multi_node(state: AgentState, config: RunnableConfig) -> dict:
@@ -389,10 +395,23 @@ def build_graph(search: Any, stat_llm: StatLLMConfig, *, retry_interval: float =
         """
         key = next_table(state)
         question = state.get("resolved_question") or state["question"]
+        attempts = list(state["attempts"])
+        # T3-61: 새 검색의 첫 시도이고 2차가 "함께 읽어야 할 표"를 냈으면 그 표들을 한 번에 묻는다.
+        # 멀티 답이 답함이 아니면 지금 경로(첫 표 하나)로 다시 묻는다: 한 표 경로보다 나빠지지 않게.
+        # 시도 기록의 key는 "A+B"라서 next_table이 첫 표를 건너뛰지 않는다.
+        together = [] if state["reused_table"] or attempts else together_keys(state.get("search"))
+        if together:
+            stat = ask(question, together[0], config, keys=together)
+            answer = stat.answer
+            reason = answer.refusal.reason if answer.refusal else None
+            attempts.append({"key": "+".join(together), "outcome": answer.outcome, "reason": reason})
+            if answer.outcome == "answered":
+                return {"attempts": attempts, "stat": stat, "table_key": together[0],
+                        "trace": step(state, "answer", answer.outcome, "phase1", "together " + "+".join(together))}
         stat = ask(question, key, config)
         answer = stat.answer
         reason = answer.refusal.reason if answer.refusal else None
-        attempts = [*state["attempts"], {"key": key, "outcome": answer.outcome, "reason": reason}]
+        attempts = [*attempts, {"key": key, "outcome": answer.outcome, "reason": reason}]
         # 턴은 마지막으로 시도한 표에서 끝난다. 평가 하네스도 "마지막 summarize_stat 호출"을 이 턴의 표·답으로 채점한다.
         return {"attempts": attempts, "stat": stat, "table_key": key,
                 "trace": step(state, "answer", answer.outcome, "phase1", reason or "")}
