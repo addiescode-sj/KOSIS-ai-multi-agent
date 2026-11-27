@@ -41,7 +41,9 @@ def make_scorer(args) -> tuple[rm.Scorer, str]:
 
 
 def source_run(path: Path) -> tuple[dict, dict[str, dict]]:
-    """(manifest, saved rows by qid) of the e2e run the layer scores."""
+    """(manifest, saved rows by qid) of the e2e run the layer scores. A scenario run (the e2e golden, T3-46/T3-56: rows
+    by sid and turn) is read through scenario_row, its first turn keyed by sid, which is the calc qid in the human
+    golden (H001 .. H120; T3-63)."""
     m = json.loads((path / "manifest.json").read_text(encoding="utf-8"))
     if m["layer"] != "e2e":
         raise SystemExit(f"--layer ragas needs an e2e run, {path} is {m['layer']}")
@@ -50,8 +52,52 @@ def source_run(path: Path) -> tuple[dict, dict[str, dict]]:
         for line in f:
             if line.strip():
                 r = json.loads(line)
-                saved[r["qid"]] = r
+                if "qid" in r:
+                    saved[r["qid"]] = r
+                elif r.get("run", 0) == 0 and r.get("turn", 0) == 0:
+                    saved[r["sid"]] = scenario_row(r)
     return m, saved
+
+
+def scenario_row(r: dict) -> dict:
+    """A scenario-run turn in the shape of a calc-golden e2e row (evals.runners.stat.read_rows): the last summarize_stat
+    result as the answer (a search refusal: the refusal it told the user), every searched candidate key in order, the
+    table the turn ended on, its calc verdict and trace ids (T3-63)."""
+    calls = r.get("calls") or []
+    stats = [c for c in calls if c.get("name") == "summarize_stat" and isinstance(c.get("result"), dict)]
+    searches = [c.get("result") or {} for c in calls if c.get("name") == "search_tables"]
+    keys = list(dict.fromkeys(k["key"] for s in searches for k in s.get("candidates") or [] if k.get("key")))
+    if stats:
+        answer = stats[-1]["result"]
+    elif searches and searches[-1].get("route") == "refuse":
+        text = searches[-1].get("refusal_text") or r.get("answer") or ""
+        answer = {"outcome": "refused", "text": text,
+                  "refusal": {"reason": searches[-1].get("refusal_reason") or "out_of_scope", "message": text}}
+    else:
+        answer = None
+    expected = r.get("expected_table")
+    return {"qid": r["sid"], "answer": answer, "error": r.get("error"), "keys": keys, "used_table": r.get("state_key"),
+            "spans": r.get("spans") or [], "search_spans": [], "trace_spans": r.get("trace_spans") or [],
+            "trace_id": r.get("trace_id"), "span_id": r.get("span_id"), "latency_ms": r.get("latency_ms", 0.0),
+            "verdict": (r.get("calc") or {}).get("verdict"), "outcome": (r.get("pred_labels") or {}).get("outcome"),
+            "right_table": bool(expected) and r.get("state_key") == expected, "scenario": True}
+
+
+def scenario_rows(saved: dict[str, dict], items: list[CalcItem]) -> list[dict]:
+    """read_rows for a scenario run: a golden item the run lacks is a run failure, as there."""
+    from evals.runners.stat import OPS_DEFAULTS, _answer
+
+    rows = []
+    for item in items:
+        r = saved.get(item.qid)
+        if r is None:
+            rows.append({"qid": item.qid, "answer": None, "error": "not in the run", "keys": [], "used_table": None,
+                         "spans": [], "search_spans": [], **OPS_DEFAULTS, "failed": True})
+            continue
+        answer = _answer(r["answer"]) if r.get("answer") else None
+        rows.append({**OPS_DEFAULTS, **{k: v for k, v in r.items() if k not in ("verdict", "outcome", "right_table", "scenario")},
+                     "answer": answer, "failed": answer is None})
+    return rows
 
 
 def e2e_target(m: dict) -> str:
@@ -69,15 +115,20 @@ def run(args) -> tuple[list[dict], dict, str]:
         raise SystemExit("--layer ragas scores a saved e2e run: give --from-run <evals/reports/...-e2e...>")
     m, saved = source_run(args.from_run)
     items: list[CalcItem] = calc_items(args.calc_golden)
-    if len(args.calc_golden) == 1 and (sha := hashlib.sha256(args.calc_golden[0].read_bytes()).hexdigest()) != m["golden"]["sha256"]:
+    scenario = any(r.get("scenario") for r in saved.values())
+    # a scenario run's golden hash covers the scenarios and the calc file together: check the calc file's own hash
+    want = (m["golden"].get("files") or {}).get(args.calc_golden[0].name) if scenario else m["golden"]["sha256"]
+    if scenario:  # only the items the scenario run asked (a sample run asks some)
+        items = [i for i in items if i.qid in saved]
+    if len(args.calc_golden) == 1 and (sha := hashlib.sha256(args.calc_golden[0].read_bytes()).hexdigest()) != want:
         raise SystemExit(f"--calc-golden {args.calc_golden[0]} ({sha[:12]}) is not the golden of {args.from_run.name} "
-                         f"({m['golden']['sha256'][:12]}): give the same file the e2e run used")
+                         f"({(want or '')[:12]}): give the same file the e2e run used")
     args.split = m.get("split") or args.split
     by_qid = {i.qid: i for i in items}
     rows = []
-    for item, r in zip(items, read_rows(args.from_run, items)):
+    for item, r in zip(items, scenario_rows(saved, items) if scenario else read_rows(args.from_run, items)):
         s = saved.get(item.qid, {})
-        rows.append({**r, "question": item.question, "kind": item.kind, "gold_keys": s.get("gold_keys") or [item.table_key],
+        rows.append({**r, "question": item.question, "kind": item.kind, "gold_keys": s.get("gold_keys") or item.table_keys or [item.table_key],
                      "verdict": s.get("verdict"), "outcome": s.get("outcome"), "right_table": s.get("right_table"),
                      "trace_id": s.get("trace_id"), "span_id": s.get("span_id"), "trace_spans": s.get("trace_spans") or []})
     k = args.k
