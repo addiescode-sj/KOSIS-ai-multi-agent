@@ -2,7 +2,7 @@
 
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
-import { ArrowUp, Calculator, CircleAlert, FileCheck2, MessageSquareText, RotateCw, Sparkles } from "lucide-react";
+import { ArrowUp, Calculator, FileCheck2, MessageSquareText, Sparkles } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 
@@ -11,8 +11,10 @@ import { LazyScrollReveal } from "@/components/motion/lazy";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { useAuth } from "@/lib/auth/use-me";
+import { useOnline } from "@/lib/browser/use-online";
 import { requestIdOf, threadIdOf } from "@/lib/chat/answer";
 import { conversations, feedbackOf, setTurnFeedback, titleOf } from "@/lib/chat/conversations";
+import { ANSWER_ERRORS, type ErrorView, errorView } from "@/lib/chat/errors";
 import { EXAMPLES } from "@/lib/chat/examples";
 import { QUESTION_MAX, type TurnFeedback } from "@/lib/chat/schemas";
 import { sessionHeaders } from "@/lib/chat/session";
@@ -25,6 +27,7 @@ import type { Conversation } from "@/types/conversation";
 
 import { AssistantMessage } from "./answer/assistant-message";
 import { Composer } from "./composer";
+import { ErrorCard } from "./error-card";
 import { ConversationHistory } from "./history/conversation-history";
 import { useAnswerScroll } from "./use-answer-scroll";
 
@@ -65,6 +68,7 @@ export function Chat({ id, initial, prefill }: { id: string; initial: Conversati
     },
   });
   const busy = status === "submitted" || status === "streaming";
+  const online = useOnline();
   const bottom = useRef<HTMLDivElement>(null);
   const track = useTrack();
   const startedAt = useRef<number | null>(null); // when the streaming question was sent; null when none runs
@@ -106,7 +110,7 @@ export function Chat({ id, initial, prefill }: { id: string; initial: Conversati
   }, [busy, id, messages, member, client]);
 
   function send(text: string, inputMethod: InputMethod = "direct") {
-    if (!text.trim() || busy) return;
+    if (!text.trim() || busy || !online) return; // offline: the notice on top says why (T3-67)
     if (messages.length === 0 && window.location.pathname !== `/chat/${id}`) {
       window.history.replaceState(null, "", `/chat/${id}`); // Next's router picks this up; no remount
     }
@@ -131,7 +135,13 @@ export function Chat({ id, initial, prefill }: { id: string; initial: Conversati
   }
 
   const failure = lastAnswer?.parts.findLast((p) => p.type === "data-failure");
-  const canRetry = !(failure?.type === "data-failure" && failure.data.status === 422); // bad input: the same again fails
+  const failed = failure?.type === "data-failure" ? failure.data : null;
+  const canRetry = failed?.status !== 422; // bad input: the same again fails
+  // T3-67: the card's sentence comes from the error code. No data-failure part means the browser's own request to
+  // /api/chat failed: offline, or the service could not be reached.
+  const errorCard: ErrorView = failed
+    ? failed.status === 422 ? { title: "질문을 다시 확인해 주세요", text: error?.message ?? "" } : errorView(failed.code, error?.message)
+    : online ? ANSWER_ERRORS.network_error : ANSWER_ERRORS.offline;
 
   if (messages.length === 0) return <Home prefill={prefill} onSend={send} note={!member ? "대화는 이 탭에만 저장됩니다" : keeps ? "대화는 계정에 저장됩니다" : "대화 기록 저장이 꺼져 있습니다"} />;
 
@@ -156,18 +166,9 @@ export function Chat({ id, initial, prefill }: { id: string; initial: Conversati
         {status === "submitted" && messages.at(-1)?.role === "user" && (
           <AssistantMessage message={{ id: "pending", role: "assistant", parts: [] }} running live onAsk={send} />
         )}
-        {error && (
-          <Card role="alert" className="flex items-start gap-4 p-6">
-            <span className="flex size-10 shrink-0 items-center justify-center rounded-full bg-red-50 text-red-500"><CircleAlert size={19} /></span>
-            <div className="min-w-0 flex-1">
-              <h2 className="text-[17px] font-semibold">응답을 마치지 못했습니다</h2>
-              <p className="mt-1.5 text-sm break-words text-sub">{error.message}</p>
-            </div>
-            {canRetry && <Button onClick={retry}><RotateCw />다시 시도</Button>}
-          </Card>
-        )}
+        {error && <ErrorCard view={errorCard} requestId={failed?.requestId ?? null} onRetry={canRetry && online ? retry : undefined} />}
         <div ref={bottom} />
-        <Composer busy={busy} onSend={send} onStop={stopAnswer} placeholder="이어서 질문하세요. 예: 같은 기간 서울은?" />
+        <Composer busy={busy} disabled={!online} onSend={send} onStop={stopAnswer} placeholder="이어서 질문하세요. 예: 같은 기간 서울은?" />
       </div>
       </div>
     </AppShell>

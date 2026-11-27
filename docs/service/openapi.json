@@ -61,7 +61,7 @@
           "chat"
         ],
         "summary": "에이전트 답변 (SSE, 토큰 스트리밍)",
-        "description": "이벤트 순서 (docs/service/api.md 2):\n\n1. `meta` — `{thread_id, trace_id, expired}`. `trace_id` = 이 질문의 `request_id`. `expired`가 true면 보낸 대화가\n   1시간 지나 만료돼 새 대화(새 `thread_id`)로 답한다. 남의 대화 ID를 보내면 새 대화로 답한다(`expired` false)\n2. `<노드 이름>` — 실전 2 검색 노드가 끝날 때마다 그 노드의 trace 항목(`seconds` 포함)\n3. `stat` — 실전 1이 돌았으면 `{seconds, key, spans}` (표마다)\n4. `token` — 답 문장을 어절 단위로 `{delta}`. 실전 1이 숫자 검증을 끝낸 문장만 흘린다(검증 전 LLM 출력 아님)\n5. `result` — `ChatResult` (`request_id` 포함). 화면의 최종 답은 이것으로 바꾼다\n\n실행 중 예외는 `error` (`{type, detail, retryable, request_id}`)로 끝난다(상태 줄은 이미 200으로 나감).",
+        "description": "이벤트 순서 (docs/service/api.md 2):\n\n1. `meta` — `{thread_id, trace_id, expired}`. `trace_id` = 이 질문의 `request_id`. `expired`가 true면 보낸 대화가\n   1시간 지나 만료돼 새 대화(새 `thread_id`)로 답한다. 남의 대화 ID를 보내면 새 대화로 답한다(`expired` false)\n2. `<노드 이름>` — 실전 2 검색 노드가 끝날 때마다 그 노드의 trace 항목(`seconds` 포함)\n3. `stat` — 실전 1이 돌았으면 `{seconds, key, spans}` (표마다)\n4. `token` — 답 문장을 어절 단위로 `{delta}`. 실전 1이 숫자 검증을 끝낸 문장만 흘린다(검증 전 LLM 출력 아님)\n5. `result` — `ChatResult` (`request_id` 포함). 화면의 최종 답은 이것으로 바꾼다\n\n실행 중 예외는 `error` (`{code, message, retryable, request_id, type, detail}`)로 끝난다(상태 줄은 이미 200으로 나감).\n`code`는 오류 코드 7종(backend/app/errors.py, T3-67), `message`는 그 고정 문구, `retryable`은 코드로 정한다.\n`type`·`detail`(예외 이름·문구)은 로그·개발용이고 화면에 쓰지 않는다.",
         "operationId": "chat_stream_chat_stream_post",
         "parameters": [
           {
@@ -2272,6 +2272,21 @@
             "type": "string",
             "title": "Message",
             "description": "화면에 보일 수 있는 문장"
+          },
+          "cause": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cause",
+            "description": "503 `unavailable`의 원인 오류 코드(T3-67, api.md 2 `error`의 code). 없으면 생략",
+            "examples": [
+              "model_unavailable"
+            ]
           }
         },
         "type": "object",

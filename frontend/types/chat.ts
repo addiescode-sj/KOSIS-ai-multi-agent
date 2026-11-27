@@ -19,7 +19,7 @@ export type ChatData = {
   meta: { threadId: string; requestId?: string | null };
   notice: { text: string };
   reconnect: { attempt: number; connected: boolean };
-  failure: { retryable: boolean; status: number | null; requestId: string | null };
+  failure: { retryable: boolean; status: number | null; requestId: string | null; code?: string };
 };
 
 export type ChatMessage = UIMessage<never, ChatData>;

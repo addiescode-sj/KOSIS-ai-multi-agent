@@ -140,7 +140,7 @@ def test_failed_stage_is_the_first_span_that_did_not_end_ok():
 
 # ---------------------------------------------------------------- a real service turn -> one row (log_rows)
 
-def _service_turn(outcome: str = "refused", fail: bool = False, thread: str = "thread-1"):
+def _service_turn(outcome: str = "refused", fail: bool = False, thread: str = "thread-1", code: str | None = None):
     """One turn traced the way the service traces it (start_turn + LiveSpans, T3-30~32), on made-up nodes:
     search node -> search_tables tool, statistics node -> one chat model call. Returns (finished spans, root)."""
     from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
@@ -181,6 +181,8 @@ def _service_turn(outcome: str = "refused", fail: bool = False, thread: str = "t
         RunnableLambda(turn, name="LangGraph").invoke("2023년 출생아 수", {"callbacks": [spans]})
     except TimeoutError:
         pass
+    if code:  # what backend/app/main.py leaves on the root of a failed answer (T3-67)
+        root.set_attribute("kosis.error.code", code)
     root.end()
     return memory.get_finished_spans(), root
 
@@ -232,6 +234,26 @@ def test_an_error_turn_keeps_the_error_type_and_drops_its_message():
     row = row_from_turn(finished, None, question="2023년 출생아 수")
     assert (row["outcome"], row["reason_code"], row["failed_stage"]) == ("error", "TimeoutError", "search")
     assert "출생아" not in str({k: v for k, v in row.items() if k != "question"})  # the exception message is not kept
+
+
+@offline
+def test_an_error_turn_records_the_error_code_when_the_service_left_one():
+    """T3-67: reason_code is the error code (backend/app/errors.py); the class stays in the step's error_type."""
+    from kosis_store.log_rows import row_from_turn
+
+    finished, _ = _service_turn(fail=True, code="timeout")
+    row = row_from_turn(finished, None, question="2023년 출생아 수")
+    assert (row["outcome"], row["reason_code"], row["failed_stage"]) == ("error", "timeout", "search")
+
+
+@offline
+def test_the_react_graph_nodes_have_their_stage():
+    """T3-67: the ReAct graph (T3-03) nodes. candidates is the search's candidate share, so a failure there (the
+    embed or rerank server) is a search failure, not an agent one."""
+    from kosis_store.log_rows import STAGES
+
+    assert STAGES["candidates"] == "search"
+    assert all(STAGES[n] == "agent" for n in ("understand", "rewrite", "rewrite_after_search", "review"))
 
 
 @offline

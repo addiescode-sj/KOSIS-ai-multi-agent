@@ -168,8 +168,9 @@ def test_the_agent_load_failure_is_a_503_in_the_contract_shape(monkeypatch):
     monkeypatch.setattr(main, "_agent", None)
     monkeypatch.setattr(main, "get_checkpointer", lambda: None)
     res = TestClient(app).post("/dev/tools/search_tables", json={"question": "q"})
-    assert res.status_code == 503 and res.json()["error"]["code"] == "unavailable"
-    assert "RuntimeError" in res.json()["error"]["message"]
+    error = res.json()["error"]
+    assert res.status_code == 503 and error["code"] == "unavailable" and error["cause"] == "internal_error"
+    assert "RuntimeError" not in error["message"] and "vector" not in error["message"]  # T3-67: no exception text
 
 
 def test_a_dev_chat_failure_is_a_500_in_the_contract_shape(client):
@@ -183,8 +184,9 @@ def test_a_dev_chat_failure_is_a_500_in_the_contract_shape(client):
             raise RuntimeError("boom")
     app.dependency_overrides[get_graph] = lambda: Broken()
     res = http.post("/dev/chat", json={"question": "q"})
+    message = res.json()["error"]["message"]
     assert res.status_code == 500 and res.json()["error"]["code"] == "internal_error"
-    assert "RuntimeError: boom" in res.json()["error"]["message"]
+    assert "boom" not in message and "RuntimeError" not in message and "문의 번호" in message  # T3-67
 
 
 def test_thread_state_after_a_turn_and_404_before(client):

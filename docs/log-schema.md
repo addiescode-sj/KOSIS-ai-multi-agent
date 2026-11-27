@@ -42,7 +42,7 @@
 | `input_method` | `direct`(직접 입력) · `clarify_option`(되묻기 선택지 버튼) | 추천 질문은 1차 범위 밖(11/18)이라 값이 없다 |
 | `question`, `question_len` | 가린 질문 원문, 글자 수 | 원문은 90일 뒤 NULL, 글자 수는 남는다 |
 | `outcome` | `answered` · `refused` · `clarify` · `failed` · `error` · `aborted` | 앞의 넷은 `ChatResult.outcome`, `error`는 예외, `aborted`는 답이 끝나기 전에 떠남 |
-| `reason_code` | 거절·되묻기 사유 코드, 오류면 예외 이름 | 거절이면 꼭 있어야 한다. 에이전트가 사유를 주지 않은 거절(멀티쿼리 등)은 `unknown` |
+| `reason_code` | 거절·되묻기 사유 코드, 오류면 오류 코드(`backend/app/errors.py`, T3-67. 그 전 행은 예외 이름) | 거절이면 꼭 있어야 한다. 에이전트가 사유를 주지 않은 거절(멀티쿼리 등)은 `unknown` |
 | `failed_stage` | 처음으로 정상 종료하지 않은 단계(`search`·`stat`·`chart`·`agent`) | 쓰는 순간 단계에서 계산(`failed_stage`) |
 | `picked_key`, `survey_name` | 답에 쓴 통계표 키, 조사명 | |
 | `has_numbers`, `has_chart` | 답에 숫자·차트가 있는지 | 출처 클릭률의 분모 |
@@ -76,7 +76,7 @@
 | `request_id` | 루트 span의 trace id |
 | `conversation_id`, `turn_index` | 루트 속성 `gen_ai.conversation.id`, `kosis.turn.index` |
 | `outcome` | 이탈이면 `aborted`, 아니면 루트 속성 `kosis.outcome`(예외면 `error`), 없으면 `ChatResult.outcome` |
-| `reason_code` | 루트 속성 `kosis.no_answer_reason`(없으면 `ChatResult.no_answer_reason`), 오류면 `error.type`, 사유 없는 거절은 `unknown` |
+| `reason_code` | 루트 속성 `kosis.no_answer_reason`(없으면 `ChatResult.no_answer_reason`), 오류면 루트 속성 `kosis.error.code`(T3-67, 없으면 `error.type`), 사유 없는 거절은 `unknown` |
 | `picked_key`, `survey_name` | `ChatResult.table_key`, 같은 키의 `picked[].survey_name` |
 | `has_numbers`, `has_chart` | 답함이고 `stat_answer`가 있음, `chart`가 있음 |
 | `latency_ms` | 루트 span 길이 |

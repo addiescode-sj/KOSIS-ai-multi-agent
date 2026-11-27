@@ -6,6 +6,7 @@ import { AccountMenu } from "@/components/account/account-menu";
 import { KakaoLoginButton } from "@/components/account/kakao-login-button";
 import { LazyScrollProgress } from "@/components/motion/lazy";
 import { MobileNav } from "@/components/nav/mobile-nav";
+import { OfflineNotice } from "@/components/offline-notice";
 import { SearchForm } from "@/components/nav/search-form";
 import { SidebarContent } from "@/components/nav/sidebar-content";
 import { useAuth } from "@/lib/auth/use-me";
@@ -30,6 +31,7 @@ export function AppShell({ title, sub, actions, query, children }: {
         <SidebarContent />
       </aside>
       <div className="flex min-w-0 flex-1 flex-col">
+        <OfflineNotice />
         <header className="sticky top-0 z-20 flex h-[72px] items-center gap-2 border-b border-line bg-white/90 px-4 backdrop-blur md:gap-4 md:px-8">
           <MobileNav query={query} />
           <div className="min-w-0 flex-1">

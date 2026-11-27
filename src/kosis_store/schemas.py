@@ -12,6 +12,8 @@ from pydantic import BaseModel, Field
 class ErrorDetail(BaseModel):
     code: str = Field(examples=["not_found"])
     message: str = Field(description="화면에 보일 수 있는 문장")
+    cause: str | None = Field(default=None, examples=["model_unavailable"],
+                              description="503 `unavailable`의 원인 오류 코드(T3-67, api.md 2 `error`의 code). 없으면 생략")
 
 
 class ErrorResponse(BaseModel):

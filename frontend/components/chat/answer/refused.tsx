@@ -16,6 +16,8 @@ const REASON_ICONS: Record<string, LucideIcon> = {
   not_aggregatable: Sigma, causal: Ban, missing_value: CircleSlash, out_of_scope: SearchX,
 };
 
+const SHOW_REASON_CODE = process.env.NODE_ENV !== "production";
+
 export function Refused({ result, onAsk }: { result: ChatResult; onAsk?: Ask }) {
   const reason = refusalReason(result);
   const { title, tone } = refusalTitle(reason);
@@ -27,7 +29,8 @@ export function Refused({ result, onAsk }: { result: ChatResult; onAsk?: Ask }) 
         <p className="whitespace-pre-wrap">{result.answer}</p>
         {available && <p>대신 확인할 수 있는 범위: <b className="text-ink">{available}</b></p>}
       </Notice>
-      {reason && <div className="flex gap-2"><Badge variant="gray">{reason}</Badge></div>}
+      {/* the reason code is for developers: not on the deployed screen (T3-67) */}
+      {reason && SHOW_REASON_CODE && <div className="flex gap-2"><Badge variant="gray">{reason}</Badge></div>}
       {suggest && onAsk && (
         <div className="rounded-xl bg-canvas p-4">
           <p className="text-[13px] font-medium">대신 이런 숫자 질문은 확인할 수 있어요</p>

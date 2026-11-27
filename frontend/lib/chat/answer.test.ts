@@ -60,7 +60,7 @@ test("refusal reasons: phase 1 reason first, then the search reason; every phase
   for (const r of ["no_period", "no_item", "class_mismatch", "unit_mismatch", "not_aggregatable", "causal", "missing_value", "out_of_scope"]) {
     expect(REFUSALS[r]).toBeDefined();
   }
-  expect(refusalTitle("something_new").title).toBe("이 질문에는 답할 수 없습니다");
+  expect(refusalTitle("something_new").title).toBe("맞는 통계표를 찾지 못했어요");
 });
 
 test("progress follows the stream: search nodes, stat, result", () => {

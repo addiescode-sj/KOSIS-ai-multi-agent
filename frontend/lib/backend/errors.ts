@@ -4,8 +4,9 @@ import { z } from "zod";
 // place for every caller and route handler.
 
 // {"error": {"code", "message"}}: every error the service code answers
+// cause (optional, T3-67): the error code behind a 503 `unavailable` (why the agent could not be opened)
 export const ErrorBody = z.looseObject({
-  error: z.looseObject({ code: z.string(), message: z.string() }),
+  error: z.looseObject({ code: z.string(), message: z.string(), cause: z.string().nullish() }),
 });
 export type ErrorBody = z.infer<typeof ErrorBody>;
 
@@ -18,12 +19,12 @@ export type ValidationErrorBody = z.infer<typeof ValidationErrorBody>;
 // An older body some routes still answered with ({"detail": "..."})
 const DetailText = z.looseObject({ detail: z.string() });
 
-export type ApiError = { code: string; message: string };
+export type ApiError = { code: string; message: string; cause?: string | null };
 
 /** The code and message of a backend error body; a fixed one when the body is neither shape. */
 export function errorFrom(status: number, body: unknown): ApiError {
   const error = ErrorBody.safeParse(body);
-  if (error.success) return { code: error.data.error.code, message: error.data.error.message };
+  if (error.success) return { code: error.data.error.code, message: error.data.error.message, cause: error.data.error.cause };
   const invalid = ValidationErrorBody.safeParse(body);
   if (invalid.success) return { code: "invalid_request", message: invalid.data.detail.map((d) => d.msg).join(", ") };
   const text = DetailText.safeParse(body);
