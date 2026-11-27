@@ -2,7 +2,7 @@ import { expect, test } from "@jest/globals";
 
 import type { ChatMessage } from "../../types/chat.ts";
 import {
-  answerKind, citation, copyText, formatValue, headline, progress, refusalReason, refusalTitle, REFUSALS, requestIdOf, threadIdOf,
+  answerKind, cardHeadline, citation, copyText, formatValue, headline, resultOf, progress, refusalReason, refusalTitle, REFUSALS, requestIdOf, threadIdOf,
   GeneratingStatus,
   turnState,
 } from "./answer.ts";
@@ -32,7 +32,7 @@ test("records without outcome (before T3-23) fall back to no_answer", () => {
 });
 
 test("the headline is the first cited fact as phase 1 computed it, never on a refusal", () => {
-  expect(headline(parse(ANSWERED))).toEqual({ value: "100", unit: "명", period: "2024" });
+  expect(headline(parse(ANSWERED))).toEqual({ value: "100", raw: 100, round: null, unit: "명", period: "2024" });
   expect(headline(parse(REFUSED))).toBeNull();
   expect(headline(parse(PARTIAL))).toBeNull();
   const symbol = structuredClone(ANSWERED);
@@ -113,4 +113,18 @@ test("turn state: reconnecting until the new attempt's meta, unfinished draft ke
   expect(turnState(reconnect(true), true)).toBe(GeneratingStatus.WORKING);
   expect(turnState(reconnect(false), false)).toBe(GeneratingStatus.INCOMPLETE); // the reconnect failed too: tokens stay, marked
   expect(turnState({ parts: [] }, false)).toBe(GeneratingStatus.STOPPED);
+});
+
+test("the card's 핵심 수치: an answered one-question turn only (the chat scrolls to it first)", () => {
+  expect(cardHeadline(parse(ANSWERED))?.value).toBe("100");
+  expect(cardHeadline(parse(REFUSED))).toBeNull();
+  expect(cardHeadline(parse(PARTIAL))).toBeNull(); // partial: no single number
+  expect(cardHeadline(parse({ ...PARTIAL, sub_results: [PARTIAL.sub_results[0], PARTIAL.sub_results[0]] }))).toBeNull(); // multi, all answered
+});
+
+test("resultOf finds the turn's result part, none while it streams", () => {
+  const result = parse(ANSWERED);
+  const done = { parts: [{ type: "data-meta", data: { threadId: "t" } }, { type: "data-result", data: result }] } as unknown as ChatMessage;
+  expect(resultOf(done)).toBe(result);
+  expect(resultOf({ parts: [{ type: "data-meta", data: { threadId: "t" } }] } as unknown as ChatMessage)).toBeNull();
 });

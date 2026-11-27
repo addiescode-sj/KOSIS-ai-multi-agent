@@ -1,14 +1,15 @@
 import { cn } from "cn";
 
-import { headline, STEPS } from "@/lib/chat/answer";
+import { cardHeadline, STEPS } from "@/lib/chat/answer";
 import type { ChatResult } from "@/lib/chat/schemas";
+import { CountUp } from "@/components/motion/count-up";
 
 import { LazyStatChart } from "./lazy-stat-chart";
 import { Label } from "./label";
 import { Steps } from "./steps";
 
-export function Answered({ result }: { result: ChatResult }) {
-  const head = result.sub_results ? null : headline(result); // a multi-question turn has no single headline
+export function Answered({ result, live = false }: { result: ChatResult; live?: boolean }) {
+  const head = cardHeadline(result); // a multi-question turn has no single headline
   const caveats = result.stat_answer?.caveats ?? [];
   return (
     <>
@@ -16,10 +17,10 @@ export function Answered({ result }: { result: ChatResult }) {
       {(head || result.chart) && (
         <div className={cn("grid gap-6 border-t border-line pt-6", head && result.chart && "md:grid-cols-[220px_1fr]")}>
           {head && (
-            <div>
+            <div data-headline className="scroll-mt-28">
               <Label>핵심 수치</Label>
               <p className="mt-1 text-[40px] leading-none font-bold tracking-tight">
-                {head.value}
+                <CountUp target={head} live={live} />
                 {head.unit && <span className="ml-1 text-xl font-semibold text-sub">{head.unit}</span>}
               </p>
               {head.period && <p className="mt-3 text-xs text-mute">기준 기간: {head.period}</p>}
