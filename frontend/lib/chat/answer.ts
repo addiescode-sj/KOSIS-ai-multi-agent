@@ -21,7 +21,7 @@ export function headline(result: ChatResult): Headline | null {
   if (!first || first.kind !== "fact") return null;
   const fact = stat.result.facts.find((f) => f.id === first.fact_id);
   if (!fact || fact.value == null) return null;
-  return { value: formatValue(fact), unit: fact.unit ?? null, period: fact.period ?? null };
+  return { value: formatValue(fact), raw: fact.value, round: fact.round ?? null, unit: fact.unit ?? null, period: fact.period ?? null };
 }
 
 export function formatValue(fact: Pick<Fact, "value" | "round">): string {

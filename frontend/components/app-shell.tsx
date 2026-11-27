@@ -11,6 +11,7 @@ import { AccountMenu } from "@/components/account/account-menu";
 import { AuthNotice } from "@/components/account/auth-notice";
 import { LOGIN_PROMPT, LoginPrompt, LoginPromptLayout } from "@/components/account/login-prompt";
 import { KakaoLoginButton } from "@/components/account/kakao-login-button";
+import { ScrollProgress } from "@/components/motion/scroll-progress";
 import { useAuth } from "@/lib/auth/use-me";
 
 const NAV = [
@@ -33,6 +34,7 @@ export function AppShell({ title, sub, actions, query, children }: {
   const member = auth.status === "member";
   return (
     <div className="flex min-h-dvh">
+      <ScrollProgress />
       <aside className="sticky top-0 hidden h-dvh w-64 shrink-0 flex-col border-r border-line bg-white md:flex">
         {/* eslint-disable-next-line @next/next/no-html-link-for-pages -- full load on purpose, see NAV below */}
         <a href="/" className="flex h-[72px] items-center gap-2.5 border-b border-line px-6">

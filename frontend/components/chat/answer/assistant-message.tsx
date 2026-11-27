@@ -1,4 +1,5 @@
 import { Info } from "lucide-react";
+import { motion } from "motion/react";
 
 import { answerKind, copyText, requestIdOf } from "@/lib/chat/answer";
 import type { ChatResult, TurnFeedback } from "@/lib/chat/schemas";
@@ -14,9 +15,12 @@ import { ResultCard } from "./result-card";
 
 // One assistant turn: progress while the stream runs, then the card for the turn's outcome with 복사 and 👍/👎
 // (neither on a failed turn: there is no answer to copy or rate, api.md 10장 제안 5).
-export function AssistantMessage({ message, running, onAsk, threadId = null, turn = null, feedback = null, onFeedback }: {
+// live: the turn arrived on this screen (not part of the conversation it opened with). Only a live card fades in
+// and counts up its 핵심 수치; a restored conversation shows its cards as they are (T3-61).
+export function AssistantMessage({ message, running, live = false, onAsk, threadId = null, turn = null, feedback = null, onFeedback }: {
   message: ChatMessage;
   running: boolean;
+  live?: boolean;
   onAsk: Ask;
   threadId?: string | null;
   turn?: number | null;
@@ -60,15 +64,22 @@ export function AssistantMessage({ message, running, onAsk, threadId = null, tur
         </p>
       ))}
       {result ? (
-        <ResultCard
-          result={result}
-          onAsk={onAsk}
-          onCitation={handleCitation}
-          actions={rated && <CopyButton text={copyText(result)} onCopied={handleCopied} />}
-          footer={rated && requestId && (
-            <FeedbackBar key={requestId} requestId={requestId} initial={feedback} onSaved={handleFeedbackSaved} />
-          )}
-        />
+        <motion.div
+          initial={live ? { opacity: 0, y: 16 } : false}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.35, ease: "easeOut" }}
+        >
+          <ResultCard
+            result={result}
+            live={live}
+            onAsk={onAsk}
+            onCitation={handleCitation}
+            actions={rated && <CopyButton text={copyText(result)} onCopied={handleCopied} />}
+            footer={rated && requestId && (
+              <FeedbackBar key={requestId} requestId={requestId} initial={feedback} onSaved={handleFeedbackSaved} />
+            )}
+          />
+        </motion.div>
       ) : running || draft || progressed || notices.length === 0 ? (
         <Generating message={message} draft={draft} running={running} />
       ) : null /* a saved turn that could not be restored: the notice is the whole answer */}

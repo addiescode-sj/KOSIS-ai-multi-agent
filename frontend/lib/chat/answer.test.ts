@@ -32,7 +32,7 @@ test("records without outcome (before T3-23) fall back to no_answer", () => {
 });
 
 test("the headline is the first cited fact as phase 1 computed it, never on a refusal", () => {
-  expect(headline(parse(ANSWERED))).toEqual({ value: "100", unit: "명", period: "2024" });
+  expect(headline(parse(ANSWERED))).toEqual({ value: "100", raw: 100, round: null, unit: "명", period: "2024" });
   expect(headline(parse(REFUSED))).toBeNull();
   expect(headline(parse(PARTIAL))).toBeNull();
   const symbol = structuredClone(ANSWERED);
