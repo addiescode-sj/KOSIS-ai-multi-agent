@@ -44,11 +44,17 @@ export const AdminMetrics = z.looseObject({
         turns_per_conversation: z.array(z.looseObject({ turns: z.string(), n: Num })),
         citation_click_rate: z.array(z.looseObject({ clicked: Num, with_numbers: Num, rate: Num.nullable() })),
         abort_rate: z.array(z.looseObject({ aborted: Num, questions: Num, rate: Num.nullable() })),
+        // T3-68: answers copied / answered; retries split by how the retried turn ended
+        copy_rate: z.array(z.looseObject({ copied: Num, answered: Num, rate: Num.nullable() })),
+        retry_rate: z.array(z.looseObject({
+          after_failure: Num, regenerate: Num, unknown_origin: Num, auto_reconnect: Num, questions: Num, rate: Num.nullable(),
+        })),
       }),
     }),
     cost: z.looseObject({
       rows: z.looseObject({
         llm_usage: z.array(z.looseObject({ calls: Num.nullable(), input_tokens: Num.nullable(), output_tokens: Num.nullable() })),
+        log_quality: z.array(z.looseObject({ reason: z.string(), event_type: z.string(), n: Num })), // T3-68
       }),
     }),
   }),

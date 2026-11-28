@@ -33,12 +33,15 @@ export type DashboardView = {
     citationClick: { value: number | null; note: string };
     multiTurn: { value: number | null; note: string };
     dropBeforeAnswer: { value: number | null; note: string };
+    copyAnswer: { value: number | null; note: string };
+    retry: { value: number | null; note: string };
   };
   tables: { key: string; survey: string; uses: number }[];
   latency: { p50: number | null; p95: number | null } | null; // whole answer only: per stage is Prometheus
   ttft: { p50: number | null; p95: number | null } | null;
   llm: { calls: number | null; inputTokens: number | null; outputTokens: number | null; costUsd: null } | null;
-  logQuality: null; // write and reject counts live in the backend process, not in the database
+  // screen events dropped at intake, by reason (ingest_rejects). Server write failures live in the backend process.
+  logQuality: { reason: string; eventType: string; count: number }[];
 };
 
 const pct = (ratio: number | null | undefined) => (ratio == null ? null : Math.round(ratio * 1000) / 10);
@@ -64,6 +67,9 @@ export function toView(m: AdminMetrics): DashboardView {
   const usage = m.tabs.usage.rows;
   const cite = usage.citation_click_rate[0];
   const abort = usage.abort_rate[0];
+  const copy = usage.copy_rate[0];
+  const retry = usage.retry_rate[0];
+  const n = (v: number) => v.toLocaleString("ko-KR");
   const convs = usage.turns_per_conversation.reduce((a, r) => a + r.n, 0);
   const multi = usage.turns_per_conversation.filter((r) => r.turns !== "1").reduce((a, r) => a + r.n, 0);
   const llm = m.tabs.cost.rows.llm_usage[0];
@@ -90,11 +96,19 @@ export function toView(m: AdminMetrics): DashboardView {
       citationClick: { value: pct(cite?.rate), note: cite ? `숫자 답 ${cite.with_numbers.toLocaleString("ko-KR")}건 중 원표 클릭` : "숫자 답 없음" },
       multiTurn: { value: convs ? Math.round((multi / convs) * 1000) / 10 : null, note: `대화 ${convs.toLocaleString("ko-KR")}개 중 2턴 이상` },
       dropBeforeAnswer: { value: pct(abort?.rate), note: abort ? `질문 ${abort.questions.toLocaleString("ko-KR")}건 중 답 전 이탈` : "질문 없음" },
+      copyAnswer: { value: pct(copy?.rate), note: copy?.answered ? `답한 질문 ${n(copy.answered)}건 중 복사` : "답한 질문 없음" },
+      retry: {
+        value: pct(retry?.rate),
+        // the rate is the user's 다시 시도 only; the proxy's own reconnects are shown apart (T3-68 보강 1)
+        note: retry?.questions
+          ? `오류 후 ${n(retry.after_failure)} · 다시 받기 ${n(retry.regenerate)} · 원래 턴 미상 ${n(retry.unknown_origin)} · 자동 재연결 ${n(retry.auto_reconnect)}(비율 밖)`
+          : "질문 없음",
+      },
     },
     tables: usage.top_tables.map((t) => ({ key: t.picked_key, survey: t.survey_name ?? "-", uses: t.n })),
     latency: m.tabs.summary.rows.latency[0] ? { p50: m.tabs.summary.rows.latency[0].p50, p95: m.tabs.summary.rows.latency[0].p95 } : null,
     ttft: ttft ? { p50: ttft.p50, p95: ttft.p95 } : null,
     llm: llm ? { calls: llm.calls, inputTokens: llm.input_tokens, outputTokens: llm.output_tokens, costUsd: null } : null,
-    logQuality: null,
+    logQuality: m.tabs.cost.rows.log_quality.map((r) => ({ reason: r.reason, eventType: r.event_type || "-", count: r.n })),
   };
 }

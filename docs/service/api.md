@@ -118,6 +118,7 @@ X-Session-Id: 3f1c…   (비회원 필수, 회원은 쿠키로 대체)
   "question": "2024년 출생아 수와 사망자 수 알려 줘",
   "thread_id": "8a1d…",
   "retry_of": null,
+  "retry_kind": null,
   "input_method": "direct"
 }
 ```
@@ -127,6 +128,7 @@ X-Session-Id: 3f1c…   (비회원 필수, 회원은 쿠키로 대체)
 | `question` | string(1~200자) | 예 | 빈 값·200자 초과면 422. 지금 코드는 최소 1자만 검사 → **최대 200자 추가** |
 | `thread_id` | string | 아니요 | 없으면 새 대화(서버가 만들어 `meta`로 돌려줌). 있으면 이전 턴의 표·조건을 이어받는다 [현재] |
 | `retry_of` | string | 아니요 | **[신규]** "다시 시도"로 보낼 때 원 요청의 `request_id`. 서버는 새 `request_id`를 만들고 원 요청과 연결한다(F-ZTUGMI) |
+| `retry_kind` | `user` \| `auto` \| null | 아니요 | `retry_of`를 보낸 쪽(T3-68). `user`: 다시 시도 버튼, `auto`: 프론트 서버의 자동 재연결. 재시도율에서 자동 재연결을 따로 세는 로그용 |
 | `input_method` | `direct` \| `clarify_option` | 아니요 | **[신규]** 직접 입력 / 되묻기 선택지 버튼. 서버 이벤트 로그용(F-TTIAJU) |
 
 ### 응답 이벤트 순서 [현재]

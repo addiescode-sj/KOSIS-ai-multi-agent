@@ -17,7 +17,7 @@ from sqlalchemy import create_engine
 
 from kosis_store.db import session_scope
 from kosis_store.log_metrics import (METRICS, TABS, MetricFilter, down_answers, purge_questions, query, tab)
-from kosis_store.log_models import LogBase, RequestLog, UiEvent
+from kosis_store.log_models import IngestReject, LogBase, RequestLog, UiEvent
 from kosis_store.service_models import Feedback
 
 D20, D21, TODAY = date(2026, 11, 20), date(2026, 11, 21), date(2026, 11, 23)
@@ -53,17 +53,17 @@ def _rows():
         _turn(1, "A", 0, member=True, picked_key="K1", survey_name="S1", has_numbers=True, latency_ms=1000,
               llm_calls=2, input_tokens=400, output_tokens=100),
         _turn(2, "A", 1, member=True, outcome="refused", reason_code="no_period", failed_stage="stat", latency_ms=2000,
-              llm_calls=1, input_tokens=100, output_tokens=0),
+              llm_calls=1, input_tokens=100, output_tokens=0, retry_of=R[1]),  # regenerated a finished answer
         _turn(3, "B", 0, picked_key="K2", survey_name="S2", has_numbers=True, latency_ms=3000, llm_calls=2,
-              input_tokens=200, output_tokens=50),
+              input_tokens=200, output_tokens=50, retry_of="cd" * 16),  # the retried turn has no row
         _turn(4, "C", 0, outcome="aborted", latency_ms=500),
         _turn(5, "D", 0, outcome="failed", failed_stage="agent", latency_ms=4000),
         _turn(6, "E", 0, member=True, outcome="error", reason_code="RuntimeError", failed_stage="search",
               latency_ms=100, at=_at(21, 1)),
         _turn(7, "F", 0, member=True, picked_key="K1", survey_name="S1", has_numbers=True, latency_ms=1500,
-              at=_at(21, 2)),
+              at=_at(21, 2), retry_of=R[6], retry_kind="auto"),  # T3-68 보강 1: the front server reconnected after r6
         _turn(8, "H", 0, internal=True, picked_key="K9", has_numbers=True, latency_ms=9000),  # harness
-        _turn(9, "B", 1, outcome="clarify", reason_code="ambiguous", latency_ms=800),
+        _turn(9, "B", 1, outcome="clarify", reason_code="ambiguous", latency_ms=800, retry_of=R[4]),  # after aborted r4
         _feedback(R[1], "up", "accurate_number", pressed_again=True),  # down first, then up: the row holds up
         _feedback(R[3], "down", "wrong_table", reason="표가 달라요 [전화번호]"),
         _feedback(R[7], "down", "wrong_number", day=21),
@@ -73,7 +73,17 @@ def _rows():
         _event("feedback", R[3], value="up", choice="accurate", minute=5),
         _event("feedback", R[5], value="down", choice="wrong_number"),
         _event("citation_click", R[1]), _event("citation_click", R[1], minute=3), _event("citation_click", R[7], day=21),
+        # T3-68: r1 copied twice (one answer), r2 is a refusal (not in the denominator), r8 is harness
+        _event("copy_answer", R[1]), _event("copy_answer", R[1], minute=4), _event("copy_answer", R[2]),
+        _event("copy_answer", R[8]),
+        _reject("bad_props", "citation_click", 2), _reject("bad_props", "citation_click", 1),
+        _reject("unknown_event_type", None, 1), _reject("bad_props", "copy_answer", 5, day=21),
     ]
+
+
+def _reject(reason, kind, n, *, day=20):
+    return IngestReject(received_at=datetime(2026, 11, day, 9, 0, tzinfo=timezone.utc), reason=reason, event_type=kind,
+                        n=n)
 
 
 PG_URL = os.environ.get("TEST_DATABASE_URL", "").strip()
@@ -120,6 +130,14 @@ def test_every_tab_metric_matches_hand_counts_for_one_day(pg):
     assert _num(got["citation_click_rate"]) == [{"clicked": 1, "with_numbers": 2, "rate": 0.5}]  # r1 of r1, r3
     assert _num(got["abort_rate"]) == [{"aborted": 1, "questions": 6, "rate": 0.1667}]
     assert _num(got["llm_usage"]) == [{"calls": 0.83, "input_tokens": 116.67, "output_tokens": 25.0}]
+    # T3-68: answered r1 r3, r1 copied (twice, counted once); r2 refused and r8 harness are out
+    assert _num(got["copy_rate"]) == [{"copied": 1, "answered": 2, "rate": 0.5}]
+    # r9 retried aborted r4, r2 regenerated answered r1, r3 retried a turn with no row; 6 questions
+    assert _num(got["retry_rate"]) == [{"after_failure": 1, "regenerate": 1, "unknown_origin": 1, "auto_reconnect": 0,
+                                        "questions": 6, "after_failure_rate": 0.1667, "rate": 0.5}]
+    # 11/20 only, summed by (reason, event type); the 11/21 reject is out
+    assert _num(got["log_quality"]) == [{"reason": "bad_props", "event_type": "citation_click", "n": 3},
+                                        {"reason": "unknown_event_type", "event_type": "", "n": 1}]
 
 
 @pytest.mark.postgres
@@ -149,6 +167,10 @@ def test_ranges_and_daily_series(pg):
             {"day": D20, "up": 1, "down": 1, "ratio": 0.5}, {"day": D21, "up": 0, "down": 1, "ratio": 0.0}]
         assert _num(query(s, "abort_rate", flt, by_day=True))[1] == {"day": D21, "aborted": 0, "questions": 2,
                                                                      "rate": 0.0}
+        # T3-68 보강 1: 11/21's only retry is the proxy reconnecting after error r6: not a user retry
+        assert _num(query(s, "retry_rate", MetricFilter(D21, D21))) == [
+            {"after_failure": 0, "regenerate": 0, "unknown_origin": 0, "auto_reconnect": 1, "questions": 2,
+             "after_failure_rate": 0.0, "rate": 0.0}]
         with pytest.raises(ValueError):
             query(s, "latency", flt, by_day=True)  # percentiles are not split by day
 
@@ -185,4 +207,5 @@ def test_the_filter_allows_only_past_days_inside_90_days():
 
 def test_every_tab_metric_is_defined():
     assert all(m in METRICS for metrics in TABS.values() for m in metrics)
-    assert sum(len(v) for v in TABS.values()) + 1 == 15  # + the thumbs-down list (down_answers); T3-50 rewrite_kinds
+    # + the thumbs-down list (down_answers); T3-50 rewrite_kinds; T3-68 copy_rate, retry_rate, log_quality
+    assert sum(len(v) for v in TABS.values()) + 1 == 18

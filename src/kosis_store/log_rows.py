@@ -15,7 +15,7 @@ from __future__ import annotations
 import hashlib
 from typing import Any, Iterable
 
-from kosis_store.log_models import LOG_VERSION, UNKNOWN_REASON, clean_spans, failed_stage
+from kosis_store.log_models import LOG_VERSION, RETRY_KINDS, UNKNOWN_REASON, clean_spans, failed_stage
 from kosis_store.masking import mask
 
 ROOT_SPAN = "invoke_agent"
@@ -141,6 +141,10 @@ def row_from_turn(spans: Iterable, result: dict | None, *, aborted: bool = False
         "conversation_id": _conversation_id(a["gen_ai.conversation.id"]),
         "turn_index": int(a["kosis.turn.index"]),
         "prev_request_id": prev_request_id,
+        "retry_of": str(a["kosis.turn.retry_of"])[:32] if a.get("kosis.turn.retry_of") else None,  # T3-68
+        # only with a retry_of, and only a known kind (the column CHECK); an old client sends none: NULL, counted as user
+        "retry_kind": (a.get("kosis.turn.retry_kind") if a.get("kosis.turn.retry_of")
+                       and a.get("kosis.turn.retry_kind") in RETRY_KINDS else None),
         "session_id": session_id,
         "is_member": is_member,
         "is_internal": is_internal,
