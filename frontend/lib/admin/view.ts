@@ -99,7 +99,10 @@ export function toView(m: AdminMetrics): DashboardView {
       copyAnswer: { value: pct(copy?.rate), note: copy?.answered ? `답한 질문 ${n(copy.answered)}건 중 복사` : "답한 질문 없음" },
       retry: {
         value: pct(retry?.rate),
-        note: retry?.questions ? `오류 후 ${n(retry.after_failure)} · 다시 받기 ${n(retry.regenerate)} · 원래 턴 미상 ${n(retry.unknown_origin)}` : "질문 없음",
+        // the rate is the user's 다시 시도 only; the proxy's own reconnects are shown apart (T3-68 보강 1)
+        note: retry?.questions
+          ? `오류 후 ${n(retry.after_failure)} · 다시 받기 ${n(retry.regenerate)} · 원래 턴 미상 ${n(retry.unknown_origin)} · 자동 재연결 ${n(retry.auto_reconnect)}(비율 밖)`
+          : "질문 없음",
       },
     },
     tables: usage.top_tables.map((t) => ({ key: t.picked_key, survey: t.survey_name ?? "-", uses: t.n })),

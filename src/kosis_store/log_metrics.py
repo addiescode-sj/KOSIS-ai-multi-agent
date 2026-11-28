@@ -44,6 +44,7 @@ _DAY = "(created_at AT TIME ZONE 'Asia/Seoul')::date"
 # error turn stops at the exception, so both would pull the percentiles down.
 _FINISHED = "outcome NOT IN ('aborted', 'error')"
 _FAILED_OUTCOMES = "('error', 'failed', 'aborted')"  # a retry of these is "다시 시도" after a failure (T3-68)
+_USER_RETRY = "t.retry_of IS NOT NULL AND t.retry_kind IS DISTINCT FROM 'auto'"  # T3-68: the button, not a reconnect
 
 
 @dataclass(frozen=True)
@@ -150,17 +151,19 @@ METRICS: dict[str, tuple[str, bool]] = {
                      / nullif(count(DISTINCT t.request_id), 0), 4) AS rate
         FROM turns t LEFT JOIN ui_events c ON c.request_id = t.request_id AND c.event_type = 'copy_answer'
         WHERE t.outcome = 'answered'""", False),
-    # T3-68: questions sent as a retry (retry_of) / questions, split by how the retried turn ended. The screen sends
-    # retry_of after a failure ("다시 시도") and also to regenerate a finished answer; the retried row tells them apart.
-    # No row for the retried turn (its log write failed, or another day's filter): unknown_origin, not a guess.
+    # T3-68: questions the user sent again with 다시 시도 (retry_of) / questions, split by how the retried turn ended. The
+    # button also regenerates a finished answer; the retried row tells the two apart. No row for the retried turn (its
+    # log write failed, or another day's filter): unknown_origin, not a guess. The front server's own reconnect after an
+    # error (retry_kind 'auto') is counted apart and is not in the rate; NULL kind (older clients) is counted as the user.
     "retry_rate": (f"""
-        SELECT count(*) FILTER (WHERE o.outcome IN {_FAILED_OUTCOMES}) AS after_failure,
-               count(*) FILTER (WHERE o.outcome NOT IN {_FAILED_OUTCOMES}) AS regenerate,
-               count(*) FILTER (WHERE t.retry_of IS NOT NULL AND o.request_id IS NULL) AS unknown_origin,
+        SELECT count(*) FILTER (WHERE {_USER_RETRY} AND o.outcome IN {_FAILED_OUTCOMES}) AS after_failure,
+               count(*) FILTER (WHERE {_USER_RETRY} AND o.outcome NOT IN {_FAILED_OUTCOMES}) AS regenerate,
+               count(*) FILTER (WHERE {_USER_RETRY} AND o.request_id IS NULL) AS unknown_origin,
+               count(*) FILTER (WHERE t.retry_kind = 'auto') AS auto_reconnect,
                count(*) AS questions,
-               round(count(*) FILTER (WHERE o.outcome IN {_FAILED_OUTCOMES})::numeric / nullif(count(*), 0), 4)
-                   AS after_failure_rate,
-               round(count(*) FILTER (WHERE t.retry_of IS NOT NULL)::numeric / nullif(count(*), 0), 4) AS rate
+               round(count(*) FILTER (WHERE {_USER_RETRY} AND o.outcome IN {_FAILED_OUTCOMES})::numeric
+                     / nullif(count(*), 0), 4) AS after_failure_rate,
+               round(count(*) FILTER (WHERE {_USER_RETRY})::numeric / nullif(count(*), 0), 4) AS rate
         FROM turns t LEFT JOIN request_logs o ON o.request_id = t.retry_of""", False),
     "abort_rate": ("""
         SELECT {d}count(*) FILTER (WHERE outcome = 'aborted') AS aborted, count(*) AS questions,

@@ -140,7 +140,8 @@ def test_failed_stage_is_the_first_span_that_did_not_end_ok():
 
 # ---------------------------------------------------------------- a real service turn -> one row (log_rows)
 
-def _service_turn(outcome: str = "refused", fail: bool = False, thread: str = "thread-1", retry_of: str | None = None):
+def _service_turn(outcome: str = "refused", fail: bool = False, thread: str = "thread-1", retry_of: str | None = None,
+                  retry_kind: str | None = None):
     """One turn traced the way the service traces it (start_turn + LiveSpans, T3-30~32), on made-up nodes:
     search node -> search_tables tool, statistics node -> one chat model call. Returns (finished spans, root)."""
     from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
@@ -183,6 +184,8 @@ def _service_turn(outcome: str = "refused", fail: bool = False, thread: str = "t
         pass
     if retry_of:
         root.set_attribute("kosis.turn.retry_of", retry_of)  # as /chat/stream sets it (backend/app/main.py)
+    if retry_kind:
+        root.set_attribute("kosis.turn.retry_kind", retry_kind)
     root.end()
     return memory.get_finished_spans(), root
 
@@ -259,10 +262,15 @@ def test_a_retried_turn_keeps_what_it_retried():
     """T3-68: the retry_of the screen sent reaches request_logs, cut to the column; a plain turn has none."""
     from kosis_store.log_rows import row_from_turn
 
-    finished, _ = _service_turn("answered", retry_of="ab" * 16 + "extra")
-    assert row_from_turn(finished, {"outcome": "answered"})["retry_of"] == "ab" * 16
-    finished, _ = _service_turn("answered")
-    assert row_from_turn(finished, {"outcome": "answered"})["retry_of"] is None
+    def got(**kw):
+        row = row_from_turn(_service_turn("answered", **kw)[0], {"outcome": "answered"})
+        return row["retry_of"], row["retry_kind"]
+
+    assert got(retry_of="ab" * 16 + "extra", retry_kind="auto") == ("ab" * 16, "auto")
+    assert got(retry_of="ab" * 16) == ("ab" * 16, None)  # an older client sends no kind
+    assert got(retry_of="ab" * 16, retry_kind="manual") == ("ab" * 16, None)  # unknown kind: not past the column CHECK
+    assert got(retry_kind="user") == (None, None)  # a kind without retry_of means nothing
+    assert got() == (None, None)
 
 
 @offline

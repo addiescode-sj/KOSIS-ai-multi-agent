@@ -53,7 +53,7 @@ const answer = {
       citation_click_rate: [{ clicked: 2, with_numbers: 8, rate: 0.25 }],
       abort_rate: [{ aborted: 1, questions: 11, rate: 0.0909 }],
       copy_rate: [{ copied: 3, answered: 9, rate: 0.3333 }],
-      retry_rate: [{ after_failure: 1, regenerate: 2, unknown_origin: 0, questions: 11, after_failure_rate: 0.0909, rate: 0.2727 }],
+      retry_rate: [{ after_failure: 1, regenerate: 2, unknown_origin: 0, auto_reconnect: 1, questions: 11, after_failure_rate: 0.0909, rate: 0.2727 }],
     } },
     cost: { rows: {
       llm_usage: [{ calls: 2.4, input_tokens: 4210.5, output_tokens: 612 }],
@@ -85,7 +85,7 @@ test("the operator app's answer becomes the cards: its numbers as they are, noth
   expect(v.hourly).toBeNull();
   // T3-68: copy and retry rates as the operator app gave them, the retry split in the note; rejects by reason
   expect(v.rates.copyAnswer).toEqual({ value: 33.3, note: "답한 질문 9건 중 복사" });
-  expect(v.rates.retry).toEqual({ value: 27.3, note: "오류 후 1 · 다시 받기 2 · 원래 턴 미상 0" });
+  expect(v.rates.retry).toEqual({ value: 27.3, note: "오류 후 1 · 다시 받기 2 · 원래 턴 미상 0 · 자동 재연결 1(비율 밖)" });
   expect(v.logQuality).toEqual([
     { reason: "bad_props", eventType: "citation_click", count: 3 }, { reason: "unknown_event_type", eventType: "-", count: 1 },
   ]);

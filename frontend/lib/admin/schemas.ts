@@ -47,7 +47,7 @@ export const AdminMetrics = z.looseObject({
         // T3-68: answers copied / answered; retries split by how the retried turn ended
         copy_rate: z.array(z.looseObject({ copied: Num, answered: Num, rate: Num.nullable() })),
         retry_rate: z.array(z.looseObject({
-          after_failure: Num, regenerate: Num, unknown_origin: Num, questions: Num, rate: Num.nullable(),
+          after_failure: Num, regenerate: Num, unknown_origin: Num, auto_reconnect: Num, questions: Num, rate: Num.nullable(),
         })),
       }),
     }),

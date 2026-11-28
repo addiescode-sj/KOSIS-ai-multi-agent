@@ -1,8 +1,16 @@
 import { expect, test } from "@jest/globals";
 
 import {
-  droppedFailure, EXHAUSTED, failureFromEvent, failureFromStatus, finalMessage, MAX_RECONNECTS, shouldReconnect,
+  droppedFailure, EXHAUSTED, failureFromEvent, failureFromStatus, finalMessage, MAX_RECONNECTS, retryKind, shouldReconnect,
 } from "./reconnect.ts";
+
+test("retry_kind: the button on the first attempt, this proxy on a reconnect, none without retry_of (T3-68)", () => {
+  const id = "a".repeat(32);
+  expect(retryKind(id, 0)).toBe("user");
+  expect(retryKind(id, 1)).toBe("auto");
+  expect(retryKind(null, 0)).toBeNull();
+  expect(retryKind(null, 1)).toBeNull(); // a reconnect after a failure with no request_id has nothing to point at
+});
 
 test("a retryable failure reconnects once, then gives up", () => {
   const f = failureFromEvent({ type: "TimeoutError", detail: "slow", retryable: true, request_id: "a".repeat(32) });

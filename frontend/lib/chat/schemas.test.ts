@@ -4,11 +4,11 @@ import { ANSWERED } from "./fixtures.ts";
 import { ChatResult, ChatStreamRequest, ErrorEvent, Meta, NodeEvent, StatEvent, TokenEvent, TurnFeedback } from "./schemas.ts";
 
 test("/chat/stream request: 1..200 characters, the contract's input methods, no extra fields", () => {
-  const ok = { question: "2023년 합계출산율은?", thread_id: null, retry_of: null, input_method: "direct" };
+  const ok = { question: "2023년 합계출산율은?", thread_id: null, retry_of: null, retry_kind: null, input_method: "direct" };
   expect(ChatStreamRequest.safeParse(ok).success).toBe(true);
   for (const bad of [
     { ...ok, question: "  " }, { ...ok, question: "가".repeat(201) }, { ...ok, input_method: "voice" },
-    { ...ok, session_id: "x" }, { question: "q" },
+    { ...ok, session_id: "x" }, { question: "q" }, { ...ok, retry_kind: "manual" },
   ]) expect(ChatStreamRequest.safeParse(bad).success).toBe(false);
 });
 

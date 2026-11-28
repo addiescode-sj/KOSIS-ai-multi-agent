@@ -3,7 +3,7 @@ import { ZodError } from "zod";
 
 import { callerHeaders } from "@/lib/backend/proxy";
 import {
-  droppedFailure, type Failure, failureFromEvent, failureFromStatus, finalMessage, shouldReconnect,
+  droppedFailure, type Failure, failureFromEvent, failureFromStatus, finalMessage, retryKind, shouldReconnect,
 } from "@/lib/chat/reconnect";
 import { errorFrom, errorResponse, issuesText } from "@/lib/backend/errors";
 import {
@@ -41,7 +41,9 @@ export async function POST(request: Request) {
       for (let reconnects = 0; ; reconnects++) {
         // the backend's request, checked before it is sent; a question it would refuse (over 200 characters)
         // ends the turn as the backend's 422 would: the error card, no reconnect
-        const body = ChatStreamRequest.safeParse({ question, thread_id: thread, retry_of: retry, input_method: inputMethod });
+        const body = ChatStreamRequest.safeParse({
+          question, thread_id: thread, retry_of: retry, retry_kind: retryKind(retry, reconnects), input_method: inputMethod,
+        });
         const attempt = body.success
           ? await answerOnce(`${backend}/chat/stream`, headers, body.data, writer, request.signal, reconnects)
           : { failure: failureFromStatus(422, `질문은 ${QUESTION_MAX}자까지 입력할 수 있습니다.`), threadId: null };

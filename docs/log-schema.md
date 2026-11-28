@@ -38,6 +38,7 @@
 | `conversation_id`, `turn_index` | 대화(`thread_id` = `gen_ai.conversation.id`, 최대 64자 문자열)와 턴 번호(`kosis.turn.index`, **0부터**) | 외래 키가 아닌 값이다(아래 설명). `(conversation_id, turn_index)` 인덱스, 재시도가 있어 unique가 아니다. 클라이언트가 64자보다 긴 `thread_id`를 보내면 그 sha256(64자)을 넣는다(행이 거부되지 않고, 대화마다 값이 하나) |
 | `prev_request_id` | 같은 대화의 직전 질문 | 재질문 탐지(KOS-176) |
 | `retry_of` | 화면이 다시 보낸 원래 질문(`kosis.turn.retry_of`, T3-68) | 재시도율: 원래 턴 outcome으로 오류 후 / 다시 받기 구분 |
+| `retry_kind` | `retry_of`를 보낸 쪽: `user`(버튼) · `auto`(프론트 서버 자동 재연결) · NULL(옛 클라이언트, 사용자로 셈) | 재시도율에서 자동 재연결 분리 |
 | `session_id` | 브라우저 세션(임의 UUID) | 사람을 식별하지 않는다. 하네스 요청은 비어 있다 |
 | `is_member`, `is_internal` | 회원 여부, 팀·하네스 트래픽 여부 | 지표는 `is_internal`을 뺀다 |
 | `input_method` | `direct`(직접 입력) · `clarify_option`(되묻기 선택지 버튼) | 추천 질문은 1차 범위 밖(11/18)이라 값이 없다 |
@@ -98,6 +99,7 @@ CREATE TABLE request_logs (
     turn_index INTEGER NOT NULL,
     prev_request_id VARCHAR(32),
 retry_of VARCHAR(32),  -- T3-68, 마이그레이션 0009
+retry_kind VARCHAR(8) CHECK (retry_kind IN ('user', 'auto')),
     session_id UUID,
     is_member BOOLEAN NOT NULL,
     is_internal BOOLEAN NOT NULL,
@@ -193,7 +195,7 @@ CREATE INDEX ix_request_logs_session_id ON request_logs (session_id);  -- T3-52:
 | | 출처 클릭률 | `ui_events` ÷ `has_numbers` | SQL만 |
 | | 답 전 이탈률 | `outcome = 'aborted'` | 확인 (`outcome_share`의 한 줄, `abort_rate`) |
 | | 답변 복사율 (T3-68) | `ui_events.copy_answer` ÷ `outcome='answered'`, 답 단위 | 확인 (`copy_rate`) |
-| | 재시도율 (T3-68) | `request_logs.retry_of` ⋈ 원래 행 outcome | 확인 (`retry_rate`: 오류 후·다시 받기·원래 턴 미상) |
+| | 재시도율 (T3-68) | `request_logs.retry_of` ⋈ 원래 행 outcome | 확인 (`retry_rate`: 사용자 재시도의 오류 후·다시 받기·원래 턴 미상, 자동 재연결 `auto_reconnect`는 따로·비율 밖) |
 | 성능·비용 | 단계별 지연 p50·p95, 오류율 | Prometheus `kosis.agent.step.duration` | 조회식만 (10장, 계측은 에이전트 담당) |
 | | 첫 글자까지 시간 | `first_token_ms`, 끝까지 간 턴만(이탈·오류 제외) | 확인 (`first_token`) |
 | | 질문당 LLM 호출·토큰 | `llm_calls`, 토큰 | 확인 (`llm_usage`) |

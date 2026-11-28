@@ -19,6 +19,8 @@ class ChatRequest(BaseModel):
     thread_id: str | None = Field(default=None, description="대화 ID. 같은 값을 보내면 이전 턴을 이어서 답한다. "
                                   "없으면 새 대화로 처리하고, 만든 ID를 `meta`로 돌려준다.", examples=["c0ffee"])
     retry_of: str | None = Field(default=None, description="\"다시 시도\"로 보낼 때 원 요청의 request_id (F-ZTUGMI)")
+    retry_kind: Literal["user", "auto"] | None = Field(
+        default=None, description="retry_of를 보낸 쪽 (T3-68). user: 다시 시도 버튼 · auto: 프론트 서버의 자동 재연결. 로그용")
     # T3-48 (KOS-170) put the session in the body; the contract sends it as the X-Session-Id header (both accepted)
     session_id: uuid.UUID | None = Field(default=None, description="옛 방식: 브라우저 세션 UUID. `X-Session-Id` 헤더를 쓴다")
     input_method: Literal["direct", "clarify_option"] = Field(

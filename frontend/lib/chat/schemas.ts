@@ -134,6 +134,7 @@ export const ChatStreamRequest = z.strictObject({
   question: z.string().trim().min(1).max(QUESTION_MAX),
   thread_id: z.string().min(1).nullable(),
   retry_of: z.string().min(1).nullable(),
+  retry_kind: z.enum(["user", "auto"]).nullable(), // T3-68: who sent retry_of (button / automatic reconnect)
   input_method: z.enum(["direct", "clarify_option"]),
 });
 export type ChatStreamRequest = z.infer<typeof ChatStreamRequest>;

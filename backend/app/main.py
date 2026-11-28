@@ -496,6 +496,8 @@ def chat_stream(req: ChatRequest, graph=Depends(get_graph), tracer: Tracer = Dep
         root.set_attribute("kosis.internal", True)  # docs/log-schema.md 10.3: Prometheus leaves harness traffic out
     if req.retry_of:
         root.set_attribute("kosis.turn.retry_of", req.retry_of[:32])
+        if req.retry_kind:
+            root.set_attribute("kosis.turn.retry_kind", req.retry_kind)  # T3-68: button or automatic reconnect
     _record_request(store, request_id, thread, session, turn.member)  # before meta: feedback right after the answer finds it
     final: dict = {}
     result: ChatResult | None = None

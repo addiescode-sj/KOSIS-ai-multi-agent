@@ -41,6 +41,7 @@ NO_TRACE = "0" * 32  # trace id of a no-op tracer: tracing was off, the row woul
 # chart_only (redraw the last chart), multi (split into sub-questions), carry_over (rewritten with the earlier turn's
 # conditions, "부산은?"), reference ("그 표에서 ..." asked as typed on the earlier table), new
 REWRITE_KINDS = ("new", "carry_over", "reference", "chart_only", "multi")
+RETRY_KINDS = ("user", "auto")  # T3-68: who sent retry_of (the 다시 시도 button / the front server reconnecting)
 INTERPRETERS = ("rule", "llm", "none")  # ChatResult.interpreted_by: who read the turn
 # one request_rewrites row: the standalone question of a carry-over turn, or one sub-question of a multi-query turn
 REWRITE_TEXT_KINDS = ("resolved", "sub_question")
@@ -68,6 +69,7 @@ class RequestLog(LogBase):
         CheckConstraint(f"length(request_id) = 32 AND request_id <> '{NO_TRACE}'", name="ck_request_logs_request_id"),
         Index("ix_request_logs_conversation_turn", "conversation_id", "turn_index"),  # not unique: a turn can be retried
         CheckConstraint(_in("rewrite_kind", REWRITE_KINDS), name="ck_request_logs_rewrite_kind"),
+        CheckConstraint(_in("retry_kind", RETRY_KINDS), name="ck_request_logs_retry_kind"),  # T3-68
         CheckConstraint(_in("interpreted_by", INTERPRETERS), name="ck_request_logs_interpreted_by"),
         # T3-52 data review (kosis_store.log_metrics.review_turns): one outcome over a period, one user over a period.
         # The (session_id, created_at) index also serves session_id alone, so it replaced the single-column one.
@@ -84,6 +86,7 @@ class RequestLog(LogBase):
     # T3-68: the request_id the screen asked to retry ("다시 시도" / "다시 받기"), from the root span kosis.turn.retry_of.
     # A value the client sent, not a foreign key: the retried turn may have no row (its log write failed).
     retry_of: Mapped[str | None] = mapped_column(String(32))
+    retry_kind: Mapped[str | None] = mapped_column(String(8))  # user: the 다시 시도 button, auto: the front server's reconnect
     session_id: Mapped[uuid.UUID | None] = mapped_column()  # random browser session id, not a person
     is_member: Mapped[bool] = mapped_column(Boolean, default=False)
     is_internal: Mapped[bool] = mapped_column(Boolean, default=False)  # team or eval harness traffic

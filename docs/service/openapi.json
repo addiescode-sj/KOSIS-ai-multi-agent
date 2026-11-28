@@ -1704,6 +1704,22 @@
             "title": "Retry Of",
             "description": "\"다시 시도\"로 보낼 때 원 요청의 request_id (F-ZTUGMI)"
           },
+          "retry_kind": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "user",
+                  "auto"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Retry Kind",
+            "description": "retry_of를 보낸 쪽 (T3-68). user: 다시 시도 버튼 · auto: 프론트 서버의 자동 재연결. 로그용"
+          },
           "session_id": {
             "anyOf": [
               {

@@ -13,6 +13,13 @@ export type Failure = {
 
 export const EXHAUSTED = "잠시 뒤 다시 시도해 주세요.";
 
+/** Who sent retry_of (T3-68, logged as request_logs.retry_kind): the 다시 시도 button on the first attempt, this proxy
+ *  on a reconnect. null when nothing is retried. Keeps the user's retry rate free of automatic reconnects. */
+export function retryKind(retryOf: string | null, reconnects: number): "user" | "auto" | null {
+  if (retryOf === null) return null;
+  return reconnects > 0 ? "auto" : "user";
+}
+
 export function shouldReconnect(failure: Failure, reconnects: number): boolean {
   return failure.retryable && failure.status !== 422 && reconnects < MAX_RECONNECTS;
 }
