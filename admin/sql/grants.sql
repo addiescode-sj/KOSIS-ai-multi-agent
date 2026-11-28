@@ -13,7 +13,8 @@ REVOKE ALL ON ALL TABLES IN SCHEMA public FROM kosis_admin;
 GRANT USAGE ON SCHEMA public TO kosis_admin;
 
 -- the user log: read only
-GRANT SELECT ON request_logs, request_rewrites, feedback, ui_events, daily_usage TO kosis_admin;
+-- ingest_rejects: log quality card (T3-68); rerun this file on the server after deploying it
+GRANT SELECT ON request_logs, request_rewrites, feedback, ui_events, ingest_rejects, daily_usage TO kosis_admin;
 -- sign-in check and operator names: these columns only (no Kakao number, no settings)
 GRANT SELECT (token_hash, user_id, expires_at) ON login_sessions TO kosis_admin;
 GRANT SELECT (id, display_name, nickname) ON users TO kosis_admin;

@@ -81,6 +81,9 @@ class RequestLog(LogBase):
     conversation_id: Mapped[str] = mapped_column(String(64))
     turn_index: Mapped[int] = mapped_column(Integer)  # kosis.turn.index: 0 for the first question, as in the trace
     prev_request_id: Mapped[str | None] = mapped_column(String(32))  # the request before this one in the conversation
+    # T3-68: the request_id the screen asked to retry ("다시 시도" / "다시 받기"), from the root span kosis.turn.retry_of.
+    # A value the client sent, not a foreign key: the retried turn may have no row (its log write failed).
+    retry_of: Mapped[str | None] = mapped_column(String(32))
     session_id: Mapped[uuid.UUID | None] = mapped_column()  # random browser session id, not a person
     is_member: Mapped[bool] = mapped_column(Boolean, default=False)
     is_internal: Mapped[bool] = mapped_column(Boolean, default=False)  # team or eval harness traffic

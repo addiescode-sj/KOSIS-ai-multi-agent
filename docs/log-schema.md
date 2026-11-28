@@ -37,6 +37,7 @@
 | `request_id` | 질문 1건의 ID = 그 턴의 **OTel trace id** (32자리 hex, 기본 키) | 서비스가 SSE 첫 이벤트 `meta`로 이미 보낸다. 피드백·화면 이벤트가 이 값으로 붙고, 그대로 Jaeger 검색어다. 추적이 꺼진 no-op 값(0)은 막는다 |
 | `conversation_id`, `turn_index` | 대화(`thread_id` = `gen_ai.conversation.id`, 최대 64자 문자열)와 턴 번호(`kosis.turn.index`, **0부터**) | 외래 키가 아닌 값이다(아래 설명). `(conversation_id, turn_index)` 인덱스, 재시도가 있어 unique가 아니다. 클라이언트가 64자보다 긴 `thread_id`를 보내면 그 sha256(64자)을 넣는다(행이 거부되지 않고, 대화마다 값이 하나) |
 | `prev_request_id` | 같은 대화의 직전 질문 | 재질문 탐지(KOS-176) |
+| `retry_of` | 화면이 다시 보낸 원래 질문(`kosis.turn.retry_of`, T3-68) | 재시도율: 원래 턴 outcome으로 오류 후 / 다시 받기 구분 |
 | `session_id` | 브라우저 세션(임의 UUID) | 사람을 식별하지 않는다. 하네스 요청은 비어 있다 |
 | `is_member`, `is_internal` | 회원 여부, 팀·하네스 트래픽 여부 | 지표는 `is_internal`을 뺀다 |
 | `input_method` | `direct`(직접 입력) · `clarify_option`(되묻기 선택지 버튼) | 추천 질문은 1차 범위 밖(11/18)이라 값이 없다 |
@@ -96,6 +97,7 @@ CREATE TABLE request_logs (
     conversation_id VARCHAR(64) NOT NULL,
     turn_index INTEGER NOT NULL,
     prev_request_id VARCHAR(32),
+retry_of VARCHAR(32),  -- T3-68, 마이그레이션 0009
     session_id UUID,
     is_member BOOLEAN NOT NULL,
     is_internal BOOLEAN NOT NULL,
@@ -189,12 +191,14 @@ CREATE INDEX ix_request_logs_session_id ON request_logs (session_id);  -- T3-52:
 | 사용 패턴 | 많이 쓰인 표·조사 상위 20 | `picked_key`, `survey_name` | 확인 (`top_tables`) |
 | | 대화당 턴 수 | `conversation_id`, `turn_index` | 확인 (`turns_per_conversation`) |
 | | 출처 클릭률 | `ui_events` ÷ `has_numbers` | SQL만 |
-| | 답 전 이탈률 | `outcome = 'aborted'` | 확인 (`outcome_share`의 한 줄) |
+| | 답 전 이탈률 | `outcome = 'aborted'` | 확인 (`outcome_share`의 한 줄, `abort_rate`) |
+| | 답변 복사율 (T3-68) | `ui_events.copy_answer` ÷ `outcome='answered'`, 답 단위 | 확인 (`copy_rate`) |
+| | 재시도율 (T3-68) | `request_logs.retry_of` ⋈ 원래 행 outcome | 확인 (`retry_rate`: 오류 후·다시 받기·원래 턴 미상) |
 | 성능·비용 | 단계별 지연 p50·p95, 오류율 | Prometheus `kosis.agent.step.duration` | 조회식만 (10장, 계측은 에이전트 담당) |
 | | 첫 글자까지 시간 | `first_token_ms`, 끝까지 간 턴만(이탈·오류 제외) | 확인 (`first_token`) |
 | | 질문당 LLM 호출·토큰 | `llm_calls`, 토큰 | 확인 (`llm_usage`) |
 | | 모델별 토큰·비용 | Prometheus `gen_ai.client.token.usage` (이미 계측됨) | 조회식만 (10장), 비용은 모델별 토큰에 단가표를 곱함 |
-| | 로그 품질 | `ingest_rejects`, 짝 없는 질문 | SQL만 (KOS-170 뒤) |
+| | 로그 품질 | `ingest_rejects` 사유별 건수 (회원·내부 필터 무관) | 확인 (`log_quality`, T3-68). 서버 쓰기 실패는 `/ops/log-counts` |
 
 - DB 확인 9개(SQL 9개), DB SQL만 6개, Prometheus 조회식 2개(로그 버전 3에서 옮김). 지표는 18줄이다("질문당 LLM 호출·토큰·비용"을 DB·Prometheus 두 줄로 나누고, 추천 질문 클릭률은 1차 범위 밖이라 뺌). 초안의 "답 전 이탈률"은 화면 이벤트 `stream_abort`로 세려 했으나, 서버가 아는 `outcome = 'aborted'`로 바꿔 지금 확인할 수 있게 했다.
 - 모든 지표는 `is_internal`을 빼고 KST 하루 단위로 센다. KST 날짜를 UTC 범위 `[00:00 KST, 다음 날 00:00 KST)`로 바꿔 `created_at`과 비교한다(`day_range`, `created_at` 인덱스를 탄다).

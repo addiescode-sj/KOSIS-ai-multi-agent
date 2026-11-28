@@ -28,6 +28,8 @@ export function DashboardBody({ d }: { d: DashboardView }) {
     { label: "출처 클릭률", ...d.rates.citationClick },
     { label: "여러 번 물은 대화", ...d.rates.multiTurn },
     { label: "답 전 이탈률", ...d.rates.dropBeforeAnswer },
+    { label: "답변 복사율", ...d.rates.copyAnswer },
+    { label: "재시도율", ...d.rates.retry },
   ];
   return (
     <>
@@ -80,7 +82,7 @@ export function DashboardBody({ d }: { d: DashboardView }) {
         </Panel>
       </div>
 
-      <div className="grid grid-cols-3 gap-6">
+      <div className="grid grid-cols-5 gap-6">
         {rates.map((r) => (
           <Card key={r.label} className="p-5">
             <p className="text-[13px] text-sub">{r.label}</p>
@@ -131,8 +133,15 @@ export function DashboardBody({ d }: { d: DashboardView }) {
             <NoData why="이 기간에 질문이 없습니다." />
           )}
         </Panel>
-        <Panel title="로그 품질">
-          <NoData why="적재·거부 건수는 백엔드의 /ops/log-counts에 있습니다(DB 지표 아님)." />
+        <Panel title="로그 품질" sub="수신 검사에서 떨어진 화면 이벤트 · 회원·내부 필터 무관">
+          {d.logQuality.length ? (
+            <div className="mt-4">
+              <DataTable right={[2]} cols={["사유", "이벤트", "건수"]} rows={d.logQuality.map((r) => [r.reason, r.eventType, count(r.count)])} />
+            </div>
+          ) : (
+            <NoData why="이 기간에 떨어진 화면 이벤트가 없습니다." />
+          )}
+          <p className="mt-3 text-xs text-mute">서버 로그 쓰기 실패 수는 백엔드 /ops/log-counts에 있습니다(DB 지표 아님).</p>
         </Panel>
       </div>
     </>

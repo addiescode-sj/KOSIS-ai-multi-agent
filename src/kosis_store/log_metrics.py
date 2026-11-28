@@ -43,6 +43,7 @@ _DAY = "(created_at AT TIME ZONE 'Asia/Seoul')::date"
 # Response times only for turns that ran to the end: an aborted turn stops when the user leaves (too short) and an
 # error turn stops at the exception, so both would pull the percentiles down.
 _FINISHED = "outcome NOT IN ('aborted', 'error')"
+_FAILED_OUTCOMES = "('error', 'failed', 'aborted')"  # a retry of these is "다시 시도" after a failure (T3-68)
 
 
 @dataclass(frozen=True)
@@ -140,6 +141,27 @@ METRICS: dict[str, tuple[str, bool]] = {
                      / nullif(count(DISTINCT t.request_id), 0), 4) AS rate
         FROM turns t LEFT JOIN ui_events c ON c.request_id = t.request_id AND c.event_type = 'citation_click'
         WHERE t.has_numbers""", False),
+    # T3-68: answers copied at least once / answered questions. Not has_numbers like the citation rate: a sentence-only
+    # or chart answer can be copied too. Several copies of one answer count once.
+    "copy_rate": ("""
+        SELECT count(DISTINCT t.request_id) FILTER (WHERE c.request_id IS NOT NULL) AS copied,
+               count(DISTINCT t.request_id) AS answered,
+               round(count(DISTINCT t.request_id) FILTER (WHERE c.request_id IS NOT NULL)::numeric
+                     / nullif(count(DISTINCT t.request_id), 0), 4) AS rate
+        FROM turns t LEFT JOIN ui_events c ON c.request_id = t.request_id AND c.event_type = 'copy_answer'
+        WHERE t.outcome = 'answered'""", False),
+    # T3-68: questions sent as a retry (retry_of) / questions, split by how the retried turn ended. The screen sends
+    # retry_of after a failure ("다시 시도") and also to regenerate a finished answer; the retried row tells them apart.
+    # No row for the retried turn (its log write failed, or another day's filter): unknown_origin, not a guess.
+    "retry_rate": (f"""
+        SELECT count(*) FILTER (WHERE o.outcome IN {_FAILED_OUTCOMES}) AS after_failure,
+               count(*) FILTER (WHERE o.outcome NOT IN {_FAILED_OUTCOMES}) AS regenerate,
+               count(*) FILTER (WHERE t.retry_of IS NOT NULL AND o.request_id IS NULL) AS unknown_origin,
+               count(*) AS questions,
+               round(count(*) FILTER (WHERE o.outcome IN {_FAILED_OUTCOMES})::numeric / nullif(count(*), 0), 4)
+                   AS after_failure_rate,
+               round(count(*) FILTER (WHERE t.retry_of IS NOT NULL)::numeric / nullif(count(*), 0), 4) AS rate
+        FROM turns t LEFT JOIN request_logs o ON o.request_id = t.retry_of""", False),
     "abort_rate": ("""
         SELECT {d}count(*) FILTER (WHERE outcome = 'aborted') AS aborted, count(*) AS questions,
                round(count(*) FILTER (WHERE outcome = 'aborted')::numeric / nullif(count(*), 0), 4) AS rate
@@ -149,6 +171,13 @@ METRICS: dict[str, tuple[str, bool]] = {
         SELECT round(avg(llm_calls), 2) AS calls, round(avg(input_tokens), 2) AS input_tokens,
                round(avg(output_tokens), 2) AS output_tokens
         FROM turns""", False),
+    # T3-68 log quality: screen events that failed the intake checks, by reason. Counts, not a rate (the number of
+    # events received is not stored). ingest_rejects has no member or internal column: only the date range applies.
+    # Server write failures live in the backend process (GET /ops), not here.
+    "log_quality": ("""
+        SELECT reason, coalesce(event_type, '') AS event_type, sum(n) AS n FROM ingest_rejects
+        WHERE received_at >= :start AND received_at < :end
+        GROUP BY reason, 2 ORDER BY n DESC, reason, 2""", False),
     "first_token": (f"""
         SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY first_token_ms) AS p50,
                percentile_cont(0.95) WITHIN GROUP (ORDER BY first_token_ms) AS p95
@@ -157,8 +186,8 @@ METRICS: dict[str, tuple[str, bool]] = {
 TABS = {
     "summary": ("question_count", "outcome_ratio", "thumbs_up_ratio", "latency"),
     "quality": ("refusal_reasons", "down_reasons", "up_reasons", "failed_stages", "rewrite_kinds"),  # + down_answers()
-    "usage": ("top_tables", "turns_per_conversation", "citation_click_rate", "abort_rate"),
-    "cost": ("llm_usage",),
+    "usage": ("top_tables", "turns_per_conversation", "citation_click_rate", "abort_rate", "copy_rate", "retry_rate"),
+    "cost": ("llm_usage", "log_quality"),
 }
 
 _DOWN_ANSWERS = """

@@ -141,6 +141,7 @@ def row_from_turn(spans: Iterable, result: dict | None, *, aborted: bool = False
         "conversation_id": _conversation_id(a["gen_ai.conversation.id"]),
         "turn_index": int(a["kosis.turn.index"]),
         "prev_request_id": prev_request_id,
+        "retry_of": str(a["kosis.turn.retry_of"])[:32] if a.get("kosis.turn.retry_of") else None,  # T3-68
         "session_id": session_id,
         "is_member": is_member,
         "is_internal": is_internal,
