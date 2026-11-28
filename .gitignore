@@ -41,6 +41,9 @@ docs/research/
 # Vector store (ChromaDB, rebuilt from data/)
 chroma/
 
+# Colab notebooks
+colab/
+
 # Per-machine compose overrides (e.g. a shared Chroma folder)
 docker-compose.override.yml
 

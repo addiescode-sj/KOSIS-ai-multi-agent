@@ -9,6 +9,18 @@
 - 앱 배포는 GHCR 이미지 + `deploy/scripts/60-deploy.sh`(자동 실행 timer는 꺼져 있음). 저장소 설정의 결과가 11/27 서버와 같음을 확인(렌더 차이 0, `kubectl diff -k` 0).
 - 인프라 담당 인계: 김병석 → 전민기. 접속 키·ssh 설정·`site.env`는 저장소 밖에서 따로 전달.
 
+## E2E 골든 라벨 검토 (2026-11-21, 완료)
+
+- `evals/datasets/e2e_golden.review.csv` 42행의 판정과 근거를 기록했다. `ok` 29건, `wrong` 13건이다. `wrong`은 `needs_review` 18건 중 8건, 규칙과 골드가 일치한 24건 중 5건이다.
+- `bash scripts/verify.sh` 종료 코드 0. Python 338건 통과 및 2건 건너뜀, Jest 5개 스위트에서 27건 통과. 재생성한 기준 CSV와 비교해 BOM, 헤더, 행 순서, 원본 7개 열을 확인했다.
+- 검토 CSV는 생성 산출물이어서 빌더 실행 시 덮어쓸 수 있다. 원본 및 검토본 SHA-256과 검증 근거는 보고서에 기록했다. 골든 데이터에 라벨 수정을 반영하는 일은 별도 범위다.
+
+### Context Index
+
+- `docs/reports/20261121-e2e-golden-review-REPORT.md` / contains 검증 결과 및 SHA-256 / use_for 검토본 식별 및 결과 확인.
+- `evals/datasets/e2e_golden.review.csv` / contains 42행의 판정과 근거 / use_for 개별 라벨 수정 검토.
+- `docs/plans/20261121-e2e-golden-review/` / contains 승인 범위와 완료된 작업 목록 / use_for 수용 기준 및 작업 이력 확인.
+
 ## T3-27 멀티턴 조건 이월 · 멀티쿼리 (2026-11-09, 브랜치 T3-27-multiturn-context, PR #9 위, 진행 중)
 
 - 해석기: `src/kosis_agent/graph/context.py` `read_turn` — 규칙(남는 내용 낱말 · 슬롯 바꿔 끼우기 · 차트어) 우선, 판단 못 한 턴만 LLM(`INTERPRETER`=hybrid, `INTERPRETER_MODEL` 있을 때). LLM 독립 질문은 숫자·시도·낱말이 두 질문 안에 있을 때만 쓴다.
@@ -47,3 +59,35 @@
 
 - `plans/T3-00.md` / contains: options, review, decision (B) / use_for: scope review.
 - `TASK.md` / contains: Phase 3 task list T3-00~16 / use_for: picking the next task.
+
+## AI PM Portfolio (2026-11-24 redesign, complete)
+
+- Latest release: six Korean slides and matching six-section offline HTML for KOSIS 통계 AI and ReadMyCareer. KOSIS identifies the PM and 4-person team's roles and distinguishes personal decisions from team evaluation results. ReadMyCareer covers the solo product work through customer PoC delivery and identifies the next validation question.
+- Follow-up copy changes: the HTML label now reads `맡은 역할`; the HTML, editable Spaces deck, and local PPTX cover clarify that approximately five years combine frontend/UX engineering, bootcamp lead instruction, and side-project leadership after the University of Bath HCI master's degree.
+- Latest KOSIS copy revision: all personal-role headings in HTML, local PPTX, and the editable Spaces deck read `맡은 역할`. The 클라비 case now presents the four-person team's goals, failure and edge-case definitions, response guardrails and tone, layered evaluation and golden set, trace-based failure location, and AI/backend/frontend boundary and priority coordination. The 40→1 false-refusal result remains a separately qualified team benchmark. Final artifact identities are in the report.
+- Delivery files: `docs/artifacts/ai-pm-portfolio-redesign/Addie_Lee_AI_PM_Portfolio.{pptx,html}`. The live editable deck is [on Spaces](https://chatgpt.com/space/page_01e31cc8e6908191aa19ee72d5b3f991) (`page_01e31cc8e6908191aa19ee72d5b3f991`). Direct Spaces export returned `Forbidden`. The local PPTX was reconstructed from the saved slide data and checked by reopening and rendering all six slides.
+- Verification: offline Chrome passed at 360, 390, 768 and 1440 px, including keyboard navigation, image proportions, and absence of horizontal overflow or remote requests. The PPTX has 90 editable text shapes, two images matching the source pixel hashes, and six speaker-note sets. LibreOffice with Malgun Gothic passed visual checks. Microsoft PowerPoint was unavailable for a native check. `bash scripts/verify.sh` exited 0 with 5 frontend suites/28 tests and 452 Python tests passing, plus 6 Python skips.
+- Evidence boundaries: KOSIS's 95.6% comes from providing the correct table in a 90-question diagnostic. Hit@5 is a separate team search measure with an unconfirmed denominator. False refusals went from 40/60 to 1/60 in the fixed-retrieval benchmark. ReadMyCareer's 90-to-5-minute figure comes from the resume, with sample size and measurement method unavailable. Quality thresholds are targets, and the stored three-fixture agent run failed on content criteria. No product code changes were made for the redesign.
+- `docs/reports/20261124-ai-pm-portfolio-redesign-REPORT.md` / contains artifact hashes, acceptance results, and export limitations / use_for delivery and audit.
+- `docs/plans/20261124-ai-pm-portfolio-redesign/{PLAN,TASKS,EVIDENCE}.md` / contains the approved scope, work checklist, and source evidence / use_for revision scope and metric provenance.
+- `docs/artifacts/ai-pm-portfolio-redesign/build-ppt/validation.json` and `reopened-slide-*.png` / contain structural checks and all six slide renders / use_for reproducing the visual review.
+
+## AI PM Portfolio (2026-11-23, revised and complete)
+
+- Current deliverable: six-page Korean portfolio for KOSIS RAG Multi-Agent and ReadMyCareer. User follow-up requested unified green accents, Korean headings, a concise career/competency introduction and lower density. Both projects retain technology, responsibilities, outcomes and decisions.
+- Editable HTML and PDF: `docs/artifacts/ai-pm-portfolio/Addie_Lee_AI_PM_Portfolio.{html,pdf}`. Saved PDF `libfile_c1e520da039481919147212466a14e29`; saved HTML `libfile_12f7ed24a9a481918567d2efa2d4ab76`.
+- Both existing saved files now at version 2: annotated spacing edits, removed page 2 microcopy, and labels 맡은 부분 / 의사 결정 결과 applied. Verification: all six pages visually inspected; approximately 40 px minimum content/footer clearance, no horizontal overflow, Korean text and five links validated; `bash scripts/verify.sh` exit 0 again (Python 451 passed / 6 skipped, Jest 28 tests / 5 suites).
+- Evidence boundaries: KOSIS .915 is dev/mock structure evaluation; ReadMyCareer quality thresholds are criteria, not claimed passing results. Historical three-fixture FAIL is disclosed. No new live evaluations or runtime code changes.
+- `docs/reports/20261123-ai-pm-portfolio-REPORT.md` / contains source revision, verification, saved identities and local hashes / use_for delivery audit and future revisions.
+- `docs/plans/20261123-ai-pm-portfolio/EVIDENCE.md` / contains resume, template and repository evidence / use_for updating project claims.
+
+### Portfolio image and editability update
+
+- PDF/HTML now version 3 with KOSIS screenshot on page 2 and ReadMyCareer screenshot on page 5. Native editable six-slide deck: https://chatgpt.com/space/page_22be68daf2dc81919dcc3bfcb57e1c46 . Its Download menu offers PowerPoint (PPTX); no local PPTX was verified.
+- Both screenshots retain original proportions. Text and panels in the presentation remain editable. Latest report and hero-verification.log record validation and export limits.
+
+### Current user-edited deck exported without reflow
+
+- User reported native PDF export formatting drift. Created a separate fixed visual PDF from all six slides at source sequence 132, preserving the user's edits without modifying the live deck.
+- File: `docs/artifacts/ai-pm-portfolio/Addie_Lee_AI_PM_Portfolio_Fixed.pdf`; saved `libfile_adf8a272483c81918854ebb601e074ba`, version 0. Each page is a 2560 × 1440 rendering plus invisible searchable text and link annotations.
+- Reopened-PDF pixel comparison: zero error on all six pages. Source snapshot and validation JSON under `docs/artifacts/ai-pm-portfolio/screen-fixed/`.
